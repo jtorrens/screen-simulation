@@ -62,11 +62,12 @@ struct GlobalPatternDefinition: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct GlobalLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 14
+    static let currentSchemaVersion = 15
     let schemaVersion: Int
     var patterns: [LibraryItem<GlobalPatternDefinition>]
     var testImages: [LibraryItem<GlobalTestImage>]
     var renderPresets: [LibraryItem<StudioRenderPreset>]
+    var wipReviewPresets: [LibraryItem<StudioWIPReviewPreset>]
     var devices: [LibraryItem<DeviceDefinition>]
     var coverGlasses: [LibraryItem<CoverGlassDefinition>]
     var cameras: [LibraryItem<CameraProfileDefinition>]
@@ -77,6 +78,7 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         patterns: [GlobalPatternDefinition] = GlobalPatternDefinition.builtIns,
         testImages: [GlobalTestImage] = [],
         renderPresets: [StudioRenderPreset] = StudioRenderPreset.builtIns,
+        wipReviewPresets: [StudioWIPReviewPreset] = StudioWIPReviewPreset.builtIns,
         devices: [DeviceDefinition]? = nil,
         coverGlasses: [CoverGlassDefinition]? = nil,
         cameras: [CameraProfileDefinition]? = nil,
@@ -92,6 +94,10 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         let renderSeedIDs = Set(StudioRenderPreset.builtIns.map(\.id))
         self.renderPresets = renderPresets.map {
             .init(value: $0, isLocked: renderSeedIDs.contains($0.id))
+        }
+        let wipSeedIDs = Set(StudioWIPReviewPreset.builtIns.map(\.id))
+        self.wipReviewPresets = wipReviewPresets.map {
+            .init(value: $0, isLocked: wipSeedIDs.contains($0.id))
         }
         let deviceSeeds = (try? RustDeviceCatalog.builtIns()) ?? []
         let deviceValues = devices ?? deviceSeeds
@@ -129,6 +135,7 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         patternItems: [LibraryItem<GlobalPatternDefinition>],
         testImageItems: [LibraryItem<GlobalTestImage>],
         renderPresetItems: [LibraryItem<StudioRenderPreset>],
+        wipReviewPresetItems: [LibraryItem<StudioWIPReviewPreset>],
         deviceItems: [LibraryItem<DeviceDefinition>],
         coverGlassItems: [LibraryItem<CoverGlassDefinition>],
         cameraItems: [LibraryItem<CameraProfileDefinition>],
@@ -139,6 +146,7 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         patterns = patternItems
         testImages = testImageItems
         renderPresets = renderPresetItems
+        wipReviewPresets = wipReviewPresetItems
         devices = deviceItems
         coverGlasses = coverGlassItems
         cameras = cameraItems
@@ -153,13 +161,14 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         guard Set(patterns.map(\.id)).count == patterns.count,
               Set(testImages.map(\.id)).count == testImages.count,
               Set(renderPresets.map(\.id)).count == renderPresets.count,
+              Set(wipReviewPresets.map(\.id)).count == wipReviewPresets.count,
               Set(devices.map(\.id)).count == devices.count,
               Set(coverGlasses.map(\.id)).count == coverGlasses.count,
               Set(cameras.map(\.id)).count == cameras.count,
               Set(lenses.map(\.id)).count == lenses.count,
               Set(environments.map(\.id)).count == environments.count
         else { throw GlobalLibraryError.invalidEntity("Hay identificadores globales duplicados.") }
-        guard !patterns.isEmpty, !renderPresets.isEmpty, !devices.isEmpty,
+        guard !patterns.isEmpty, !renderPresets.isEmpty, !wipReviewPresets.isEmpty, !devices.isEmpty,
               !coverGlasses.isEmpty, !cameras.isEmpty, !lenses.isEmpty,
               !environments.isEmpty
         else {
@@ -169,6 +178,7 @@ struct GlobalLibraryDocument: Codable, Equatable, Sendable {
         }
         try patterns.forEach { try $0.value.validate() }
         try testImages.forEach { try $0.value.validate() }
+        try wipReviewPresets.forEach { try $0.value.validate() }
         try devices.forEach { _ = try $0.value.resolved() }
         try coverGlasses.forEach { try $0.value.validate() }
         try cameras.forEach { try $0.value.validate() }
@@ -248,7 +258,7 @@ struct GlobalLibraryStore: Sendable {
             create: true
         ).appendingPathComponent("SCREEN-SIMULATION", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        self.documentURL = root.appendingPathComponent("GlobalLibrary.v14.json")
+        self.documentURL = root.appendingPathComponent("GlobalLibrary.v15.json")
     }
 
     func load() throws -> GlobalLibraryDocument {
@@ -292,6 +302,7 @@ final class GlobalLibraryController: ObservableObject {
     @Published var selectedPatternID: String?
     @Published var selectedImageID: UUID?
     @Published var selectedPresetID: UUID?
+    @Published var selectedWIPReviewPresetID: UUID?
     @Published var selectedDeviceID: String?
     @Published var selectedCoverGlassID: String?
     @Published var selectedCameraID: String?
@@ -314,6 +325,7 @@ final class GlobalLibraryController: ObservableObject {
             selectedPatternID = document.patterns.first?.id
             selectedImageID = document.testImages.first?.id
             selectedPresetID = allRenderPresets.first?.id
+            selectedWIPReviewPresetID = allWIPReviewPresets.first?.id
             selectedDeviceID = document.devices.first?.id
             selectedCoverGlassID = document.coverGlasses.first?.id
             selectedCameraID = document.cameras.first?.id
@@ -326,6 +338,10 @@ final class GlobalLibraryController: ObservableObject {
 
     var allRenderPresets: [StudioRenderPreset] {
         document.renderPresets.map(\.value)
+    }
+
+    var allWIPReviewPresets: [StudioWIPReviewPreset] {
+        document.wipReviewPresets.map(\.value)
     }
 
     var authorableColorModes: [LibraryColorModeOption] {
@@ -368,6 +384,10 @@ final class GlobalLibraryController: ObservableObject {
 
     var selectedPresetItem: LibraryItem<StudioRenderPreset>? {
         document.renderPresets.first { $0.id == selectedPresetID }
+    }
+
+    var selectedWIPReviewPresetItem: LibraryItem<StudioWIPReviewPreset>? {
+        document.wipReviewPresets.first { $0.id == selectedWIPReviewPresetID }
     }
 
     var selectedDeviceItem: LibraryItem<DeviceDefinition>? {
@@ -537,6 +557,56 @@ final class GlobalLibraryController: ObservableObject {
         guard let index = document.renderPresets.firstIndex(where: { $0.id == selectedPresetID })
         else { return }
         document.renderPresets[index].isLocked = false
+        persistOrBlock()
+    }
+
+    func addWIPReviewPreset() {
+        var preset = StudioWIPReviewPreset.builtIns[0]
+        preset.id = UUID()
+        preset.name = "WIP Review personalizado"
+        document.wipReviewPresets.append(.init(value: preset, isLocked: false))
+        selectedWIPReviewPresetID = preset.id
+        persistOrBlock()
+    }
+
+    func duplicateSelectedWIPReviewPreset() {
+        guard var preset = selectedWIPReviewPresetItem?.value else { return }
+        preset.id = UUID()
+        preset.name += " copia"
+        document.wipReviewPresets.append(.init(value: preset, isLocked: false))
+        selectedWIPReviewPresetID = preset.id
+        persistOrBlock()
+    }
+
+    func updateSelectedWIPReviewPreset(
+        _ mutation: (inout StudioWIPReviewPreset) -> Void
+    ) {
+        guard let index = document.wipReviewPresets.firstIndex(
+            where: { $0.id == selectedWIPReviewPresetID }
+        ), !document.wipReviewPresets[index].isLocked else { return }
+        var candidate = document
+        mutation(&candidate.wipReviewPresets[index].value)
+        do {
+            try candidate.validate()
+            try persist(candidate)
+            document = candidate
+            blockedError = nil
+        } catch { blockedError = error.localizedDescription }
+    }
+
+    func removeSelectedWIPReviewPreset() {
+        guard let selectedWIPReviewPresetID,
+              selectedWIPReviewPresetItem?.isLocked == false else { return }
+        document.wipReviewPresets.removeAll { $0.id == selectedWIPReviewPresetID }
+        self.selectedWIPReviewPresetID = document.wipReviewPresets.first?.id
+        persistOrBlock()
+    }
+
+    func unlockSelectedWIPReviewPreset() {
+        guard let index = document.wipReviewPresets.firstIndex(
+            where: { $0.id == selectedWIPReviewPresetID }
+        ) else { return }
+        document.wipReviewPresets[index].isLocked = false
         persistOrBlock()
     }
 

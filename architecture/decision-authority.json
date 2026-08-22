@@ -172,8 +172,57 @@
         "crates/screen-application/src/lib.rs",
         "crates/screen-native-bridge/src/lib.rs",
         "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "packages/StudioColor/Sources/StudioColor/StudioColorContracts.swift",
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
-        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift"
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "output.wip-review-presets",
+      "scope": "WIP Review Global Library presets and standard single-media post-output-transform processing",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "WIP Review and render derivation"
+      },
+      "enforcement": [
+        "packages/StudioMedia/Sources/StudioMedia/WIPReviewContracts.swift",
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "packages/StudioMedia/Tests/StudioMediaTests/WIPReviewContractTests.swift",
+        "packages/StudioColor/Sources/StudioColor/StudioColorMetal.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WIPReviewOFXAdapter.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/WIPReviewTests.swift",
+        "tools/wip-ofx-host/CMakeLists.txt",
+        "tools/wip-ofx-host/main.cpp",
+        ".gitmodules",
+        "scripts/build_native_macos.py",
+        "scripts/migrate_global_library_v14_to_v15.py",
+        "scripts/test_migrate_global_library_v14_to_v15.py"
+      ]
+    },
+    {
+      "id": "output.render-rerender-and-versioning",
+      "scope": "historical/current render derivation and whole-deliverable collision versioning",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "WIP Review and render derivation"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderOutputPlanning.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputQueueController.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/RenderDerivationTests.swift",
+        "scripts/migrate_render_queue_v3_to_v4.py",
+        "scripts/test_migrate_render_queue_v3_to_v4.py"
       ]
     },
     {

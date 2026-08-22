@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v3"
+    static let schema = "ScreenSimulation.RenderQueue.v4"
 
     let schema: String
     let isPaused: Bool
@@ -32,6 +32,9 @@ struct RenderQueueDocument: Codable {
         for job in jobs {
             try job.scene.validate()
             try job.configuration.validate()
+            guard job.derivedFromJobID != job.id else {
+                throw RenderQueueStoreError.invalidDocument("Un render no puede derivar de sí mismo.")
+            }
             guard !job.outputPlan.destination.path.isEmpty,
                   !job.outputPlan.generatedRelativePaths.isEmpty,
                   job.progress.isFinite,
@@ -75,7 +78,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v3.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v4.json")
     }
 
     func load() throws -> RenderQueueDocument {
@@ -103,12 +106,18 @@ struct RenderQueueStore: Sendable {
             throw RenderQueueStoreError.invalidDocument("El contrato de Render Queue es desconocido.")
         }
         let expectedJobKeys: Set<String> = [
-            "id", "scene", "generatedEnvironmentEXR", "outputPlan", "configuration",
+            "id", "derivedFromJobID", "scene", "generatedEnvironmentEXR", "outputPlan", "configuration",
             "state", "progress", "detail",
         ]
         let keysWithoutEnvironment = expectedJobKeys.subtracting(["generatedEnvironmentEXR"])
+        let keysWithoutDerived = expectedJobKeys.subtracting(["derivedFromJobID"])
+        let keysWithoutOptional = expectedJobKeys.subtracting([
+            "generatedEnvironmentEXR", "derivedFromJobID",
+        ])
         guard jobs.allSatisfy({
-            Set($0.keys) == expectedJobKeys || Set($0.keys) == keysWithoutEnvironment
+            let keys = Set($0.keys)
+            return keys == expectedJobKeys || keys == keysWithoutEnvironment
+                || keys == keysWithoutDerived || keys == keysWithoutOptional
         }) else {
             throw RenderQueueStoreError.invalidDocument("Un trabajo de Render Queue contiene campos desconocidos.")
         }

@@ -13,6 +13,7 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
     case lensNotRepresentableBySynthEyesDE4
     case nonFinitePixel
     case incompletePhysicalDeviceContribution
+    case unsupportedMediaEncoding
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,8 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
         case .nonFinitePixel: "El raster VFX contiene un valor no finito."
         case .incompletePhysicalDeviceContribution:
             "Fusion Scene Package requiere Screen y Panel Emission al 100 % para exportar la contribución física completa sin consultar el RGB ideal."
+        case .unsupportedMediaEncoding:
+            "El preset de color no tiene una transformación nativa exacta hacia ACEScg en Fusion 21."
         }
     }
 }
@@ -524,6 +527,7 @@ struct FusionScenePackageRequest: Equatable, Sendable {
 
     func validate() throws {
         try configuration.validate()
+        _ = try FusionMediaColorContract.resolve(configuration)
         guard configuration.outputType == .fusionScenePackage,
               outputPlan.kind == .fusionScenePackage,
               configuration.frameRate.framesPerSecond.isFinite,
@@ -594,6 +598,146 @@ enum FusionReferenceColorTransform: String, Equatable, Sendable {
         inputTransformID == "display-rec709-aces2-sdr"
             ? .aces2Rec709D65InverseOutput
             : .disabled
+    }
+}
+
+struct FusionMediaColorContract: Equatable, Sendable {
+    enum NativeNode: Equatable, Sendable {
+        case acesTransform(inputID: String)
+        case colorSpaceTransform(inputColorSpaceID: String, inputGammaID: String)
+    }
+
+    let encodingDescription: String
+    let transformDescription: String
+    let node: NativeNode
+
+    static func resolve(_ configuration: StudioResolvedRenderConfiguration) throws -> Self {
+        switch (configuration.pipeline, configuration.target) {
+        case (_, .acescg):
+            return .init(
+                encodingDescription: "ACEScg scene-linear",
+                transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_ACESCG to ODT_ACESCG",
+                node: .acesTransform(inputID: "IDT_ACESCG")
+            )
+        case (_, .aces2065):
+            return .init(
+                encodingDescription: "ACES2065-1 scene-linear",
+                transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_NONE (ACES2065-1) to ODT_ACESCG",
+                node: .acesTransform(inputID: "IDT_NONE")
+            )
+        case (.aces, .sdr)
+            where configuration.peakNits == 100
+                && configuration.display == "Rec.1886 Rec.709 - Display"
+                && configuration.view == "ACES 2.0 - SDR 100 nits (Rec.709)":
+            return .init(
+                encodingDescription: "ACES 2.0 Rec.709 D65 100 nit display/output encoded",
+                transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_REC709_100_INV_ODT to ODT_ACESCG",
+                node: .acesTransform(inputID: "IDT_REC709_100_INV_ODT")
+            )
+        case (.aces, .hdr)
+            where configuration.peakNits == 1_000
+                && configuration.display == "Rec.2100-PQ - Display"
+                && configuration.view == "ACES 2.0 - HDR 1000 nits (Rec.2020)":
+            return .init(
+                encodingDescription: "ACES 2.0 Rec.2100 ST 2084 1000 nit display/output encoded",
+                transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_REC2100_ST2084_1000_INV_ODT to ODT_ACESCG",
+                node: .acesTransform(inputID: "IDT_REC2100_ST2084_1000_INV_ODT")
+            )
+        case (.davinciColorManaged, .sdr)
+            where configuration.peakNits == 100
+                && configuration.display == "Rec.1886 Rec.709 - Display"
+                && configuration.view == "Video (colorimetric)":
+            return .init(
+                encodingDescription: "Rec.709 Gamma 2.4 display encoded (DCM colorimetric)",
+                transformDescription: "ColorSpaceTransform REC709_COLORSPACE/TWOPOINTFOUR_GAMMA to ACES_AP1_COLORSPACE/LINEAR_GAMMA; tone and gamut mapping none",
+                node: .colorSpaceTransform(
+                    inputColorSpaceID: "REC709_COLORSPACE",
+                    inputGammaID: "TWOPOINTFOUR_GAMMA"
+                )
+            )
+        case (.davinciColorManaged, .hdr)
+            where configuration.peakNits == 1_000
+                && configuration.display == "Rec.2100-PQ - Display"
+                && configuration.view == "Video (colorimetric)":
+            return .init(
+                encodingDescription: "Rec.2100 ST 2084 1000 nit display encoded (DCM colorimetric)",
+                transformDescription: "ColorSpaceTransform REC2020_COLORSPACE/PQ1000_GAMMA to ACES_AP1_COLORSPACE/LINEAR_GAMMA; tone and gamut mapping none",
+                node: .colorSpaceTransform(
+                    inputColorSpaceID: "REC2020_COLORSPACE",
+                    inputGammaID: "PQ1000_GAMMA"
+                )
+            )
+        case (_, .vfxLog):
+            guard let id = configuration.vfxInterchangeEncodingID else {
+                throw FusionScenePackageError.unsupportedMediaEncoding
+            }
+            let acesIDs: [String: String] = [
+                "arri-logc4-awg4": "IDT_ARRI_LOGC4_CSC",
+                "arri-logc3-ei800-awg3": "IDT_ARRI_LOGC_EI800_AWG_CSC",
+                "sony-slog3-sgamut3-cine": "IDT_SONY_SLOG3_SGAMUT3_CINE_CSC",
+                "panasonic-vlog-vgamut": "IDT_PANASONIC_VLOG_VGAMUT_CSC",
+                "canon-log3-cinema-gamut-d55": "IDT_CANON_CLOG3_CINEMA_CSC",
+                "red-log3g10-redwidegamutrgb": "IDT_RED_LOG3G10_WIDE_GAUMUT_CSC",
+                "blackmagic-film-gen5": "IDT_BMD_FILM_V5_CSC",
+            ]
+            if id == "davinci-intermediate-wide-gamut" {
+                return .init(
+                    encodingDescription: "DaVinci Intermediate / Wide Gamut scene-referred Log",
+                    transformDescription: "ColorSpaceTransform DWG_COLORSPACE/DAV_INTER_OETF_GAMMA to ACES_AP1_COLORSPACE/LINEAR_GAMMA; tone and gamut mapping none",
+                    node: .colorSpaceTransform(
+                        inputColorSpaceID: "DWG_COLORSPACE",
+                        inputGammaID: "DAV_INTER_OETF_GAMMA"
+                    )
+                )
+            }
+            guard let inputID = acesIDs[id],
+                  let encoding = StudioVFXInterchangeEncoding.catalog.first(where: {
+                      $0.id == id
+                  }) else {
+                throw FusionScenePackageError.unsupportedMediaEncoding
+            }
+            return .init(
+                encodingDescription: "\(encoding.label) scene-referred Log/Gamut",
+                transformDescription: "AcesTransform ACES_VERSION_2_0_0 \(inputID) to ODT_ACESCG",
+                node: .acesTransform(inputID: inputID)
+            )
+        default:
+            throw FusionScenePackageError.unsupportedMediaEncoding
+        }
+    }
+
+    func fusionTool(name: String, source: String, x: Int, y: Double) -> String {
+        switch node {
+        case let .acesTransform(inputID):
+            return """
+            \(name) = AcesTransform {
+              Inputs = {
+                AcesVersion = Input { Value = FuID { "ACES_VERSION_2_0_0" } },
+                InputTransform200 = Input { Value = FuID { "\(inputID)" } },
+                OutputTransform200 = Input { Value = FuID { "ODT_ACESCG" } },
+                Input = Input { SourceOp = "\(source)", Source = "Output" }
+              },
+              CustomData = { SourceEncoding = "\(encodingDescription)", WorkingSpace = "ACEScg scene-linear" },
+              ViewInfo = OperatorInfo { Pos = { \(x), \(y) } }
+            },
+            """
+        case let .colorSpaceTransform(inputColorSpaceID, inputGammaID):
+            return """
+            \(name) = ColorSpaceTransform {
+              Inputs = {
+                InputColorSpace = Input { Value = FuID { "\(inputColorSpaceID)" } },
+                InputGamma = Input { Value = FuID { "\(inputGammaID)" } },
+                OutputColorSpace = Input { Value = FuID { "ACES_AP1_COLORSPACE" } },
+                OutputGamma = Input { Value = FuID { "LINEAR_GAMMA" } },
+                ToneMapping = Input { Value = FuID { "TM_NONE" } },
+                GamutMapping = Input { Value = FuID { "GM_NONE" } },
+                Input = Input { SourceOp = "\(source)", Source = "Output" }
+              },
+              CustomData = { SourceEncoding = "\(encodingDescription)", WorkingSpace = "ACEScg scene-linear" },
+              ViewInfo = OperatorInfo { Pos = { \(x), \(y) } }
+            },
+            """
+        }
     }
 }
 
@@ -726,7 +870,7 @@ enum FusionScenePackageWriter {
         try fusionComp(request: request, prepared: prepared)
             .write(to: compURL, atomically: true, encoding: .utf8)
 
-        let metadata = metadata(request: request, prepared: prepared)
+        let metadata = try metadata(request: request, prepared: prepared)
         let metadataRelative = "metadata/\(configuration.jobName)_FusionScene.json"
         let metadataURL = request.outputPlan.destination.appendingPathComponent(metadataRelative)
         try request.outputPlan.authorizeWrite(
@@ -774,6 +918,18 @@ enum FusionScenePackageWriter {
                     source: "ACEScg", destination: "ACES2065-1"
                 )
                 try processor.apply(toRGBA: &values)
+            } else if configuration.target != .acescg {
+                guard let display else {
+                    throw NativeOutputError.unsupported(
+                        "Fusion OpenEXR encoded requiere el writer Metal"
+                    )
+                }
+                let frame = try makeACEScgFrame(
+                    rgba, width: width, height: height, display: display
+                )
+                values = try display.renderRGBAFloat(
+                    frame, output: requiredOutputTransform(configuration), alpha: alpha
+                )
             }
             try NativeOutputRenderer.encodeEXR(values, width: width, height: height)
                 .write(to: url, options: .atomic)
@@ -783,7 +939,9 @@ enum FusionScenePackageWriter {
             }
             let frame = try makeACEScgFrame(rgba, width: width, height: height, display: display)
             let output = try requiredOutputTransform(configuration)
-            let rendered = try display.renderRGBAFloat(frame, output: output)
+            let rendered = try display.renderRGBAFloat(
+                frame, output: output, alpha: alpha
+            )
             if configuration.format == .dpx10RGB {
                 try NativeOutputRenderer.encodeDPX(rendered, width: width, height: height)
                     .write(to: url, options: .atomic)
@@ -872,9 +1030,10 @@ enum FusionScenePackageWriter {
     static func metadata(
         request: FusionScenePackageRequest,
         prepared: FusionPreparedPhysicalFrame
-    ) -> FusionSceneMetadata {
+    ) throws -> FusionSceneMetadata {
         let configuration = request.configuration
         let options = configuration.fusionScene!
+        let color = try FusionMediaColorContract.resolve(configuration)
         return FusionSceneMetadata(
             schema: "ScreenSimulation.FusionScenePackage",
             schemaVersion: 2,
@@ -924,12 +1083,8 @@ enum FusionScenePackageWriter {
             lens: request.lens,
             deviceTransform: "identity-at-origin",
             mediaFormat: configuration.format,
-            mediaEncoding: configuration.target == .acescg
-                ? "ACEScg scene-linear"
-                : "ACES 2.0 Rec.709 D65 100 nit output encoded",
-            mediaToACEScgTransform: configuration.target == .acescg
-                ? "AcesTransform ACES_VERSION_2_0_0 IDT_ACESCG to ODT_ACESCG"
-                : "AcesTransform ACES_VERSION_2_0_0 IDT_REC709_100_INV_ODT to ODT_ACESCG",
+            mediaEncoding: color.encodingDescription,
+            mediaToACEScgTransform: color.transformDescription,
             deviceMediaPattern: configuration.format.isMovie
                 ? "../media/\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
                 : "../media/\(configuration.jobName)_Device.%08d.\(configuration.format.fileExtension)",
@@ -943,8 +1098,9 @@ enum FusionScenePackageWriter {
     static func fusionComp(
         request: FusionScenePackageRequest,
         prepared: FusionPreparedPhysicalFrame
-    ) -> String {
+    ) throws -> String {
         let configuration = request.configuration
+        let color = try FusionMediaColorContract.resolve(configuration)
         let firstCamera = request.camera[0]
         let dofEnabled = configuration.fusionScene!.dofMode == .fusion ? 1 : 0
         let deviceMedia = configuration.format.isMovie
@@ -966,10 +1122,14 @@ enum FusionScenePackageWriter {
         case .tiff16: "TIFFFormat"
         default: "QuickTimeMovies"
         }
-        let mediaTransformID = configuration.target == .acescg
-            ? "IDT_ACESCG" : "IDT_REC709_100_INV_ODT"
-        let mediaEncodingDescription = configuration.target == .acescg
-            ? "ACEScg scene-linear" : "ACES 2.0 Rec.709 D65 100 nit output encoded"
+        let mediaEncodingDescription = color.encodingDescription
+        let mediaTransformDescription = color.transformDescription
+        let deviceColorTool = color.fusionTool(
+            name: "DeviceToACEScg", source: "DeviceRGBA", x: 275, y: 82.5
+        )
+        let spillColorTool = color.fusionTool(
+            name: "SpillToACEScg", source: "SpillRGBA", x: 275, y: 346.5
+        )
         let cameraX = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[0]) })
         let cameraY = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[1]) })
         let cameraZ = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[2]) })
@@ -1020,7 +1180,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Device.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: independent occlusion matte; RGB is not alpha-divided or premultiplied again.\\n- Transform to working space: AcesTransform ACES_VERSION_2_0_0, \(mediaTransformID) to ODT_ACESCG.\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Spill.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; RGB additive over black.\\n- Transform to working space: AcesTransform ACES_VERSION_2_0_0, \(mediaTransformID) to ODT_ACESCG.\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(configuration.jobName)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Device.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: independent occlusion matte; RGB is not alpha-divided or premultiplied again.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Spill.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; RGB additive over black.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(configuration.jobName)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1056,19 +1216,10 @@ enum FusionScenePackageWriter {
                 ["Clip1.OpenEXRFormat.BlueName"] = Input { Value = FuID { "B" } },
                 ["Clip1.OpenEXRFormat.AlphaName"] = Input { Value = FuID { "A" } }
               },
-              CustomData = { ColorSpace = "ACEScg", AlphaSemantics = "independent-occlusion-matte" },
+              CustomData = { SourceEncoding = "\(mediaEncodingDescription)", AlphaSemantics = "independent-occlusion-matte" },
               ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }
             },
-            DeviceToACEScg = AcesTransform {
-              Inputs = {
-                AcesVersion = Input { Value = FuID { "ACES_VERSION_2_0_0" } },
-                InputTransform200 = Input { Value = FuID { "\(mediaTransformID)" } },
-                OutputTransform200 = Input { Value = FuID { "ODT_ACESCG" } },
-                Input = Input { SourceOp = "DeviceRGBA", Source = "Output" }
-              },
-              CustomData = { SourceEncoding = "\(mediaEncodingDescription)", WorkingSpace = "ACEScg scene-linear" },
-              ViewInfo = OperatorInfo { Pos = { 275, 82.5 } }
-            },
+            \(deviceColorTool)
             SpillRGBA = Loader {
               Clips = { Clip {
                 ID = "Clip1",
@@ -1091,16 +1242,7 @@ enum FusionScenePackageWriter {
               CustomData = { AlphaSemantics = "no-alpha-additive-over-black" },
               ViewInfo = OperatorInfo { Pos = { 110, 346.5 } }
             },
-            SpillToACEScg = AcesTransform {
-              Inputs = {
-                AcesVersion = Input { Value = FuID { "ACES_VERSION_2_0_0" } },
-                InputTransform200 = Input { Value = FuID { "\(mediaTransformID)" } },
-                OutputTransform200 = Input { Value = FuID { "ODT_ACESCG" } },
-                Input = Input { SourceOp = "SpillRGBA", Source = "Output" }
-              },
-              CustomData = { SourceEncoding = "\(mediaEncodingDescription)", WorkingSpace = "ACEScg scene-linear" },
-              ViewInfo = OperatorInfo { Pos = { 275, 346.5 } }
-            },
+            \(spillColorTool)
             DeviceRGBOpaque = Custom {
               Inputs = {
                 Image1 = Input { SourceOp = "DeviceToACEScg", Source = "Output" },

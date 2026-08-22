@@ -153,7 +153,7 @@ import Testing
     #expect(resolvedWhite == expected)
 }
 
-@Test @MainActor func completedJobCanBeRequeuedWithoutChangingItsSnapshot() async throws {
+@Test @MainActor func historicalRerenderCreatesALinkedJobWithoutChangingItsOrigin() async throws {
     let controller = try queueTestController()
     controller.enqueue(
         scene: outputQueueTestScene(name: "Congelada"),
@@ -167,13 +167,19 @@ import Testing
     let snapshot = completed.scene.snapshot
     let configuration = completed.configuration
 
-    #expect(controller.requeueCompletedJob(id: completed.id))
-    #expect(controller.jobs.first?.state == .pending)
-    #expect(controller.jobs.first?.progress == 0)
-    #expect(controller.jobs.first?.detail == "Pendiente")
-    #expect(controller.jobs.first?.scene.snapshot == snapshot)
-    #expect(controller.jobs.first?.configuration == configuration)
-    #expect(!controller.requeueCompletedJob(id: completed.id))
+    controller.enqueue(
+        scene: completed.scene,
+        generatedEnvironmentEXR: completed.generatedEnvironmentEXR,
+        outputPlan: completed.outputPlan,
+        configuration: completed.configuration,
+        derivedFromJobID: completed.id
+    )
+    #expect(controller.jobs.count == 2)
+    #expect(controller.jobs[0].state == .completed)
+    #expect(controller.jobs[1].state == .pending)
+    #expect(controller.jobs[1].derivedFromJobID == completed.id)
+    #expect(controller.jobs[1].scene.snapshot == snapshot)
+    #expect(controller.jobs[1].configuration == configuration)
 }
 
 @Test @MainActor func outputQueuePersistsFrozenJobsAndPausedStateAcrossSessions() throws {

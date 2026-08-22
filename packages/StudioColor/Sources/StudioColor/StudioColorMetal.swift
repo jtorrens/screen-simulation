@@ -569,7 +569,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
 
     public func renderRGBAFloat(
         _ frame: StudioColorMetalFrame,
-        output: StudioColorOutputTransform
+        output: StudioColorOutputTransform,
+        alpha: StudioColorAlphaAssociation = .premultiplied
     ) throws -> [Float] {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: frame.width, height: frame.height, mipmapped: false
@@ -585,7 +586,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         pass.colorAttachments[0].storeAction = .store
         try encode(
             input: frame.texture, output: target, pass: pass,
-            transform: output, command: command, fitInputAspect: false
+            transform: output, command: command, fitInputAspect: false,
+            outputAlpha: alpha
         )
         command.commit()
         command.waitUntilCompleted()

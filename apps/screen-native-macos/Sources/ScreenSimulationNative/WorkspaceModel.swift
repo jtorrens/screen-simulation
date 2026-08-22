@@ -427,6 +427,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
     @Published var renderPreset: StudioRenderPreset
+    @Published var renderWIPReviewPreset: StudioWIPReviewPreset?
+    var renderDerivedFromJobID: UUID?
     @Published var vfxInterchangeEncodingID = "arri-logc4-awg4"
     @Published var peakNits = 100.0
     @Published var includeAudio = true
@@ -668,6 +670,7 @@ final class WorkspaceModel: ObservableObject {
         self.globalLibraryStore = resolvedLibraryStore
         globalLibraryDocument = library
         renderPreset = library.renderPresets[0].value
+        renderWIPReviewPreset = nil
         capturePresets = library.cameras.map(\.value)
         lensPresets = library.lenses.map(\.value)
         environmentPresets = library.environments.map(\.value)
@@ -4285,6 +4288,7 @@ final class WorkspaceModel: ObservableObject {
 
     func changeOutputFormat(_ format: StudioOutputFormat) {
         outputFormat = format
+        if format == .openEXR { renderWIPReviewPreset = nil }
         if !format.supportedPixelEncodings.contains(outputPixelEncoding) {
             outputPixelEncoding = format.defaultPixelEncoding
         }
@@ -4296,25 +4300,32 @@ final class WorkspaceModel: ObservableObject {
         if !format.isMovie { includeAudio = false }
     }
 
+    var effectiveRenderTarget: StudioRenderTarget {
+        guard renderOutputType == .standard,
+              renderComposition != .deviceAndSpillSeparate,
+              let preset = renderWIPReviewPreset else { return renderPreset.target }
+        return preset.outputColorSpace == .rec709Gamma24 ? .sdr : .hdr
+    }
+
+    func changeWIPReviewPreset(_ preset: StudioWIPReviewPreset?) {
+        renderWIPReviewPreset = preset
+        guard !outputFormat.supports(target: effectiveRenderTarget) else { return }
+        if let replacement = StudioOutputFormat.allCases.first(where: {
+            $0.supports(target: effectiveRenderTarget) && $0 != .openEXR
+        }) {
+            changeOutputFormat(replacement)
+        }
+    }
+
     func changeRenderOutputType(_ type: StudioOutputType) {
         renderOutputType = type
         guard type == .fusionScenePackage else {
             ensureRenderOptionsCompatible()
             return
         }
-        let currentIsNativeFusionColor = renderPreset.target == .acescg
-            || (renderPreset.pipeline == .aces && renderPreset.target == .sdr
-                && renderPreset.display == "Rec.1886 Rec.709 - Display"
-                && renderPreset.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
-        if !currentIsNativeFusionColor,
-           let preset = globalLibraryDocument.renderPresets.map(\.value).first(where: {
-               $0.pipeline == .aces && $0.target == .sdr
-           }) {
-            applyRenderPreset(preset)
-        }
-        if !outputFormat.supportsAlpha,
+        if !outputFormat.supportsFusionScenePackage,
            let format = StudioOutputFormat.allCases.first(where: {
-               $0.supportsAlpha && $0.supports(target: renderPreset.target)
+               $0.supportsFusionScenePackage
            }) {
             changeOutputFormat(format)
         }
@@ -4324,12 +4335,18 @@ final class WorkspaceModel: ObservableObject {
 
     func applyRenderPreset(_ preset: StudioRenderPreset) {
         renderPreset = preset
+        if preset.target != .sdr && preset.target != .hdr {
+            renderWIPReviewPreset = nil
+        }
         peakNits = preset.peakNits
-        changeOutputFormat(preset.format)
-        outputPixelEncoding = preset.pixelEncoding
-        outputSignalRange = preset.signalRange
-        outputAlphaMode = preset.alpha
-        includeAudio = preset.includeAudio
+        if renderOutputType == .standard {
+            changeOutputFormat(preset.format)
+            outputPixelEncoding = preset.pixelEncoding
+            outputSignalRange = preset.signalRange
+            outputAlphaMode = preset.alpha
+            includeAudio = preset.includeAudio
+        }
+        ensureRenderOptionsCompatible()
         if preset.target == .vfxLog,
            let recommendation = selectedCapturePreset?.nativeVFXEncodingID {
             vfxInterchangeEncodingID = recommendation
@@ -4350,11 +4367,23 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func ensureRenderOptionsCompatible() {
-        guard !outputFormat.supports(target: renderPreset.target) else { return }
-        let replacement = renderPreset.format.supports(target: renderPreset.target)
+        if renderOutputType == .fusionScenePackage {
+            if !outputFormat.supportsFusionScenePackage,
+               let replacement = StudioOutputFormat.allCases.first(where: {
+                   $0.supportsFusionScenePackage
+               }) {
+                changeOutputFormat(replacement)
+            }
+            outputAlphaMode = .straight
+            includeAudio = false
+            return
+        }
+        let target = effectiveRenderTarget
+        guard !outputFormat.supports(target: target) else { return }
+        let replacement = renderPreset.format.supports(target: target)
             ? renderPreset.format
             : StudioOutputFormat.allCases.first {
-                $0.supports(target: renderPreset.target)
+                $0.supports(target: target)
             }
         if let replacement {
             changeOutputFormat(replacement)
@@ -4433,6 +4462,22 @@ final class WorkspaceModel: ObservableObject {
                 spillThresholdSceneLinear: fusionSpillThresholdSceneLinear,
                 spillFadeWidthPixels: fusionSpillFadeWidthPixels
             ) : nil
+        let wipOutput = renderWIPReviewPreset.map { preset in
+            switch preset.outputColorSpace {
+            case .rec709Gamma24:
+                return (StudioRenderTarget.sdr, 100.0,
+                        "Rec.1886 Rec.709 - Display",
+                        "ACES 2.0 - SDR 100 nits (Rec.709)")
+            case .rec2100PQ:
+                return (StudioRenderTarget.hdr, 1_000.0,
+                        "Rec.2100-PQ - Display",
+                        "ACES 2.0 - HDR 1000 nits (Rec.2020)")
+            case .rec2100HLG:
+                return (StudioRenderTarget.hdr, preset.hlgPeakNits,
+                        "Rec.2100-HLG - Display",
+                        "ACES 2.0 - HDR 1000 nits (P3 D65)")
+            }
+        }
         var configuration = StudioResolvedRenderConfiguration(
             outputType: renderOutputType,
             jobName: renderJobName,
@@ -4443,11 +4488,11 @@ final class WorkspaceModel: ObservableObject {
             motionBlurEnabled: renderOutputType == .fusionScenePackage ? false : renderMotionBlurEnabled,
             motionSamples: renderMotionSamples,
             format: outputFormat,
-            pipeline: renderPreset.pipeline,
-            target: renderPreset.target,
-            peakNits: peakNits,
-            display: renderPreset.display,
-            view: renderPreset.view,
+            pipeline: renderWIPReviewPreset == nil ? renderPreset.pipeline : .aces,
+            target: wipOutput?.0 ?? renderPreset.target,
+            peakNits: wipOutput?.1 ?? peakNits,
+            display: wipOutput?.2 ?? renderPreset.display,
+            view: wipOutput?.3 ?? renderPreset.view,
             vfxInterchangeEncodingID: renderOutputType == .standard && renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
@@ -4458,9 +4503,12 @@ final class WorkspaceModel: ObservableObject {
                 && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
-            lastFrame: range.upperBound
+            lastFrame: range.upperBound,
+            wipReview: renderOutputType == .standard
+                && renderComposition != .deviceAndSpillSeparate
+                ? renderWIPReviewPreset : nil
         )
-        let outputPlan: RenderOutputPlan
+        var outputPlan: RenderOutputPlan
         do {
             try configuration.validate()
             outputPlan = try RenderOutputPlan.prepare(
@@ -4482,8 +4530,19 @@ final class WorkspaceModel: ObservableObject {
                 }
                 alert.addButton(withTitle: "Cancelar")
                 alert.addButton(withTitle: "Sobrescribir archivos existentes")
-                guard alert.runModal() == .alertSecondButtonReturn else { return }
-                configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
+                alert.addButton(withTitle: "Crear nueva versión")
+                switch alert.runModal() {
+                case .alertSecondButtonReturn:
+                    configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
+                case .alertThirdButtonReturn:
+                    let versioned = try outputPlan.nextAvailableVersion(
+                        configuration: configuration
+                    )
+                    configuration = versioned.configuration
+                    outputPlan = versioned.plan
+                default:
+                    return
+                }
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -4493,8 +4552,47 @@ final class WorkspaceModel: ObservableObject {
             scene: scene,
             generatedEnvironmentEXR: generatedEnvironmentEXR,
             outputPlan: outputPlan,
-            configuration: configuration
+            configuration: configuration,
+            derivedFromJobID: renderDerivedFromJobID
         )
+        renderDerivedFromJobID = nil
+    }
+
+    func configureRerender(from configuration: StudioResolvedRenderConfiguration) {
+        renderOutputType = configuration.outputType
+        renderJobName = configuration.jobName
+        renderComposition = configuration.composition
+        renderMotionBlurEnabled = configuration.motionBlurEnabled
+        renderMotionSamples = configuration.motionSamples
+        outputFormat = configuration.format
+        outputPixelEncoding = configuration.pixelEncoding
+        outputSignalRange = configuration.signalRange
+        outputAlphaMode = configuration.alpha
+        includeAudio = configuration.includeAudio
+        peakNits = configuration.peakNits
+        vfxInterchangeEncodingID = configuration.vfxInterchangeEncodingID ?? vfxInterchangeEncodingID
+        inFrame = configuration.firstFrame
+        outFrame = configuration.lastFrame
+        renderRange = .inOut
+        renderPreset = StudioRenderPreset(
+            id: UUID(), name: "Ajustes del render anterior",
+            pipeline: configuration.pipeline, target: configuration.target,
+            peakNits: configuration.peakNits, display: configuration.display,
+            view: configuration.view, format: configuration.format,
+            pixelEncoding: configuration.pixelEncoding,
+            signalRange: configuration.signalRange, alpha: configuration.alpha,
+            includeAudio: configuration.includeAudio
+        )
+        renderWIPReviewPreset = configuration.wipReview
+        if let fusion = configuration.fusionScene {
+            fusionDOFMode = fusion.dofMode
+            fusionResolutionMode = fusion.resolutionMode
+            fusionCustomWidth = fusion.customActiveWidth ?? fusionCustomWidth
+            fusionCustomHeight = fusion.customActiveHeight ?? fusionCustomHeight
+            fusionSpillThresholdSceneLinear = fusion.spillThresholdSceneLinear
+            fusionSpillFadeWidthPixels = fusion.spillFadeWidthPixels
+        }
+        ensureRenderOptionsCompatible()
     }
 
     func enqueueExport() {
@@ -5010,9 +5108,38 @@ final class WorkspaceModel: ObservableObject {
         NSWorkspace.shared.open(directory)
     }
 
-    func requeueCompletedRender(_ job: NativeOutputQueueController.RenderJob) {
-        guard outputQueue.requeueCompletedJob(id: job.id) else { return }
-        status = "Render reactivado · \(job.scene.name)"
+    func rerenderHistoricalJob(_ job: NativeOutputQueueController.RenderJob) {
+        guard job.state == .completed else { return }
+        do {
+            var configuration = job.configuration.replacingOverwritePolicy(.failIfExists)
+            var plan = job.outputPlan
+            if try plan.inspectCollision().requiresConfirmation {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "El entregable ya existe"
+                alert.informativeText = "Elige si conservas el mismo destino o creas una versión atómica nueva."
+                alert.addButton(withTitle: "Cancelar")
+                alert.addButton(withTitle: "Sobrescribir archivos existentes")
+                alert.addButton(withTitle: "Crear nueva versión")
+                switch alert.runModal() {
+                case .alertSecondButtonReturn:
+                    configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
+                case .alertThirdButtonReturn:
+                    let versioned = try plan.nextAvailableVersion(configuration: configuration)
+                    configuration = versioned.configuration
+                    plan = versioned.plan
+                default: return
+                }
+            }
+            outputQueue.enqueue(
+                scene: job.scene,
+                generatedEnvironmentEXR: job.generatedEnvironmentEXR,
+                outputPlan: plan,
+                configuration: configuration,
+                derivedFromJobID: job.id
+            )
+            status = "Versión histórica añadida · \(job.scene.name)"
+        } catch { errorMessage = error.localizedDescription }
     }
 
     /// Regenerates only the Fusion composition for a completed package. The queued scene and

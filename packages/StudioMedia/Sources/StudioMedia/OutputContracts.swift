@@ -57,6 +57,10 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         default: false
         }
     }
+    /// Fusion publishes an independent Device matte, so its media container must preserve alpha.
+    /// Color encoding is deliberately not part of this capability: any selected delivery
+    /// encoding may be written into any implemented alpha-capable format.
+    public var supportsFusionScenePackage: Bool { supportsAlpha }
     public var fileExtension: String {
         switch self {
         case .openEXR: "exr"
@@ -233,6 +237,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case fusionConfigurationForbidden
     case fusionDeliveryConfigurationInvalid
     case separatedDeviceSpillDeliveryInvalid
+    case wipReviewDeliveryInvalid
 
     public var errorDescription: String? {
         switch self {
@@ -252,6 +257,8 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
             "Fusion Scene Package requiere un formato implementado con alpha straight, preset compatible, Device + Spill y sin audio."
         case .separatedDeviceSpillDeliveryInvalid:
             "Device y Spill separados requiere un formato con alpha, Device straight y sin audio."
+        case .wipReviewDeliveryInvalid:
+            "WIP Review solo puede aplicarse a una composición estándar única y display/output encoded."
         }
     }
 }
@@ -360,6 +367,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let frameRate: StudioFrameRate
     public let firstFrame: Int
     public let lastFrame: Int
+    /// Immutable WIP Review settings captured by this render attempt.
+    public let wipReview: StudioWIPReviewPreset?
 
     public init(
         outputType: StudioOutputType,
@@ -382,7 +391,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         includeAudio: Bool,
         frameRate: StudioFrameRate,
         firstFrame: Int,
-        lastFrame: Int
+        lastFrame: Int,
+        wipReview: StudioWIPReviewPreset? = nil
     ) {
         self.outputType = outputType
         self.jobName = jobName
@@ -405,6 +415,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.frameRate = frameRate
         self.firstFrame = firstFrame
         self.lastFrame = lastFrame
+        self.wipReview = wipReview
     }
 
     public var frameRange: ClosedRange<Int> { firstFrame ... lastFrame }
@@ -422,13 +433,52 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                     throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
                 }
             }
+            if let wipReview {
+                guard composition != .deviceAndSpillSeparate,
+                      target == .sdr || target == .hdr,
+                      format != .openEXR else {
+                    throw StudioOutputContractError.wipReviewDeliveryInvalid
+                }
+                try wipReview.validate()
+                let expected: (
+                    target: StudioRenderTarget, peakNits: Double,
+                    display: String, view: String
+                ) = switch wipReview.outputColorSpace {
+                case .rec709Gamma24:
+                    (.sdr, 100, "Rec.1886 Rec.709 - Display",
+                     "ACES 2.0 - SDR 100 nits (Rec.709)")
+                case .rec2100PQ:
+                    (.hdr, 1_000, "Rec.2100-PQ - Display",
+                     "ACES 2.0 - HDR 1000 nits (Rec.2020)")
+                case .rec2100HLG:
+                    (.hdr, wipReview.hlgPeakNits, "Rec.2100-HLG - Display",
+                     "ACES 2.0 - HDR 1000 nits (P3 D65)")
+                }
+                guard pipeline == .aces, target == expected.target,
+                      peakNits == expected.peakNits,
+                      display == expected.display, view == expected.view,
+                      format.supports(target: expected.target),
+                      format.supportedPixelEncodings.contains(pixelEncoding),
+                      format.supportedSignalRanges(for: pixelEncoding).contains(signalRange)
+                else { throw StudioOutputContractError.wipReviewDeliveryInvalid }
+            }
         case .fusionScenePackage:
-            let nativeFusionColor = target == .acescg
-                || (pipeline == .aces && target == .sdr
-                    && display == "Rec.1886 Rec.709 - Display"
-                    && view == "ACES 2.0 - SDR 100 nits (Rec.709)")
-            guard nativeFusionColor,
-                  format.supports(target: target), format.supportsAlpha,
+            guard wipReview == nil else {
+                throw StudioOutputContractError.wipReviewDeliveryInvalid
+            }
+            let colorContractIsComplete = switch target {
+            case .sdr, .hdr:
+                display != nil && view != nil && vfxInterchangeEncodingID == nil
+            case .aces2065, .acescg:
+                display == nil && view == nil && vfxInterchangeEncodingID == nil
+            case .vfxLog:
+                display == nil && view == nil
+                    && vfxInterchangeEncodingID?.isEmpty == false
+            }
+            guard colorContractIsComplete,
+                  format.supportsFusionScenePackage,
+                  format.supportedPixelEncodings.contains(pixelEncoding),
+                  format.supportedSignalRanges(for: pixelEncoding).contains(signalRange),
                   alpha == .straight, !includeAudio,
                   composition == .deviceAndSpillTogether,
                   motionBlurEnabled == false else {
@@ -453,7 +503,22 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
             pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,
             includeAudio: includeAudio, frameRate: frameRate,
-            firstFrame: firstFrame, lastFrame: lastFrame
+            firstFrame: firstFrame, lastFrame: lastFrame,
+            wipReview: wipReview
+        )
+    }
+
+    public func replacingJobName(_ name: String) -> StudioResolvedRenderConfiguration {
+        StudioResolvedRenderConfiguration(
+            outputType: outputType, jobName: name,
+            overwritePolicy: overwritePolicy, fusionScene: fusionScene,
+            composition: composition, motionBlurEnabled: motionBlurEnabled,
+            motionSamples: motionSamples, format: format, pipeline: pipeline,
+            target: target, peakNits: peakNits, display: display, view: view,
+            vfxInterchangeEncodingID: vfxInterchangeEncodingID,
+            pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,
+            includeAudio: includeAudio, frameRate: frameRate,
+            firstFrame: firstFrame, lastFrame: lastFrame, wipReview: wipReview
         )
     }
 }

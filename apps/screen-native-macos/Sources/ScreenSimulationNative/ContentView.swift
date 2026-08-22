@@ -22,6 +22,7 @@ struct ContentView: View {
         case pattern = "patrón"
         case testImage = "imagen de test"
         case renderPreset = "preset de render"
+        case wipReviewPreset = "preset WIP Review"
         case device = "device preset"
         case coverGlass = "preset de Cover Glass"
         case camera = "perfil de cámara"
@@ -61,6 +62,7 @@ struct ContentView: View {
         case patterns = "Patrones"
         case testImages = "Imágenes de test"
         case renderPresets = "Presets de render"
+        case wipReview = "WIP Review"
         case devices = "Devices"
         case coverGlasses = "Cover Glass"
         case cameras = "Cámaras"
@@ -73,6 +75,7 @@ struct ContentView: View {
             case .patterns: "camera.filters"
             case .testImages: "photo.stack"
             case .renderPresets: "slider.horizontal.3"
+            case .wipReview: "text.bubble"
             case .devices: "display"
             case .coverGlasses: "square.3.layers.3d"
             case .cameras: "camera"
@@ -195,6 +198,7 @@ struct ContentView: View {
                 case .pattern: library.removeSelectedPattern()
                 case .testImage: library.removeSelectedImage()
                 case .renderPreset: library.removeSelectedPreset()
+                case .wipReviewPreset: library.removeSelectedWIPReviewPreset()
                 case .device: library.removeSelectedDevice()
                 case .coverGlass: library.removeSelectedCoverGlass()
                 case .camera: library.removeSelectedCamera()
@@ -497,6 +501,7 @@ struct ContentView: View {
                 case .patterns: patternLibrary
                 case .testImages: testImageLibrary
                 case .renderPresets: renderPresetLibrary
+                case .wipReview: wipReviewLibrary
                 case .devices: deviceLibrary
                 case .coverGlasses: coverGlassLibrary
                 case .cameras: cameraLibrary
@@ -779,6 +784,320 @@ struct ContentView: View {
             } else {
                 ContentUnavailableView("Sin preset", systemImage: "slider.horizontal.3")
             }
+        }
+    }
+
+    private var wipReviewLibrary: some View {
+        VSplitView {
+            VStack(spacing: 0) {
+                List(selection: $library.selectedWIPReviewPresetID) {
+                    ForEach(library.document.wipReviewPresets) { preset in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(preset.name)
+                                Text("\(preset.outputColorSpace.label) · \(preset.reviewRaster.rawValue)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if preset.isLocked { Image(systemName: "lock.fill") }
+                        }.tag(preset.id)
+                    }
+                }
+                HStack {
+                    Button(action: library.addWIPReviewPreset) { Image(systemName: "plus") }
+                    Button(action: library.duplicateSelectedWIPReviewPreset) {
+                        Image(systemName: "plus.square.on.square")
+                    }.disabled(library.selectedWIPReviewPresetID == nil)
+                    Button(action: library.unlockSelectedWIPReviewPreset) {
+                        Image(systemName: "lock.open")
+                    }.disabled(library.selectedWIPReviewPresetItem?.isLocked != true)
+                    Button { pendingLibraryDeletion = .wipReviewPreset } label: {
+                        Image(systemName: "trash")
+                    }.disabled(library.selectedWIPReviewPresetItem?.isLocked != false)
+                    Spacer()
+                }.buttonStyle(.borderless).padding(8)
+            }.frame(maxWidth: .infinity, minHeight: 160, idealHeight: 240)
+            if let item = library.selectedWIPReviewPresetItem {
+                Form {
+                    Section("Identidad y color") {
+                        TextField("Nombre", text: Binding(
+                            get: { item.name },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.name = value } }
+                        ))
+                        Picker("Output Color Space", selection: Binding(
+                            get: { item.outputColorSpace },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.outputColorSpace = value } }
+                        )) {
+                            ForEach(StudioWIPOutputColorSpace.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Review Raster", selection: Binding(
+                            get: { item.reviewRaster },
+                            set: { value in
+                                library.updateSelectedWIPReviewPreset {
+                                    $0.reviewRaster = value
+                                    if value == .custom {
+                                        $0.customWidth = $0.customWidth ?? 1920
+                                        $0.customHeight = $0.customHeight ?? 1080
+                                    } else { $0.customWidth = nil; $0.customHeight = nil }
+                                }
+                            }
+                        )) { ForEach(StudioWIPReviewRaster.allCases) { Text($0.rawValue).tag($0) } }
+                        if item.reviewRaster == .custom {
+                            TextField("Ancho", value: Binding(
+                                get: { item.customWidth ?? 1920 },
+                                set: { value in library.updateSelectedWIPReviewPreset { $0.customWidth = value } }
+                            ), format: .number)
+                            TextField("Alto", value: Binding(
+                                get: { item.customHeight ?? 1080 },
+                                set: { value in library.updateSelectedWIPReviewPreset { $0.customHeight = value } }
+                            ), format: .number)
+                        }
+                        Picker("Placement", selection: Binding(
+                            get: { item.placement },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.placement = value } }
+                        )) { ForEach(StudioWIPPlacement.allCases) { Text($0.rawValue).tag($0) } }
+                        Picker("Filtro", selection: Binding(
+                            get: { item.resampleFilter },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.resampleFilter = value } }
+                        )) { ForEach(StudioWIPResampleFilter.allCases) { Text($0.rawValue).tag($0) } }
+                        wipColorEditor("Canvas RGBA", item.canvasColor, keyPath: \.canvasColor)
+                    }
+                    Section("Blanking") {
+                        Toggle("Activado", isOn: Binding(
+                            get: { item.blankingEnabled },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.blankingEnabled = value } }
+                        ))
+                        Picker("Aspect", selection: Binding(
+                            get: { item.blankingAspect },
+                            set: { value in
+                                library.updateSelectedWIPReviewPreset {
+                                    $0.blankingAspect = value
+                                    $0.customBlankingAspect = value == .custom ? ($0.customBlankingAspect ?? 2.39) : nil
+                                }
+                            }
+                        )) { ForEach(StudioWIPBlankingAspect.allCases) { Text($0.rawValue).tag($0) } }
+                        if item.blankingAspect == .custom {
+                            wipDoubleField("Aspect personalizado", item.customBlankingAspect ?? 2.39) {
+                                $0.customBlankingAspect = $1
+                            }
+                        }
+                        wipDoubleField("Opacidad", item.blankingOpacity, keyPath: \.blankingOpacity)
+                        wipColorEditor("Color RGBA", item.blankingColor, keyPath: \.blankingColor)
+                    }
+                    Section("Tipografía y gráficos") {
+                        TextField("Familia", text: Binding(
+                            get: { item.fontFamily },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.fontFamily = value } }
+                        ))
+                        Picker("Estilo", selection: Binding(
+                            get: { item.fontStyle },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.fontStyle = value } }
+                        )) { ForEach(StudioWIPFontStyle.allCases) { Text($0.rawValue).tag($0) } }
+                        wipDoubleField("Tamaño normalizado", item.fontSize, keyPath: \.fontSize)
+                        wipDoubleField("Opacidad texto", item.textOpacity, keyPath: \.textOpacity)
+                        wipColorEditor("Texto RGBA", item.textColor, keyPath: \.textColor)
+                        Picker("Graphics White", selection: Binding(
+                            get: { item.graphicsWhiteMode },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.graphicsWhiteMode = value } }
+                        )) { ForEach(StudioWIPGraphicsWhiteMode.allCases) { Text($0.rawValue).tag($0) } }
+                        wipDoubleField("Graphics White nit", item.graphicsWhiteNits, keyPath: \.graphicsWhiteNits)
+                        wipDoubleField("HLG Peak nit", item.hlgPeakNits, keyPath: \.hlgPeakNits)
+                        wipDoubleField("Padding izquierdo", item.paddingLeft, keyPath: \.paddingLeft)
+                        wipDoubleField("Padding derecho", item.paddingRight, keyPath: \.paddingRight)
+                        wipDoubleField("Padding superior", item.paddingTop, keyPath: \.paddingTop)
+                        wipDoubleField("Padding inferior", item.paddingBottom, keyPath: \.paddingBottom)
+                        Toggle("Outline", isOn: Binding(
+                            get: { item.outlineEnabled },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.outlineEnabled = value } }
+                        ))
+                        wipDoubleField("Outline ancho", item.outlineWidth, keyPath: \.outlineWidth)
+                        wipDoubleField("Outline opacidad", item.outlineOpacity, keyPath: \.outlineOpacity)
+                        wipColorEditor("Outline RGBA", item.outlineColor, keyPath: \.outlineColor)
+                        Toggle("Sombra", isOn: Binding(
+                            get: { item.shadowEnabled },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.shadowEnabled = value } }
+                        ))
+                        wipDoubleField("Sombra offset X", item.shadowOffsetX, keyPath: \.shadowOffsetX)
+                        wipDoubleField("Sombra offset Y", item.shadowOffsetY, keyPath: \.shadowOffsetY)
+                        wipDoubleField("Sombra suavidad", item.shadowSoftness, keyPath: \.shadowSoftness)
+                        wipDoubleField("Sombra opacidad", item.shadowOpacity, keyPath: \.shadowOpacity)
+                        wipColorEditor("Sombra RGBA", item.shadowColor, keyPath: \.shadowColor)
+                    }
+                    Section("Timing") {
+                        TextField("Frame Relative Base", value: Binding(
+                            get: { item.frameRelativeBase },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.frameRelativeBase = value } }
+                        ), format: .number)
+                        TextField("Frame Start", value: Binding(
+                            get: { item.frameStart },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.frameStart = value } }
+                        ), format: .number)
+                        Picker("FPS", selection: Binding(
+                            get: { item.frameRateMode },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.frameRateMode = value } }
+                        )) { ForEach(StudioWIPFrameRateMode.allCases) { Text($0.rawValue).tag($0) } }
+                        if item.frameRateMode == .override {
+                            wipDoubleField("FPS Override", item.frameRateOverride, keyPath: \.frameRateOverride)
+                        }
+                        TextField("Timecode Start", text: Binding(
+                            get: { item.timecodeStart },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.timecodeStart = value } }
+                        ))
+                        TextField("Review Date", text: Binding(
+                            get: { item.reviewDate },
+                            set: { value in library.updateSelectedWIPReviewPreset { $0.reviewDate = value } }
+                        ))
+                    }
+                    Section("Zonas") {
+                        ForEach(item.zones) { zone in
+                            HStack {
+                                Toggle(zone.position.rawValue, isOn: Binding(
+                                    get: { zone.enabled },
+                                    set: { value in updateWIPZone(zone.position) { $0.enabled = value } }
+                                ))
+                                TextField("Texto", text: Binding(
+                                    get: { zone.prefix },
+                                    set: { value in updateWIPZone(zone.position) { $0.prefix = value } }
+                                ))
+                                Picker("Campo", selection: Binding(
+                                    get: { zone.calculatedField },
+                                    set: { value in updateWIPZone(zone.position) { $0.calculatedField = value } }
+                                )) { ForEach(StudioWIPCalculatedField.allCases) { Text($0.label).tag($0) } }
+                                .labelsHidden()
+                            }
+                            HStack {
+                                wipZoneDoubleField("Offset X", zone, keyPath: \.offsetX)
+                                wipZoneDoubleField("Offset Y", zone, keyPath: \.offsetY)
+                            }
+                            HStack {
+                                Toggle("Tamaño propio", isOn: Binding(
+                                    get: { zone.fontSize.enabled },
+                                    set: { value in updateWIPZone(zone.position) { $0.fontSize.enabled = value } }
+                                ))
+                                TextField("Tamaño", value: Binding(
+                                    get: { zone.fontSize.value },
+                                    set: { value in updateWIPZone(zone.position) { $0.fontSize.value = value } }
+                                ), format: .number)
+                                Toggle("Opacidad propia", isOn: Binding(
+                                    get: { zone.opacity.enabled },
+                                    set: { value in updateWIPZone(zone.position) { $0.opacity.enabled = value } }
+                                ))
+                                TextField("Opacidad", value: Binding(
+                                    get: { zone.opacity.value },
+                                    set: { value in updateWIPZone(zone.position) { $0.opacity.value = value } }
+                                ), format: .number)
+                            }
+                            Toggle("Color propio", isOn: Binding(
+                                get: { zone.color.enabled },
+                                set: { value in updateWIPZone(zone.position) { $0.color.enabled = value } }
+                            ))
+                            HStack {
+                                ForEach(["R", "G", "B", "A"], id: \.self) { channel in
+                                    TextField(channel, value: Binding(
+                                        get: { wipZoneColorComponent(zone.color.value, channel: channel) },
+                                        set: { value in updateWIPZone(zone.position) {
+                                            setWIPZoneColorComponent(&$0.color.value, channel: channel, value: value)
+                                        } }
+                                    ), format: .number)
+                                }
+                            }
+                        }
+                        Text("Los campos calculados de la app —incluido File Name— se convierten en texto literal antes de invocar el OFX; el plugin recibe Calculated Field = None.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.formStyle(.grouped).disabled(item.isLocked)
+            } else { ContentUnavailableView("Sin preset WIP Review", systemImage: "text.bubble") }
+        }
+    }
+
+    private func updateWIPZone(
+        _ position: StudioWIPZonePosition,
+        mutation: (inout StudioWIPReviewZone) -> Void
+    ) {
+        library.updateSelectedWIPReviewPreset { preset in
+            guard let index = preset.zones.firstIndex(where: { $0.position == position }) else { return }
+            mutation(&preset.zones[index])
+        }
+    }
+
+    private func wipDoubleField(
+        _ label: String,
+        _ value: Double,
+        keyPath: WritableKeyPath<StudioWIPReviewPreset, Double>
+    ) -> some View {
+        TextField(label, value: Binding(
+            get: { value },
+            set: { newValue in
+                library.updateSelectedWIPReviewPreset { $0[keyPath: keyPath] = newValue }
+            }
+        ), format: .number)
+    }
+
+    private func wipDoubleField(
+        _ label: String,
+        _ value: Double,
+        mutation: @escaping (inout StudioWIPReviewPreset, Double) -> Void
+    ) -> some View {
+        TextField(label, value: Binding(
+            get: { value },
+            set: { newValue in
+                library.updateSelectedWIPReviewPreset { mutation(&$0, newValue) }
+            }
+        ), format: .number)
+    }
+
+    private func wipColorEditor(
+        _ label: String,
+        _ color: StudioReviewColor,
+        keyPath: WritableKeyPath<StudioWIPReviewPreset, StudioReviewColor>
+    ) -> some View {
+        HStack {
+            Text(label)
+            ForEach(["R", "G", "B", "A"], id: \.self) { channel in
+                TextField(channel, value: Binding(
+                    get: { wipZoneColorComponent(color, channel: channel) },
+                    set: { value in library.updateSelectedWIPReviewPreset {
+                        setWIPZoneColorComponent(&$0[keyPath: keyPath], channel: channel, value: value)
+                    } }
+                ), format: .number)
+                .frame(minWidth: 42)
+            }
+        }
+    }
+
+    private func wipZoneDoubleField(
+        _ label: String,
+        _ zone: StudioWIPReviewZone,
+        keyPath: WritableKeyPath<StudioWIPReviewZone, Double>
+    ) -> some View {
+        TextField(label, value: Binding(
+            get: { zone[keyPath: keyPath] },
+            set: { value in updateWIPZone(zone.position) { $0[keyPath: keyPath] = value } }
+        ), format: .number)
+    }
+
+    private func wipZoneColorComponent(
+        _ color: StudioReviewColor,
+        channel: String
+    ) -> Double {
+        switch channel {
+        case "R": color.red
+        case "G": color.green
+        case "B": color.blue
+        default: color.alpha
+        }
+    }
+
+    private func setWIPZoneColorComponent(
+        _ color: inout StudioReviewColor,
+        channel: String,
+        value: Double
+    ) {
+        switch channel {
+        case "R": color.red = value
+        case "G": color.green = value
+        case "B": color.blue = value
+        default: color.alpha = value
         }
     }
 
@@ -1706,13 +2025,7 @@ struct ContentView: View {
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
                     )) {
-                        ForEach(library.allRenderPresets.filter { preset in
-                            model.renderOutputType == .standard
-                                || preset.target == .acescg
-                                || (preset.pipeline == .aces && preset.target == .sdr
-                                    && preset.display == "Rec.1886 Rec.709 - Display"
-                                    && preset.view == "ACES 2.0 - SDR 100 nits (Rec.709)")
-                        }) { preset in
+                        ForEach(library.allRenderPresets) { preset in
                             Text(preset.name).tag(preset)
                         }
                     }
@@ -1720,9 +2033,10 @@ struct ContentView: View {
                         get: { model.outputFormat },
                         set: { model.changeOutputFormat($0) }
                     )) {
-                        ForEach(StudioOutputFormat.allCases.filter {
-                            $0.supports(target: model.renderPreset.target)
-                                && (model.renderOutputType == .standard || $0.supportsAlpha)
+                        ForEach(StudioOutputFormat.allCases.filter { format in
+                            model.renderOutputType == .fusionScenePackage
+                                ? format.supportsFusionScenePackage
+                                : format.supports(target: model.effectiveRenderTarget)
                         }) { format in
                             Text(format.displayName).tag(format)
                         }
@@ -1751,6 +2065,19 @@ struct ContentView: View {
                             Text(composition.label).tag(composition)
                         }
                     }
+                    if model.renderComposition != .deviceAndSpillSeparate
+                        && model.outputFormat != .openEXR
+                        && (model.renderPreset.target == .sdr || model.renderPreset.target == .hdr) {
+                        Picker("WIP Review", selection: Binding(
+                            get: { model.renderWIPReviewPreset },
+                            set: { model.changeWIPReviewPreset($0) }
+                        )) {
+                            Text("Ninguno").tag(StudioWIPReviewPreset?.none)
+                            ForEach(library.allWIPReviewPresets) { preset in
+                                Text(preset.name).tag(Optional(preset))
+                            }
+                        }
+                    }
                     } else {
                         Picker("DOF", selection: $model.fusionDOFMode) {
                             ForEach(StudioFusionDOFMode.allCases) { Text($0.label).tag($0) }
@@ -1776,7 +2103,7 @@ struct ContentView: View {
                             TextField("px", value: $model.fusionSpillFadeWidthPixels, format: .number)
                                 .frame(width: 90)
                         }
-                        Text("Device y Spill usan el mismo preset y formato. La comp aplica AcesTransform explícito hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
+                        Text("Device y Spill usan el mismo preset de color y formato. El espacio de color y el formato se eligen de forma independiente; la comp aplica el nodo nativo exacto hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1840,7 +2167,7 @@ struct ContentView: View {
                         .disabled(!model.outputFormat.isMovie)
                     } else {
                         LabeledContent("Píxel", value: model.outputPixelEncoding.label)
-                        LabeledContent("Encoding", value: model.renderPreset.target == .acescg ? "ACEScg scene-linear" : "ACES 2.0 Rec.709 D65 100 nit")
+                        LabeledContent("Encoding", value: model.renderPreset.name)
                         LabeledContent("Alpha", value: "Matte de oclusión independiente")
                     }
                 }
@@ -2427,8 +2754,11 @@ struct ContentView: View {
                                 model.refreshFusionComposition(job)
                             }
                         }
-                        Button("Volver a renderizar") {
-                            model.requeueCompletedRender(job)
+                        Button("Volver a renderizar esta versión") {
+                            model.rerenderHistoricalJob(job)
+                        }
+                        Button("Renderizar la escena actual…") {
+                            renderCurrentSavedScene(derivedFrom: job)
                         }
                     }
                 }
@@ -2452,6 +2782,27 @@ struct ContentView: View {
             }
             .padding(8)
         }
+    }
+
+    private func renderCurrentSavedScene(
+        derivedFrom job: NativeOutputQueueController.RenderJob
+    ) {
+        guard let current = scenes.scene(id: job.scene.id) else {
+            model.errorMessage = "La escena guardada actual ya no existe. La versión histórica sigue disponible."
+            return
+        }
+        if let wipID = job.configuration.wipReview?.id {
+            guard let currentWIP = library.allWIPReviewPresets.first(where: { $0.id == wipID }) else {
+                model.errorMessage = "El preset WIP Review del render histórico ya no existe en la Biblioteca Global."
+                return
+            }
+            model.configureRerender(from: job.configuration)
+            model.renderWIPReviewPreset = currentWIP
+        } else {
+            model.configureRerender(from: job.configuration)
+        }
+        model.renderDerivedFromJobID = job.id
+        pendingRenderScene = current
     }
 
     @ViewBuilder

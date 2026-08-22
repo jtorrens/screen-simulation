@@ -258,7 +258,8 @@ public struct StudioColorMode: Hashable, Identifiable, Sendable {
 
 public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
     public enum Encoding: Equatable, Sendable {
-        case linearRec709Raw, acescgRaw, cameraLog, sRGB, rec709, displayP3, displayP3EDR, rec2100PQ, rec2100HLG
+        case linearRec709Raw, acescgRaw, aces2065Raw, cameraLog
+        case sRGB, rec709, displayP3, displayP3EDR, rec2100PQ, rec2100HLG
     }
     public enum Processor: Hashable, Sendable {
         case displayView(display: String, view: String)
@@ -368,6 +369,15 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         encoding: .acescgRaw
     )
 
+    /// Technical scene-linear AP0 transport. Core Graphics has no matching tagged
+    /// destination, so file/package metadata remains the sole explicit interpretation.
+    public static let technicalACES2065Raw = Self(
+        id: "aces2065-raw-technical",
+        label: "ACES2065-1 Raw técnico · sin ODT",
+        colorSpace: "ACES2065-1",
+        encoding: .aces2065Raw
+    )
+
     /// Diagnostic scene-linear view used to isolate the ACES output transform.
     /// It is intentionally absent from the authored output catalog.
     public static let diagnosticUntoneMappedSRGB = Self(
@@ -384,7 +394,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         // codes, so ColorSync does not add an encoding curve that lifts them.
         case .linearRec709Raw: CGColorSpace(name: CGColorSpace.sRGB)
         case .acescgRaw: CGColorSpace(name: CGColorSpace.acescgLinear)
-        case .cameraLog: nil
+        case .aces2065Raw, .cameraLog: nil
         case .sRGB: CGColorSpace(name: CGColorSpace.sRGB)
         case .rec709: CGColorSpace(name: CGColorSpace.itur_709)
         case .displayP3: CGColorSpace(name: CGColorSpace.displayP3)
@@ -398,6 +408,7 @@ public struct StudioColorOutputTransform: Hashable, Identifiable, Sendable {
         switch encoding {
         case .linearRec709Raw: "RGB lineal Rec.709 · sin curva"
         case .acescgRaw: "ACEScg lineal"
+        case .aces2065Raw: "ACES2065-1 lineal"
         case .cameraLog: "Log / Gamut VFX"
         case .sRGB: "sRGB · IEC 61966-2-1"
         case .rec709: "Rec.709 · SDR"

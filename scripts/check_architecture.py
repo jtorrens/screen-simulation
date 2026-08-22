@@ -665,7 +665,6 @@ def validate_fusion_scene_color_contract() -> None:
         / "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift"
     ).read_text(encoding="utf-8")
     for forbidden in (
-        "ColorSpaceTransform",
         "OCIOColorSpace",
         "OCIOConfig",
         "studio-fusion-ocio",
@@ -686,8 +685,18 @@ def validate_fusion_scene_color_contract() -> None:
         "ViewInfo = StickyNoteInfo",
         "DEVICE MEDIA",
         "SPILL MEDIA",
-        "DeviceToACEScg = AcesTransform",
-        "SpillToACEScg = AcesTransform",
+        'name: "DeviceToACEScg"',
+        'name: "SpillToACEScg"',
+        "case let .acesTransform",
+        "case let .colorSpaceTransform",
+        'inputColorSpaceID: "REC709_COLORSPACE"',
+        'inputColorSpaceID: "REC2020_COLORSPACE"',
+        'inputColorSpaceID: "DWG_COLORSPACE"',
+        'InputGamma = Input { Value = FuID { "\\(inputGammaID)" } }',
+        'OutputColorSpace = Input { Value = FuID { "ACES_AP1_COLORSPACE" } }',
+        'OutputGamma = Input { Value = FuID { "LINEAR_GAMMA" } }',
+        'ToneMapping = Input { Value = FuID { "TM_NONE" } }',
+        'GamutMapping = Input { Value = FuID { "GM_NONE" } }',
         "AddProjectedDeviceSpill = Custom",
         "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
         "IDT_ACESCG",

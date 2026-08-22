@@ -6,6 +6,7 @@ final class NativeOutputQueueController: ObservableObject {
     struct RenderJob: Codable, Identifiable {
         enum State: String, Codable { case pending, rendering, completed, failed, cancelled }
         let id: UUID
+        let derivedFromJobID: UUID?
         let scene: SavedScene
         let generatedEnvironmentEXR: Data?
         let outputPlan: RenderOutputPlan
@@ -16,11 +17,13 @@ final class NativeOutputQueueController: ObservableObject {
         var detail = "Pendiente"
 
         init(
-            id: UUID = UUID(), scene: SavedScene, generatedEnvironmentEXR: Data?,
+            id: UUID = UUID(), derivedFromJobID: UUID? = nil,
+            scene: SavedScene, generatedEnvironmentEXR: Data?,
             outputPlan: RenderOutputPlan, configuration: StudioResolvedRenderConfiguration,
             state: State = .pending, progress: Double = 0, detail: String = "Pendiente"
         ) {
             self.id = id
+            self.derivedFromJobID = derivedFromJobID
             self.scene = scene
             self.generatedEnvironmentEXR = generatedEnvironmentEXR
             self.outputPlan = outputPlan
@@ -51,7 +54,7 @@ final class NativeOutputQueueController: ObservableObject {
             guard job.state == .rendering else { return job }
             resumedInterruptedJob = true
             return RenderJob(
-                id: job.id, scene: job.scene,
+                id: job.id, derivedFromJobID: job.derivedFromJobID, scene: job.scene,
                 generatedEnvironmentEXR: job.generatedEnvironmentEXR,
                 outputPlan: job.outputPlan, configuration: job.configuration,
                 state: .pending, progress: 0,
@@ -77,11 +80,12 @@ final class NativeOutputQueueController: ObservableObject {
         scene: SavedScene,
         generatedEnvironmentEXR: Data?,
         outputPlan: RenderOutputPlan,
-        configuration: StudioResolvedRenderConfiguration
+        configuration: StudioResolvedRenderConfiguration,
+        derivedFromJobID: UUID? = nil
     ) {
         guard persistenceError == nil else { return }
         jobs.append(RenderJob(
-            scene: scene,
+            derivedFromJobID: derivedFromJobID, scene: scene,
             generatedEnvironmentEXR: generatedEnvironmentEXR,
             outputPlan: outputPlan,
             configuration: configuration
@@ -163,21 +167,6 @@ final class NativeOutputQueueController: ObservableObject {
               [.pending, .failed, .completed].contains(jobs[index].state)
         else { return false }
         jobs.remove(at: index)
-        persist()
-        return true
-    }
-
-    /// Reopens only a terminal successful job. Its immutable scene snapshot and resolved
-    /// output configuration remain unchanged, so a later edit to the live workspace can
-    /// never redirect a queued render.
-    @discardableResult
-    func requeueCompletedJob(id: RenderJob.ID) -> Bool {
-        guard let index = jobs.firstIndex(where: { $0.id == id }),
-              jobs[index].state == .completed
-        else { return false }
-        jobs[index].state = .pending
-        jobs[index].progress = 0
-        jobs[index].detail = "Pendiente"
         persist()
         return true
     }

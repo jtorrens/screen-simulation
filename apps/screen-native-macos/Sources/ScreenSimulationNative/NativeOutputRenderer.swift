@@ -90,8 +90,15 @@ enum NativeOutputRenderer {
                     .appendingPathComponent(".\(UUID().uuidString)-video")
                     .appendingPathExtension(format.fileExtension)
                 : finalURL
+            let firstWIP = configuration.wipReview == nil ? nil : try await wipProcessedRGBA(
+                try display.renderRGBAFloat(first, output: output, alpha: .straight),
+                sourceWidth: first.width, sourceHeight: first.height,
+                frameNumber: firstIndex, outputFilename: finalURL.lastPathComponent,
+                configuration: configuration
+            )
             let writer = try MovieWriter(
-                url: writerURL, width: first.width, height: first.height,
+                url: writerURL, width: firstWIP?.width ?? first.width,
+                height: firstWIP?.height ?? first.height,
                 frameRate: frameRate, format: format,
                 peakNits: configuration.peakNits,
                 signalRange: configuration.signalRange,
@@ -100,10 +107,22 @@ enum NativeOutputRenderer {
             for (position, index) in frames.enumerated() {
                 try Task.checkCancellation()
                 let frame = index == firstIndex ? first : try await frameProvider(index)
-                try await writer.append(
-                    frame: frame, presentationFrame: position,
-                    display: display, output: output
-                )
+                if configuration.wipReview != nil {
+                    let processed = index == firstIndex ? firstWIP! : try await wipProcessedRGBA(
+                        try display.renderRGBAFloat(frame, output: output, alpha: .straight),
+                        sourceWidth: frame.width, sourceHeight: frame.height,
+                        frameNumber: index, outputFilename: finalURL.lastPathComponent,
+                        configuration: configuration
+                    )
+                    try await writer.appendEncodedRGBA(
+                        processed.rgba, presentationFrame: position
+                    )
+                } else {
+                    try await writer.append(
+                        frame: frame, presentationFrame: position,
+                        display: display, output: output
+                    )
+                }
                 progress(position + 1, frames.count)
             }
             try await writer.finish()
@@ -150,15 +169,34 @@ enum NativeOutputRenderer {
                     .write(to: url, options: .atomic)
             case .dpx10RGB:
                 guard let output else { throw NativeOutputError.unsupported("DPX requiere ODT") }
+                let encoded = try await wipProcessedRGBA(
+                    try display.renderRGBAFloat(
+                        frame, output: output,
+                        alpha: configuration.wipReview == nil ? .ignore : .straight
+                    ),
+                    sourceWidth: frame.width, sourceHeight: frame.height,
+                    frameNumber: index, outputFilename: url.lastPathComponent,
+                    configuration: configuration
+                )
                 try encodeDPX(
-                    try display.renderRGBAFloat(frame, output: output),
-                    width: frame.width, height: frame.height
+                    encoded.rgba, width: encoded.width, height: encoded.height
                 ).write(to: url, options: .atomic)
             case .tiff16:
                 guard let output else { throw NativeOutputError.unsupported("TIFF requiere ODT") }
+                var encoded = try await wipProcessedRGBA(
+                    try display.renderRGBAFloat(
+                        frame, output: output,
+                        alpha: configuration.wipReview == nil ? alpha : .straight
+                    ),
+                    sourceWidth: frame.width, sourceHeight: frame.height,
+                    frameNumber: index, outputFilename: url.lastPathComponent,
+                    configuration: configuration
+                )
+                if configuration.wipReview != nil {
+                    associateStraightRGBA(&encoded.rgba, as: alpha)
+                }
                 try encodeTIFF16(
-                    try display.renderRGBAFloat(frame, output: output),
-                    width: frame.width, height: frame.height,
+                    encoded.rgba, width: encoded.width, height: encoded.height,
                     colorSpace: output.colorSpace, alpha: alpha
                 ).write(to: url, options: .atomic)
             default:
@@ -168,6 +206,45 @@ enum NativeOutputRenderer {
         }
         return directory
     }
+
+    private static func wipProcessedRGBA(
+        _ encodedRGBA: [Float],
+        sourceWidth: Int,
+        sourceHeight: Int,
+        frameNumber: Int,
+        outputFilename: String,
+        configuration: StudioResolvedRenderConfiguration
+    ) async throws -> (rgba: [Float], width: Int, height: Int) {
+        guard let preset = configuration.wipReview else {
+            return (encodedRGBA, sourceWidth, sourceHeight)
+        }
+        let result = try await WIPReviewOFXAdapter().render(
+            encodedRGBA: encodedRGBA,
+            sourceWidth: sourceWidth,
+            sourceHeight: sourceHeight,
+            frame: frameNumber,
+            frameRate: configuration.frameRate.framesPerSecond,
+            outputFilename: outputFilename,
+            preset: preset
+        )
+        return (result.rgba, result.raster.width, result.raster.height)
+    }
+
+    private static func associateStraightRGBA(
+        _ rgba: inout [Float],
+        as association: StudioColorAlphaAssociation
+    ) {
+        for offset in stride(from: 0, to: rgba.count, by: 4) {
+            let alpha = min(1, max(0, rgba[offset + 3]))
+            if association == .premultiplied {
+                rgba[offset] *= alpha
+                rgba[offset + 1] *= alpha
+                rgba[offset + 2] *= alpha
+            }
+            rgba[offset + 3] = association == .ignore ? 1 : alpha
+        }
+    }
+
 
     private static func renderDeviceSpillDelivery(
         configuration: StudioResolvedRenderConfiguration,
@@ -345,6 +422,28 @@ enum NativeOutputRenderer {
     static func outputTransform(
         for configuration: StudioResolvedRenderConfiguration
     ) throws -> StudioColorOutputTransform? {
+        if let wipReview = configuration.wipReview {
+            return switch wipReview.outputColorSpace {
+            case .rec709Gamma24:
+                StudioColorOutputTransform(
+                    id: "wip-rec709-gamma24", label: "WIP Review · Rec.709 Gamma 2.4",
+                    display: "Rec.1886 Rec.709 - Display",
+                    view: "ACES 2.0 - SDR 100 nits (Rec.709)", encoding: .rec709
+                )
+            case .rec2100PQ:
+                StudioColorOutputTransform(
+                    id: "wip-rec2100-pq", label: "WIP Review · Rec.2100 PQ",
+                    display: "Rec.2100-PQ - Display",
+                    view: "ACES 2.0 - HDR 1000 nits (Rec.2020)", encoding: .rec2100PQ
+                )
+            case .rec2100HLG:
+                StudioColorOutputTransform(
+                    id: "wip-rec2100-hlg", label: "WIP Review · Rec.2100 HLG",
+                    display: "Rec.2100-HLG - Display",
+                    view: "ACES 2.0 - HDR 1000 nits (P3 D65)", encoding: .rec2100HLG
+                )
+            }
+        }
         if configuration.target == .vfxLog {
             guard let id = configuration.vfxInterchangeEncodingID,
                   let encoding = StudioVFXInterchangeEncoding.catalog.first(where: {
@@ -356,6 +455,12 @@ enum NativeOutputRenderer {
                 )
             }
             return encoding.outputTransform
+        }
+        if configuration.target == .acescg {
+            return .technicalACEScgRaw
+        }
+        if configuration.target == .aces2065 {
+            return .technicalACES2065Raw
         }
         if configuration.pipeline == .davinciColorManaged,
            configuration.target == .sdr {
@@ -580,6 +685,9 @@ final class MovieWriter {
     private let signalRange: StudioSignalRange
     private let usesYUV: Bool
     private let usesTenBitYUV: Bool
+    private let width: Int
+    private let height: Int
+    private let outputEncoding: StudioColorOutputTransform.Encoding
 
     init(
         url: URL, width: Int, height: Int, frameRate: StudioFrameRate,
@@ -592,6 +700,9 @@ final class MovieWriter {
         self.format = format
         self.alpha = alpha
         self.signalRange = signalRange
+        self.width = width
+        self.height = height
+        outputEncoding = output.encoding
         usesYUV = format != .proRes4444 && format != .proRes4444XQ
         usesTenBitYUV = switch format {
         case .h265Low, .h265Medium, .h265High: true
@@ -628,7 +739,15 @@ final class MovieWriter {
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_SMPTE_ST_2084_PQ,
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
             ]
-        } else if output.encoding != .cameraLog {
+        } else if output.encoding == .rec2100HLG {
+            settings[AVVideoColorPropertiesKey] = [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020,
+            ]
+        } else if output.encoding != .cameraLog,
+                  output.encoding != .acescgRaw,
+                  output.encoding != .aces2065Raw {
             settings[AVVideoColorPropertiesKey] = [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
@@ -681,6 +800,7 @@ final class MovieWriter {
               let buffer else { throw NativeOutputError.cannotCreateWriter }
         if usesYUV {
             let matrix: StudioColorSignalMatrix = output.encoding == .rec2100PQ
+                || output.encoding == .rec2100HLG
                 ? .bt2020 : .bt709
             try display.renderYUV420(
                 frame,
@@ -699,6 +819,133 @@ final class MovieWriter {
         )
         guard adaptor.append(buffer, withPresentationTime: time) else {
             throw NativeOutputError.cannotAppend(presentationFrame)
+        }
+    }
+
+    /// Appends pixels that are already in the writer's exact output encoding.
+    /// This is the WIP Review boundary: no inverse ODT or second ODT is applied.
+    func appendEncodedRGBA(
+        _ rgba: [Float],
+        presentationFrame: Int
+    ) async throws {
+        guard rgba.count == width * height * 4,
+              rgba.allSatisfy(\.isFinite) else { throw NativeOutputError.invalidFrame }
+        while !input.isReadyForMoreMediaData {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        guard let pool = adaptor.pixelBufferPool else { throw NativeOutputError.cannotCreateWriter }
+        var optionalBuffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &optionalBuffer) == kCVReturnSuccess,
+              let buffer = optionalBuffer else { throw NativeOutputError.cannotCreateWriter }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        if usesYUV {
+            try writeEncodedYUV420(rgba, into: buffer)
+        } else {
+            guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+                throw NativeOutputError.cannotCreateWriter
+            }
+            let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0 ..< height {
+                let row = base.advanced(by: y * rowBytes)
+                    .assumingMemoryBound(to: UInt16.self)
+                for x in 0 ..< width {
+                    let source = (y * width + x) * 4
+                    let destination = x * 4
+                    let a = min(1, max(0, rgba[source + 3]))
+                    let association = alpha == .premultiplied ? a : 1
+                    row[destination] = Float16(rgba[source] * association).bitPattern
+                    row[destination + 1] = Float16(rgba[source + 1] * association).bitPattern
+                    row[destination + 2] = Float16(rgba[source + 2] * association).bitPattern
+                    row[destination + 3] = Float16(alpha == .ignore ? 1 : a).bitPattern
+                }
+            }
+        }
+        let time = CMTime(
+            value: CMTimeValue(presentationFrame) * CMTimeValue(frameRate.denominator),
+            timescale: CMTimeScale(frameRate.numerator)
+        )
+        guard adaptor.append(buffer, withPresentationTime: time) else {
+            throw NativeOutputError.cannotAppend(presentationFrame)
+        }
+    }
+
+    private func writeEncodedYUV420(
+        _ rgba: [Float],
+        into buffer: CVPixelBuffer
+    ) throws {
+        guard CVPixelBufferGetPlaneCount(buffer) == 2,
+              let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1) else {
+            throw NativeOutputError.cannotCreateWriter
+        }
+        let kr: Float = outputEncoding == .rec2100PQ || outputEncoding == .rec2100HLG
+            ? 0.2627 : 0.2126
+        let kb: Float = outputEncoding == .rec2100PQ || outputEncoding == .rec2100HLG
+            ? 0.0593 : 0.0722
+        let kg = 1 - kr - kb
+        let maximum: Float = usesTenBitYUV ? 1_023 : 255
+        let yOffset: Float = signalRange == .video ? (usesTenBitYUV ? 64 : 16) : 0
+        let yScale: Float = signalRange == .video ? (usesTenBitYUV ? 876 : 219) : maximum
+        let cOffset: Float = usesTenBitYUV ? 512 : 128
+        let cScale: Float = signalRange == .video ? (usesTenBitYUV ? 896 : 224) : maximum
+        let yRowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let offset = (y * width + x) * 4
+                let r = min(1, max(0, rgba[offset]))
+                let g = min(1, max(0, rgba[offset + 1]))
+                let b = min(1, max(0, rgba[offset + 2]))
+                let luma = kr * r + kg * g + kb * b
+                let code = min(maximum, max(0, yOffset + yScale * luma))
+                if usesTenBitYUV {
+                    yBase.advanced(by: y * yRowBytes)
+                        .assumingMemoryBound(to: UInt16.self)[x] = UInt16(
+                            (code * 65_535 / 1_023).rounded()
+                        )
+                } else {
+                    yBase.advanced(by: y * yRowBytes)
+                        .assumingMemoryBound(to: UInt8.self)[x] = UInt8(code.rounded())
+                }
+            }
+        }
+        let chromaWidth = CVPixelBufferGetWidthOfPlane(buffer, 1)
+        let chromaHeight = CVPixelBufferGetHeightOfPlane(buffer, 1)
+        let uvRowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1)
+        for cy in 0 ..< chromaHeight {
+            for cx in 0 ..< chromaWidth {
+                var cb: Float = 0
+                var cr: Float = 0
+                var samples: Float = 0
+                for dy in 0 ..< 2 {
+                    for dx in 0 ..< 2 {
+                        let x = min(width - 1, cx * 2 + dx)
+                        let y = min(height - 1, cy * 2 + dy)
+                        let offset = (y * width + x) * 4
+                        let r = min(1, max(0, rgba[offset]))
+                        let g = min(1, max(0, rgba[offset + 1]))
+                        let b = min(1, max(0, rgba[offset + 2]))
+                        let luma = kr * r + kg * g + kb * b
+                        cb += (b - luma) / (2 * (1 - kb))
+                        cr += (r - luma) / (2 * (1 - kr))
+                        samples += 1
+                    }
+                }
+                let cbCode = min(maximum, max(0, cOffset + cScale * cb / samples))
+                let crCode = min(maximum, max(0, cOffset + cScale * cr / samples))
+                if usesTenBitYUV {
+                    let row = uvBase.advanced(by: cy * uvRowBytes)
+                        .assumingMemoryBound(to: UInt16.self)
+                    row[cx * 2] = UInt16((cbCode * 65_535 / 1_023).rounded())
+                    row[cx * 2 + 1] = UInt16((crCode * 65_535 / 1_023).rounded())
+                } else {
+                    let row = uvBase.advanced(by: cy * uvRowBytes)
+                        .assumingMemoryBound(to: UInt8.self)
+                    row[cx * 2] = UInt8(cbCode.rounded())
+                    row[cx * 2 + 1] = UInt8(crCode.rounded())
+                }
+            }
         }
     }
 

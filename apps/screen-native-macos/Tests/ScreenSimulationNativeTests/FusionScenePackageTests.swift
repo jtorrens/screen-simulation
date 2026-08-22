@@ -72,6 +72,107 @@ private func standardSequenceConfiguration(
     )
 }
 
+private func fusionConfiguration(
+    preset: StudioRenderPreset,
+    format: StudioOutputFormat,
+    vfxEncodingID: String? = "arri-logc4-awg4"
+) -> StudioResolvedRenderConfiguration {
+    let pixelEncoding = format.defaultPixelEncoding
+    return StudioResolvedRenderConfiguration(
+        outputType: .fusionScenePackage,
+        jobName: "ColorContract",
+        overwritePolicy: .failIfExists,
+        fusionScene: .init(
+            dofMode: .fusion,
+            resolutionMode: .maximumProjectedDensity,
+            customActiveWidth: nil,
+            customActiveHeight: nil,
+            spillThresholdSceneLinear: 0.1,
+            spillFadeWidthPixels: 1
+        ),
+        composition: .deviceAndSpillTogether,
+        motionBlurEnabled: false,
+        motionSamples: 8,
+        format: format,
+        pipeline: preset.pipeline,
+        target: preset.target,
+        peakNits: preset.peakNits,
+        display: preset.display,
+        view: preset.view,
+        vfxInterchangeEncodingID: preset.target == .vfxLog ? vfxEncodingID : nil,
+        pixelEncoding: pixelEncoding,
+        signalRange: format.supportedSignalRanges(for: pixelEncoding)[0],
+        alpha: .straight,
+        includeAudio: false,
+        frameRate: .fps24,
+        firstFrame: 1,
+        lastFrame: 1
+    )
+}
+
+@Test @MainActor func everyRenderPresetColorIsIndependentFromEveryFusionFormat() throws {
+    let formats = StudioOutputFormat.allCases.filter(\.supportsFusionScenePackage)
+    #expect(formats == [.openEXR, .tiff16, .proRes4444, .proRes4444XQ])
+    for preset in StudioRenderPreset.builtIns {
+        for format in formats {
+            let configuration = fusionConfiguration(preset: preset, format: format)
+            try configuration.validate()
+            let color = try FusionMediaColorContract.resolve(configuration)
+            #expect(!color.encodingDescription.isEmpty)
+            #expect(!color.transformDescription.isEmpty)
+            #expect(try NativeOutputRenderer.outputTransform(for: configuration) != nil)
+        }
+    }
+}
+
+@Test func fusionUsesExactNativeHDRDCMAndVFXTransforms() throws {
+    let acesHDR = try FusionMediaColorContract.resolve(fusionConfiguration(
+        preset: StudioRenderPreset.builtIns.first { $0.name == "ACES · HDR" }!,
+        format: .openEXR
+    ))
+    #expect(acesHDR.node == .acesTransform(
+        inputID: "IDT_REC2100_ST2084_1000_INV_ODT"
+    ))
+    let acesTool = acesHDR.fusionTool(
+        name: "DeviceToACEScg", source: "DeviceRGBA", x: 0, y: 0
+    )
+    #expect(acesTool.contains("DeviceToACEScg = AcesTransform"))
+    #expect(acesTool.contains("IDT_REC2100_ST2084_1000_INV_ODT"))
+
+    let dcmHDR = try FusionMediaColorContract.resolve(fusionConfiguration(
+        preset: StudioRenderPreset.builtIns.first { $0.name == "DCM · HDR" }!,
+        format: .proRes4444
+    ))
+    #expect(dcmHDR.node == .colorSpaceTransform(
+        inputColorSpaceID: "REC2020_COLORSPACE", inputGammaID: "PQ1000_GAMMA"
+    ))
+    let dcmTool = dcmHDR.fusionTool(
+        name: "SpillToACEScg", source: "SpillRGBA", x: 0, y: 0
+    )
+    #expect(dcmTool.contains("SpillToACEScg = ColorSpaceTransform"))
+    #expect(dcmTool.contains("OutputColorSpace = Input { Value = FuID { \"ACES_AP1_COLORSPACE\" } }"))
+    #expect(dcmTool.contains("ToneMapping = Input { Value = FuID { \"TM_NONE\" } }"))
+
+    let vfxPreset = StudioRenderPreset.builtIns.first { $0.target == .vfxLog }!
+    for encoding in StudioVFXInterchangeEncoding.catalog {
+        let color = try FusionMediaColorContract.resolve(fusionConfiguration(
+            preset: vfxPreset, format: .tiff16, vfxEncodingID: encoding.id
+        ))
+        #expect(color.encodingDescription.contains(encoding.label))
+    }
+}
+
+@Test @MainActor func changingFusionColorPresetPreservesTheSelectedFormat() {
+    let model = WorkspaceModel()
+    model.changeRenderOutputType(.fusionScenePackage)
+    model.changeOutputFormat(.tiff16)
+    let hdr = StudioRenderPreset.builtIns.first { $0.name == "ACES · HDR" }!
+    model.applyRenderPreset(hdr)
+    #expect(model.outputFormat == .tiff16)
+    #expect(model.renderPreset == hdr)
+    #expect(model.outputAlphaMode == .straight)
+}
+
 private func camera(frame: Int = 1, z: Double = 1) -> FusionCameraKeyframe {
     FusionCameraKeyframe(
         frame: frame,
@@ -322,7 +423,7 @@ private func temporaryDirectory() throws -> URL {
             ),
             referencePlate: nil
         )
-        let comp = FusionScenePackageWriter.fusionComp(
+        let comp = try FusionScenePackageWriter.fusionComp(
             request: request,
             prepared: .init(
                 width: 12,
@@ -416,7 +517,7 @@ private func temporaryDirectory() throws -> URL {
             placementID: "fill-crop", width: 2048, height: 858
         )
     )
-    let comp = FusionScenePackageWriter.fusionComp(
+    let comp = try FusionScenePackageWriter.fusionComp(
         request: request,
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [], spillRGBA: [])
     )
@@ -468,7 +569,7 @@ private func temporaryDirectory() throws -> URL {
             placementID: "fill-crop", width: 2048, height: 858
         )
     )
-    let comp = FusionScenePackageWriter.fusionComp(
+    let comp = try FusionScenePackageWriter.fusionComp(
         request: request,
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [], spillRGBA: [])
     )

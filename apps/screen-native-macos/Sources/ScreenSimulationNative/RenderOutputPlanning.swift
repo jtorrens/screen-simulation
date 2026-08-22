@@ -6,6 +6,7 @@ enum RenderOutputPlanningError: Error, LocalizedError, Equatable {
     case selectedDirectoryRequired
     case destinationExists(URL)
     case generatedFileExists(URL)
+    case noAvailableVersion
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum RenderOutputPlanningError: Error, LocalizedError, Equatable {
             "El destino ya existe: \(url.lastPathComponent)"
         case let .generatedFileExists(url):
             "El archivo generado ya existe: \(url.lastPathComponent)"
+        case .noAvailableVersion:
+            "No queda una versión disponible entre v002 y v9999."
         }
     }
 }
@@ -220,6 +223,65 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
             destination: destination,
             generatedRelativePaths: generatedRelativePaths + [relativePath]
         )
+    }
+
+    /// Allocates one coherent version for every artifact in the deliverable.
+    /// The unsuffixed plan is logical v001; version allocation starts at v002.
+    func nextAvailableVersion(
+        configuration: StudioResolvedRenderConfiguration,
+        fileManager: FileManager = .default
+    ) throws -> (configuration: StudioResolvedRenderConfiguration, plan: Self) {
+        let jobIdentity = Self.versionIdentity(configuration.jobName)
+        let firstVersion = max(2, (jobIdentity.version ?? 1) + 1)
+        guard firstVersion <= 9_999 else {
+            throw RenderOutputPlanningError.noAvailableVersion
+        }
+        for version in firstVersion ... 9_999 {
+            let suffix = String(format: "_v%03d", version)
+            let candidateConfiguration = configuration.replacingJobName(
+                jobIdentity.base + suffix
+            )
+            let candidate: Self
+            switch kind {
+            case .singleFile:
+                let ext = destination.pathExtension
+                let stem = Self.versionIdentity(
+                    destination.deletingPathExtension().lastPathComponent
+                ).base
+                let parent = destination.deletingLastPathComponent()
+                let url = parent.appendingPathComponent(stem + suffix)
+                    .appendingPathExtension(ext)
+                candidate = Self(
+                    kind: .singleFile,
+                    destination: url,
+                    generatedRelativePaths: [url.lastPathComponent]
+                )
+            case .imageSequence, .deviceSpillDelivery, .fusionScenePackage:
+                candidate = try Self.prepare(
+                    configuration: candidateConfiguration,
+                    selectedDestination: destination.deletingLastPathComponent()
+                )
+            }
+            if try candidate.inspectCollision(fileManager: fileManager) == .none {
+                return (candidateConfiguration, candidate)
+            }
+        }
+        throw RenderOutputPlanningError.noAvailableVersion
+    }
+
+    private static func versionIdentity(
+        _ value: String
+    ) -> (base: String, version: Int?) {
+        guard let marker = value.range(of: "_v", options: .backwards) else {
+            return (value, nil)
+        }
+        let digits = value[marker.upperBound...]
+        guard (3 ... 4).contains(digits.count),
+              digits.allSatisfy(\.isNumber),
+              let version = Int(digits), version >= 2 else {
+            return (value, nil)
+        }
+        return (String(value[..<marker.lowerBound]), version)
     }
 
     private static func validateJobName(_ name: String) throws {
