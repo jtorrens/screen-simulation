@@ -122,7 +122,6 @@ struct PhysicalSignalPreparationKey {
 
 struct PhysicalSignalPreparation {
     key: PhysicalSignalPreparationKey,
-    source_row_prefix: Texture,
     device_row_prefix: Texture,
     glow_lobes: Vec<Texture>,
     native_emission_signal: Texture,
@@ -523,38 +522,29 @@ impl MetalPhysicalPipeline {
         Ok(destination)
     }
 
-    fn row_prefix_textures(
+    fn row_prefix_texture(
         &self,
-        source_acescg: &TextureRef,
         device_signal: &TextureRef,
-    ) -> Result<(Texture, Texture), MetalPhysicalPipelineError> {
-        let device = source_acescg.device();
-        let descriptor_for = |source: &TextureRef| {
-            let descriptor = TextureDescriptor::new();
-            descriptor.set_texture_type(MTLTextureType::D2);
-            descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
-            descriptor.set_width(source.width() + 1);
-            descriptor.set_height(source.height());
-            descriptor.set_storage_mode(MTLStorageMode::Private);
-            descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
-            descriptor
-        };
-        let source_prefix = device.new_texture(&descriptor_for(source_acescg));
-        let device_prefix = device.new_texture(&descriptor_for(device_signal));
+    ) -> Result<Texture, MetalPhysicalPipelineError> {
+        let device = device_signal.device();
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        descriptor.set_width(device_signal.width() + 1);
+        descriptor.set_height(device_signal.height());
+        descriptor.set_storage_mode(MTLStorageMode::Private);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        let device_prefix = device.new_texture(&descriptor);
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.row_prefix_pipeline);
-        let dispatch = |source: &TextureRef, destination: &TextureRef| {
-            encoder.set_texture(0, Some(source));
-            encoder.set_texture(1, Some(destination));
-            let width = self.row_prefix_pipeline.thread_execution_width().max(1);
-            encoder.dispatch_threads(
-                MTLSize::new(source.height(), 1, 1),
-                MTLSize::new(width, 1, 1),
-            );
-        };
-        dispatch(source_acescg, &source_prefix);
-        dispatch(device_signal, &device_prefix);
+        encoder.set_texture(0, Some(device_signal));
+        encoder.set_texture(1, Some(&device_prefix));
+        let width = self.row_prefix_pipeline.thread_execution_width().max(1);
+        encoder.dispatch_threads(
+            MTLSize::new(device_signal.height(), 1, 1),
+            MTLSize::new(width, 1, 1),
+        );
         encoder.end_encoding();
         command.commit();
         command.wait_until_completed();
@@ -563,7 +553,7 @@ impl MetalPhysicalPipeline {
                 "physical row-prefix construction did not complete".to_owned(),
             ));
         }
-        Ok((source_prefix, device_prefix))
+        Ok(device_prefix)
     }
 
     fn glow_lobe_textures(
@@ -707,7 +697,6 @@ impl MetalPhysicalPipeline {
 
     fn prepare_physical_signal(
         &self,
-        source_acescg: &TextureRef,
         device_signal: &TextureRef,
         params: &PhysicalPipelineParams,
         key: PhysicalSignalPreparationKey,
@@ -715,8 +704,7 @@ impl MetalPhysicalPipeline {
         #[cfg(test)]
         self.signal_preparation_count
             .fetch_add(1, Ordering::Relaxed);
-        let (source_row_prefix, device_row_prefix) =
-            self.row_prefix_textures(source_acescg, device_signal)?;
+        let device_row_prefix = self.row_prefix_texture(device_signal)?;
         let (glow_lobes, native_emission_signal, native_emission_prefix) =
             self.glow_lobe_textures(device_signal, params)?;
         let zero_veiling = [0.0_f32; 4];
@@ -770,7 +758,6 @@ impl MetalPhysicalPipeline {
         }
         Ok(PhysicalSignalPreparation {
             key,
-            source_row_prefix,
             device_row_prefix,
             glow_lobes,
             native_emission_signal,
@@ -1279,7 +1266,9 @@ impl MetalPhysicalPipeline {
                     encoder.set_texture(0, Some(samples[0].0));
                     encoder.set_texture(1, Some(samples[0].1));
                     encoder.set_texture(2, Some(&accumulated));
-                    encoder.set_texture(3, Some(&preparation.source_row_prefix));
+                    // Source ACEScg is never area-integrated in the physical kernel; slot 3 is
+                    // retained for the compiled signature and aliases the exact Device prefix.
+                    encoder.set_texture(3, Some(&preparation.device_row_prefix));
                     encoder.set_texture(4, Some(&preparation.device_row_prefix));
                     encoder.set_texture(5, environment_acescg);
                     for (index, lobe) in preparation.glow_lobes.iter().enumerate() {
@@ -2132,7 +2121,6 @@ impl MetalPhysicalPipeline {
                 index
             } else {
                 cache.push(self.prepare_physical_signal(
-                    source_acescg,
                     device_signal,
                     &params,
                     preparation_key,
@@ -2141,15 +2129,10 @@ impl MetalPhysicalPipeline {
             };
             &cache[index]
         } else {
-            owned_preparation = self.prepare_physical_signal(
-                source_acescg,
-                device_signal,
-                &params,
-                preparation_key,
-            )?;
+            owned_preparation =
+                self.prepare_physical_signal(device_signal, &params, preparation_key)?;
             &owned_preparation
         };
-        let source_row_prefix = &preparation.source_row_prefix;
         let device_row_prefix = &preparation.device_row_prefix;
         let glow_lobes = &preparation.glow_lobes;
         let native_emission_signal = &preparation.native_emission_signal;
@@ -2240,7 +2223,9 @@ impl MetalPhysicalPipeline {
             encoder.set_texture(0, Some(source_acescg));
             encoder.set_texture(1, Some(device_signal));
             encoder.set_texture(2, Some(&output));
-            encoder.set_texture(3, Some(&source_row_prefix));
+            // Source ACEScg is never area-integrated in the physical kernel; slot 3 aliases the
+            // Device prefix without allocating or building an unused Source prefix texture.
+            encoder.set_texture(3, Some(&device_row_prefix));
             encoder.set_texture(4, Some(&device_row_prefix));
             encoder.set_texture(5, environment_acescg);
             for (index, lobe) in glow_lobes.iter().enumerate() {

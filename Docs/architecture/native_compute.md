@@ -132,7 +132,7 @@ same reduction and floating-point order while preventing scene motion from resca
 Device raster.
 
 Within one temporal evaluation, Media first reuses the decoded ACEScg and Feeder Signal textures
-only for an equal exact retained source-frame identity. Metal then reuses source/Device row-prefixes,
+only for an equal exact retained source-frame identity. Metal then reuses the Device row-prefix,
 post-EOTF native-emission preparation and keyed Device-glow lobes when both borrowed texture
 identities and every preparation parameter are exactly equal. Camera pose, Device pose, projection,
 lens/cover evaluation, veiling projection, temporal emission gain and interval accumulation remain
@@ -144,6 +144,8 @@ summed-area representation is built. Every continuous, carrier and subpixel opti
 integrates that linear artifact; neither CPU nor Metal reapplies EOTF or alpha after averaging a
 moving projected footprint. Subpixel stripe coverage and the footprint-filtered uniformity gain
 remain per sample because their support is defined by that sample's resolved projection.
+Source ACEScg is never area-integrated by this physical kernel, so preparation cannot allocate or
+scan a Source row-prefix texture that no named artifact consumes.
 
 The native-shell physical-frame ABI has one earlier flat-panel compute slice with no camera,
 lens, sensor, temporal, cover or environment operation. Application prepares one immutable
