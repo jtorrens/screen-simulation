@@ -1231,6 +1231,18 @@ def validate_migration_backup_contract() -> None:
             )
 
 
+def validate_native_package_relinks_bridge() -> None:
+    packaging = (ROOT / "scripts/build_native_macos.py").read_text(encoding="utf-8")
+    cargo_build = 'run(["cargo", "build", "--release", "-p", "screen-native-bridge"])'
+    swift_clean = 'run(["swift", "package", "clean"], PACKAGE)'
+    swift_build = 'run(["swift", "build", "-c", "release"], PACKAGE)'
+    positions = [packaging.find(item) for item in (cargo_build, swift_clean, swift_build)]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        raise ValidationError(
+            "native packaging must build Rust, clean SwiftPM, then relink the release executable"
+        )
+
+
 def main() -> int:
     try:
         paths = repository_paths()
@@ -1253,6 +1265,7 @@ def main() -> int:
         validate_reference_matte_transport()
         validate_wip_review_metal_contract()
         validate_migration_backup_contract()
+        validate_native_package_relinks_bridge()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
         print(f"architecture validation failed: {error}", file=sys.stderr)

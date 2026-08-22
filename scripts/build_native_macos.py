@@ -108,6 +108,11 @@ def main() -> int:
     ])
     run(["cmake", "--build", str(WIP_HOST_BUILD), "-j", "8"])
     run(["cargo", "build", "--release", "-p", "screen-native-bridge"])
+    # SwiftPM does not track the Rust static archive supplied through the package's linker
+    # search path. A normal incremental `swift build` can therefore reuse an executable linked
+    # against an earlier bridge even after Cargo rebuilt it. Packaging is the publication
+    # boundary, so force SwiftPM to compile and link the exact native archive built above.
+    run(["swift", "package", "clean"], PACKAGE)
     run(["swift", "build", "-c", "release"], PACKAGE)
     if BUNDLE.exists():
         shutil.rmtree(BUNDLE)

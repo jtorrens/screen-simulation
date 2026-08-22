@@ -5,7 +5,7 @@ Status: normative.
 <!-- decision-ref: architecture.decision-coherence -->
 <!-- decision-ref: ui.workspace-navigation -->
 
-Headless-output coverage proves preparation cannot activate or submit an interactive Preview, every requested output frame produces exactly one physical submission, an explicit output temporal-sample count replaces the authored Preview count, and zero shutter contribution remains one sample. Settings coverage proves incomplete numeric keyboard text remains local until Return or focus loss and cannot be rejected or persisted per keypress.
+Headless-output coverage proves preparation cannot activate or submit an interactive Preview, every requested output frame produces exactly one physical submission, an explicit output temporal-sample count replaces the authored Preview count, and zero shutter contribution remains one sample. The macOS packaging boundary must force SwiftPM to relink the exact Rust static bridge built in that same invocation; an incrementally reused executable linked against an earlier bridge is not a valid package. Settings coverage proves incomplete numeric keyboard text remains local until Return or focus loss and cannot be rejected or persisted per keypress.
 
 WIP Review host coverage proves the shipped CPU route preserves independent straight RGB and alpha at 0, 0.5 and 1. Metal cannot be advertised until the exact bundle passes that same test; a GPU failure cannot trigger a CPU retry inside a render attempt.
 
