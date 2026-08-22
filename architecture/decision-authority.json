@@ -151,6 +151,8 @@
         "crates/screen-platform/src/physical_pipeline_metal.rs",
         "crates/screen-application/src/setup_diagnostics.rs",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
         "scripts/check_architecture.py"
       ]
     },

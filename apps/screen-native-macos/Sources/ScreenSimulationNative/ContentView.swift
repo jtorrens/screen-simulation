@@ -551,10 +551,9 @@ struct ContentView: View {
             if let image = selectedTestImage {
                 Form {
                     Section("Interpretación explícita") {
-                        TextField("Nombre", text: Binding(
-                            get: { image.name },
-                            set: { value in library.updateSelectedImage { $0.name = value } }
-                        ))
+                        CommittedTextField(label: "Nombre", value: image.name) { value in
+                            library.updateSelectedImage { $0.name = value }
+                        }
                         Picker("Input Transform", selection: Binding(
                             get: { image.inputTransformID },
                             set: { value in library.updateSelectedImage { $0.inputTransformID = value } }
@@ -632,12 +631,9 @@ struct ContentView: View {
             if let item = library.selectedPatternItem {
                 Form {
                     Section("Patrón") {
-                        TextField("Nombre", text: Binding(
-                            get: { item.name },
-                            set: { value in
-                                library.updateSelectedPattern { $0.name = value }
-                            }
-                        ))
+                        CommittedTextField(label: "Nombre", value: item.name) { value in
+                            library.updateSelectedPattern { $0.name = value }
+                        }
                         Picker("Fuente canónica", selection: Binding(
                             get: { item.pattern },
                             set: { value in
@@ -706,10 +702,9 @@ struct ContentView: View {
             if let preset = selectedGlobalPreset {
                 Form {
                     Section("Configuración efectiva") {
-                        TextField("Nombre", text: Binding(
-                            get: { preset.name },
-                            set: { value in library.updateSelectedPreset { $0.name = value } }
-                        ))
+                        CommittedTextField(label: "Nombre", value: preset.name) { value in
+                            library.updateSelectedPreset { $0.name = value }
+                        }
                         Picker("Pipeline", selection: Binding(
                             get: { preset.pipeline },
                             set: { value in updatePresetPipeline(value) }
@@ -727,10 +722,9 @@ struct ContentView: View {
                             Text("ACEScg").tag(StudioRenderTarget.acescg)
                             Text("VFX Log / Gamut").tag(StudioRenderTarget.vfxLog)
                         }
-                        TextField("Peak nits", value: Binding(
-                            get: { preset.peakNits },
-                            set: { value in library.updateSelectedPreset { $0.peakNits = value } }
-                        ), format: .number)
+                        CommittedNumberField(label: "Peak nits", value: preset.peakNits) { value in
+                            library.updateSelectedPreset { $0.peakNits = value }
+                        }
                         Picker("Formato / codec", selection: Binding(
                             get: { preset.format },
                             set: { value in
@@ -820,10 +814,9 @@ struct ContentView: View {
             if let item = library.selectedWIPReviewPresetItem {
                 Form {
                     Section("Identidad y color") {
-                        TextField("Nombre", text: Binding(
-                            get: { item.name },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.name = value } }
-                        ))
+                        CommittedTextField(label: "Nombre", value: item.name) { value in
+                            library.updateSelectedWIPReviewPreset { $0.name = value }
+                        }
                         Picker("Output Color Space", selection: Binding(
                             get: { item.outputColorSpace },
                             set: { value in library.updateSelectedWIPReviewPreset { $0.outputColorSpace = value } }
@@ -843,14 +836,12 @@ struct ContentView: View {
                             }
                         )) { ForEach(StudioWIPReviewRaster.allCases) { Text($0.rawValue).tag($0) } }
                         if item.reviewRaster == .custom {
-                            TextField("Ancho", value: Binding(
-                                get: { item.customWidth ?? 1920 },
-                                set: { value in library.updateSelectedWIPReviewPreset { $0.customWidth = value } }
-                            ), format: .number)
-                            TextField("Alto", value: Binding(
-                                get: { item.customHeight ?? 1080 },
-                                set: { value in library.updateSelectedWIPReviewPreset { $0.customHeight = value } }
-                            ), format: .number)
+                            CommittedNumberField(label: "Ancho", value: item.customWidth ?? 1920) { value in
+                                library.updateSelectedWIPReviewPreset { $0.customWidth = value }
+                            }
+                            CommittedNumberField(label: "Alto", value: item.customHeight ?? 1080) { value in
+                                library.updateSelectedWIPReviewPreset { $0.customHeight = value }
+                            }
                         }
                         Picker("Placement", selection: Binding(
                             get: { item.placement },
@@ -885,10 +876,9 @@ struct ContentView: View {
                         wipColorEditor("Color RGBA", item.blankingColor, keyPath: \.blankingColor)
                     }
                     Section("Tipografía y gráficos") {
-                        TextField("Familia", text: Binding(
-                            get: { item.fontFamily },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.fontFamily = value } }
-                        ))
+                        CommittedTextField(label: "Familia", value: item.fontFamily) { value in
+                            library.updateSelectedWIPReviewPreset { $0.fontFamily = value }
+                        }
                         Picker("Estilo", selection: Binding(
                             get: { item.fontStyle },
                             set: { value in library.updateSelectedWIPReviewPreset { $0.fontStyle = value } }
@@ -924,14 +914,12 @@ struct ContentView: View {
                         wipColorEditor("Sombra RGBA", item.shadowColor, keyPath: \.shadowColor)
                     }
                     Section("Timing") {
-                        TextField("Frame Relative Base", value: Binding(
-                            get: { item.frameRelativeBase },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.frameRelativeBase = value } }
-                        ), format: .number)
-                        TextField("Frame Start", value: Binding(
-                            get: { item.frameStart },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.frameStart = value } }
-                        ), format: .number)
+                        CommittedNumberField(label: "Frame Relative Base", value: item.frameRelativeBase) { value in
+                            library.updateSelectedWIPReviewPreset { $0.frameRelativeBase = value }
+                        }
+                        CommittedNumberField(label: "Frame Start", value: item.frameStart) { value in
+                            library.updateSelectedWIPReviewPreset { $0.frameStart = value }
+                        }
                         Picker("FPS", selection: Binding(
                             get: { item.frameRateMode },
                             set: { value in library.updateSelectedWIPReviewPreset { $0.frameRateMode = value } }
@@ -939,14 +927,12 @@ struct ContentView: View {
                         if item.frameRateMode == .override {
                             wipDoubleField("FPS Override", item.frameRateOverride, keyPath: \.frameRateOverride)
                         }
-                        TextField("Timecode Start", text: Binding(
-                            get: { item.timecodeStart },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.timecodeStart = value } }
-                        ))
-                        TextField("Review Date", text: Binding(
-                            get: { item.reviewDate },
-                            set: { value in library.updateSelectedWIPReviewPreset { $0.reviewDate = value } }
-                        ))
+                        CommittedTextField(label: "Timecode Start", value: item.timecodeStart) { value in
+                            library.updateSelectedWIPReviewPreset { $0.timecodeStart = value }
+                        }
+                        CommittedTextField(label: "Review Date", value: item.reviewDate) { value in
+                            library.updateSelectedWIPReviewPreset { $0.reviewDate = value }
+                        }
                     }
                     Section("Zonas") {
                         ForEach(item.zones) { zone in
@@ -955,10 +941,9 @@ struct ContentView: View {
                                     get: { zone.enabled },
                                     set: { value in updateWIPZone(zone.position) { $0.enabled = value } }
                                 ))
-                                TextField("Texto", text: Binding(
-                                    get: { zone.prefix },
-                                    set: { value in updateWIPZone(zone.position) { $0.prefix = value } }
-                                ))
+                                CommittedTextField(label: "Texto", value: zone.prefix) { value in
+                                    updateWIPZone(zone.position) { $0.prefix = value }
+                                }
                                 Picker("Campo", selection: Binding(
                                     get: { zone.calculatedField },
                                     set: { value in updateWIPZone(zone.position) { $0.calculatedField = value } }
@@ -974,18 +959,16 @@ struct ContentView: View {
                                     get: { zone.fontSize.enabled },
                                     set: { value in updateWIPZone(zone.position) { $0.fontSize.enabled = value } }
                                 ))
-                                TextField("Tamaño", value: Binding(
-                                    get: { zone.fontSize.value },
-                                    set: { value in updateWIPZone(zone.position) { $0.fontSize.value = value } }
-                                ), format: .number)
+                                CommittedNumberField(label: "Tamaño", value: zone.fontSize.value) { value in
+                                    updateWIPZone(zone.position) { $0.fontSize.value = value }
+                                }
                                 Toggle("Opacidad propia", isOn: Binding(
                                     get: { zone.opacity.enabled },
                                     set: { value in updateWIPZone(zone.position) { $0.opacity.enabled = value } }
                                 ))
-                                TextField("Opacidad", value: Binding(
-                                    get: { zone.opacity.value },
-                                    set: { value in updateWIPZone(zone.position) { $0.opacity.value = value } }
-                                ), format: .number)
+                                CommittedNumberField(label: "Opacidad", value: zone.opacity.value) { value in
+                                    updateWIPZone(zone.position) { $0.opacity.value = value }
+                                }
                             }
                             Toggle("Color propio", isOn: Binding(
                                 get: { zone.color.enabled },
@@ -993,12 +976,14 @@ struct ContentView: View {
                             ))
                             HStack {
                                 ForEach(["R", "G", "B", "A"], id: \.self) { channel in
-                                    TextField(channel, value: Binding(
-                                        get: { wipZoneColorComponent(zone.color.value, channel: channel) },
-                                        set: { value in updateWIPZone(zone.position) {
+                                    CommittedNumberField(
+                                        label: channel,
+                                        value: wipZoneColorComponent(zone.color.value, channel: channel)
+                                    ) { value in
+                                        updateWIPZone(zone.position) {
                                             setWIPZoneColorComponent(&$0.color.value, channel: channel, value: value)
-                                        } }
-                                    ), format: .number)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1025,12 +1010,9 @@ struct ContentView: View {
         _ value: Double,
         keyPath: WritableKeyPath<StudioWIPReviewPreset, Double>
     ) -> some View {
-        TextField(label, value: Binding(
-            get: { value },
-            set: { newValue in
-                library.updateSelectedWIPReviewPreset { $0[keyPath: keyPath] = newValue }
-            }
-        ), format: .number)
+        CommittedNumberField(label: label, value: value) { newValue in
+            library.updateSelectedWIPReviewPreset { $0[keyPath: keyPath] = newValue }
+        }
     }
 
     private func wipDoubleField(
@@ -1038,12 +1020,9 @@ struct ContentView: View {
         _ value: Double,
         mutation: @escaping (inout StudioWIPReviewPreset, Double) -> Void
     ) -> some View {
-        TextField(label, value: Binding(
-            get: { value },
-            set: { newValue in
-                library.updateSelectedWIPReviewPreset { mutation(&$0, newValue) }
-            }
-        ), format: .number)
+        CommittedNumberField(label: label, value: value) { newValue in
+            library.updateSelectedWIPReviewPreset { mutation(&$0, newValue) }
+        }
     }
 
     private func wipColorEditor(
@@ -1054,12 +1033,14 @@ struct ContentView: View {
         HStack {
             Text(label)
             ForEach(["R", "G", "B", "A"], id: \.self) { channel in
-                TextField(channel, value: Binding(
-                    get: { wipZoneColorComponent(color, channel: channel) },
-                    set: { value in library.updateSelectedWIPReviewPreset {
+                CommittedNumberField(
+                    label: channel,
+                    value: wipZoneColorComponent(color, channel: channel)
+                ) { value in
+                    library.updateSelectedWIPReviewPreset {
                         setWIPZoneColorComponent(&$0[keyPath: keyPath], channel: channel, value: value)
-                    } }
-                ), format: .number)
+                    }
+                }
                 .frame(minWidth: 42)
             }
         }
@@ -1070,10 +1051,9 @@ struct ContentView: View {
         _ zone: StudioWIPReviewZone,
         keyPath: WritableKeyPath<StudioWIPReviewZone, Double>
     ) -> some View {
-        TextField(label, value: Binding(
-            get: { zone[keyPath: keyPath] },
-            set: { value in updateWIPZone(zone.position) { $0[keyPath: keyPath] = value } }
-        ), format: .number)
+        CommittedNumberField(label: label, value: zone[keyPath: keyPath]) { value in
+            updateWIPZone(zone.position) { $0[keyPath: keyPath] = value }
+        }
     }
 
     private func wipZoneColorComponent(
@@ -1184,22 +1164,18 @@ struct ContentView: View {
             if let camera = library.selectedCameraItem?.value {
                 Form {
                     Section("Identidad y sensor") {
-                        TextField("Nombre", text: Binding(
-                            get: { camera.name },
-                            set: { value in library.updateSelectedCamera { $0.name = value } }
-                        ))
-                        TextField("Gate ancho (mm)", value: Binding(
-                            get: { camera.gateWidthMillimeters },
-                            set: { value in library.updateSelectedCamera { $0.gateWidthMillimeters = value } }
-                        ), format: .number)
-                        TextField("Gate alto (mm)", value: Binding(
-                            get: { camera.gateHeightMillimeters },
-                            set: { value in library.updateSelectedCamera { $0.gateHeightMillimeters = value } }
-                        ), format: .number)
-                        TextField("F-stop predeterminado", value: Binding(
-                            get: { camera.defaultFStop },
-                            set: { value in library.updateSelectedCamera { $0.defaultFStop = value } }
-                        ), format: .number)
+                        CommittedTextField(label: "Nombre", value: camera.name) { value in
+                            library.updateSelectedCamera { $0.name = value }
+                        }
+                        CommittedNumberField(label: "Gate ancho (mm)", value: camera.gateWidthMillimeters) { value in
+                            library.updateSelectedCamera { $0.gateWidthMillimeters = value }
+                        }
+                        CommittedNumberField(label: "Gate alto (mm)", value: camera.gateHeightMillimeters) { value in
+                            library.updateSelectedCamera { $0.gateHeightMillimeters = value }
+                        }
+                        CommittedNumberField(label: "F-stop predeterminado", value: camera.defaultFStop) { value in
+                            library.updateSelectedCamera { $0.defaultFStop = value }
+                        }
                         Picker("Lente predeterminada", selection: Binding(
                             get: { camera.defaultLensID },
                             set: { value in library.updateSelectedCamera { $0.defaultLensID = value } }
@@ -1247,22 +1223,18 @@ struct ContentView: View {
             if let lens = library.selectedLensItem?.value {
                 Form {
                     Section("Perfil óptico") {
-                        TextField("Nombre", text: Binding(
-                            get: { lens.name },
-                            set: { value in library.updateSelectedLens { $0.name = value } }
-                        ))
-                        TextField("Focal nominal (mm)", value: Binding(
-                            get: { lens.nominalFocalLengthMillimeters },
-                            set: { value in library.updateSelectedLens { $0.nominalFocalLengthMillimeters = value } }
-                        ), format: .number)
-                        TextField("Viñeteo", value: Binding(
-                            get: { lens.vignettingStrength },
-                            set: { value in library.updateSelectedLens { $0.vignettingStrength = value } }
-                        ), format: .number)
-                        TextField("Veiling glare", value: Binding(
-                            get: { lens.veilingGlareFraction },
-                            set: { value in library.updateSelectedLens { $0.veilingGlareFraction = value } }
-                        ), format: .number)
+                        CommittedTextField(label: "Nombre", value: lens.name) { value in
+                            library.updateSelectedLens { $0.name = value }
+                        }
+                        CommittedNumberField(label: "Focal nominal (mm)", value: lens.nominalFocalLengthMillimeters) { value in
+                            library.updateSelectedLens { $0.nominalFocalLengthMillimeters = value }
+                        }
+                        CommittedNumberField(label: "Viñeteo", value: lens.vignettingStrength) { value in
+                            library.updateSelectedLens { $0.vignettingStrength = value }
+                        }
+                        CommittedNumberField(label: "Veiling glare", value: lens.veilingGlareFraction) { value in
+                            library.updateSelectedLens { $0.veilingGlareFraction = value }
+                        }
                     }
                 }.formStyle(.grouped).disabled(library.selectedLensItem?.isLocked == true)
             } else {
@@ -1298,22 +1270,18 @@ struct ContentView: View {
             if let profile = library.selectedEnvironmentItem?.value {
                 Form {
                     Section("Entorno procedural") {
-                        TextField("Nombre", text: Binding(
-                            get: { profile.name },
-                            set: { value in library.updateSelectedEnvironment { $0.name = value } }
-                        ))
-                        TextField("Radio angular key (°)", value: Binding(
-                            get: { profile.environment.keyAngularRadiusDegrees },
-                            set: { value in library.updateSelectedEnvironment { $0.environment.keyAngularRadiusDegrees = value } }
-                        ), format: .number)
-                        TextField("Rotación X (°)", value: Binding(
-                            get: { profile.environment.rotationXDegrees },
-                            set: { value in library.updateSelectedEnvironment { $0.environment.rotationXDegrees = value } }
-                        ), format: .number)
-                        TextField("Rotación Y (°)", value: Binding(
-                            get: { profile.environment.rotationYDegrees },
-                            set: { value in library.updateSelectedEnvironment { $0.environment.rotationYDegrees = value } }
-                        ), format: .number)
+                        CommittedTextField(label: "Nombre", value: profile.name) { value in
+                            library.updateSelectedEnvironment { $0.name = value }
+                        }
+                        CommittedNumberField(label: "Radio angular key (°)", value: profile.environment.keyAngularRadiusDegrees) { value in
+                            library.updateSelectedEnvironment { $0.environment.keyAngularRadiusDegrees = value }
+                        }
+                        CommittedNumberField(label: "Rotación X (°)", value: profile.environment.rotationXDegrees) { value in
+                            library.updateSelectedEnvironment { $0.environment.rotationXDegrees = value }
+                        }
+                        CommittedNumberField(label: "Rotación Y (°)", value: profile.environment.rotationYDegrees) { value in
+                            library.updateSelectedEnvironment { $0.environment.rotationYDegrees = value }
+                        }
                     }
                 }.formStyle(.grouped).disabled(library.selectedEnvironmentItem?.isLocked == true)
             } else {
@@ -1380,12 +1348,9 @@ struct ContentView: View {
     private func coverGlassEditor(_ cover: CoverGlassDefinition) -> some View {
         Form {
             Section("Identidad") {
-                TextField("Nombre", text: Binding(
-                    get: { cover.name },
-                    set: { value in
-                        library.updateSelectedCoverGlass { $0.name = value }
-                    }
-                ))
+                CommittedTextField(label: "Nombre", value: cover.name) { value in
+                    library.updateSelectedCoverGlass { $0.name = value }
+                }
                 Picker("Autoridad", selection: Binding(
                     get: { cover.authority },
                     set: { value in
@@ -1438,12 +1403,9 @@ struct ContentView: View {
                 coverGlassField("Anisotropía", value: cover.agMicrotextureAnisotropy) {
                     $0.agMicrotextureAnisotropy = $1
                 }
-                TextField("Semilla", value: Binding(
-                    get: { cover.agMicrotextureSeed },
-                    set: { value in
-                        library.updateSelectedCoverGlass { $0.agMicrotextureSeed = value }
-                    }
-                ), format: .number.grouping(.never))
+                CommittedNumberField(label: "Semilla", value: cover.agMicrotextureSeed) { value in
+                    library.updateSelectedCoverGlass { $0.agMicrotextureSeed = value }
+                }
             }
             Section("Resplandor de emisión") {
                 coverGlassField("Intensidad", value: cover.glowCharacterStrength) {
@@ -1461,14 +1423,14 @@ struct ContentView: View {
             }
             Section("Absorción por milímetro") {
                 ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { channel in
-                    TextField(channel.element, value: Binding(
-                        get: { cover.absorptionPerMillimeter[channel.offset] },
-                        set: { value in
-                            library.updateSelectedCoverGlass {
-                                $0.absorptionPerMillimeter[channel.offset] = value
-                            }
+                    CommittedNumberField(
+                        label: channel.element,
+                        value: cover.absorptionPerMillimeter[channel.offset]
+                    ) { value in
+                        library.updateSelectedCoverGlass {
+                            $0.absorptionPerMillimeter[channel.offset] = value
                         }
-                    ), format: .number)
+                    }
                 }
             }
             if let validation = library.coverGlassValidationMessage {
@@ -1487,12 +1449,9 @@ struct ContentView: View {
         value: Double,
         update: @escaping (inout CoverGlassDefinition, Double) -> Void
     ) -> some View {
-        TextField(label, value: Binding(
-            get: { value },
-            set: { newValue in
-                library.updateSelectedCoverGlass { update(&$0, newValue) }
-            }
-        ), format: .number)
+        CommittedNumberField(label: label, value: value) { newValue in
+            library.updateSelectedCoverGlass { update(&$0, newValue) }
+        }
     }
 
     private func updatePresetPipeline(_ pipeline: StudioRenderPipeline) {
@@ -1552,10 +1511,9 @@ struct ContentView: View {
     private func deviceEditor(_ device: DeviceDefinition) -> some View {
         Form {
             Section("Identidad") {
-                TextField("Nombre", text: Binding(
-                    get: { device.name },
-                    set: { value in library.updateSelectedDevice { $0.name = value } }
-                ))
+                CommittedTextField(label: "Nombre", value: device.name) { value in
+                    library.updateSelectedDevice { $0.name = value }
+                }
                 Picker("Categoría", selection: Binding(
                     get: { device.category },
                     set: { value in library.updateSelectedDevice { $0.category = value } }
@@ -1567,28 +1525,21 @@ struct ContentView: View {
             }
 
             Section("Geometría física") {
-                TextField("Resolución nativa — ancho (px)", value: Binding(
-                    get: { device.nativeWidth },
-                    set: { value in library.updateSelectedDevice { $0.nativeWidth = value } }
-                ), format: .number)
-                TextField("Resolución nativa — alto (px)", value: Binding(
-                    get: { device.nativeHeight },
-                    set: { value in library.updateSelectedDevice { $0.nativeHeight = value } }
-                ), format: .number)
-                TextField("Anchura activa (m)", value: Binding(
-                    get: { device.activeWidthMeters },
-                    set: { value in library.updateSelectedDevice { $0.activeWidthMeters = value } }
-                ), format: .number.precision(.fractionLength(6)))
-                TextField("Altura activa (m)", value: Binding(
-                    get: { device.activeHeightMeters },
-                    set: { value in library.updateSelectedDevice { $0.activeHeightMeters = value } }
-                ), format: .number.precision(.fractionLength(6)))
-                TextField("Corner Radius (mm)", value: Binding(
-                    get: { device.cornerRadiusMeters * 1_000 },
-                    set: { value in
-                        library.updateSelectedDevice { $0.cornerRadiusMeters = value / 1_000 }
-                    }
-                ), format: .number.precision(.fractionLength(2)))
+                CommittedNumberField(label: "Resolución nativa — ancho (px)", value: device.nativeWidth) { value in
+                    library.updateSelectedDevice { $0.nativeWidth = value }
+                }
+                CommittedNumberField(label: "Resolución nativa — alto (px)", value: device.nativeHeight) { value in
+                    library.updateSelectedDevice { $0.nativeHeight = value }
+                }
+                CommittedNumberField(label: "Anchura activa (m)", value: device.activeWidthMeters) { value in
+                    library.updateSelectedDevice { $0.activeWidthMeters = value }
+                }
+                CommittedNumberField(label: "Altura activa (m)", value: device.activeHeightMeters) { value in
+                    library.updateSelectedDevice { $0.activeHeightMeters = value }
+                }
+                CommittedNumberField(label: "Corner Radius (mm)", value: device.cornerRadiusMeters * 1_000) { value in
+                    library.updateSelectedDevice { $0.cornerRadiusMeters = value / 1_000 }
+                }
                 LabeledContent("Diagonal", value: "\(device.diagonalInches.formatted(.number.precision(.fractionLength(1)))) in")
                 LabeledContent("PPI", value: device.pixelsPerInch.formatted(.number.precision(.fractionLength(1))))
                 LabeledContent("Pixel pitch", value: "\(device.pixelPitchMicrometers.formatted(.number.precision(.fractionLength(1)))) µm")
@@ -1630,40 +1581,27 @@ struct ContentView: View {
                 )) {
                     ForEach(DeviceEmissionModel.allCases) { Text($0.rawValue).tag($0) }
                 }
-                TextField("EOTF gamma", value: Binding(
-                    get: { device.eotfGamma },
-                    set: { value in library.updateSelectedDevice { $0.eotfGamma = value } }
-                ), format: .number)
-                TextField("Negro (nits)", value: Binding(
-                    get: { device.blackLevelNits },
-                    set: { value in library.updateSelectedDevice { $0.blackLevelNits = value } }
-                ), format: .number)
-                TextField("White Luminance mínima (cd/m²)", value: Binding(
-                    get: { device.minimumWhiteLuminance },
-                    set: { value in
-                        library.updateSelectedDevice { $0.minimumWhiteLuminance = value }
-                    }
-                ), format: .number)
-                TextField("White Luminance máxima (cd/m²)", value: Binding(
-                    get: { device.maximumWhiteLuminance },
-                    set: { value in
-                        library.updateSelectedDevice { $0.maximumWhiteLuminance = value }
-                    }
-                ), format: .number)
-                TextField("Paso White Luminance (cd/m²)", value: Binding(
-                    get: { device.whiteLuminanceStep },
-                    set: { value in
-                        library.updateSelectedDevice { $0.whiteLuminanceStep = value }
-                    }
-                ), format: .number)
-                TextField("White Luminance (cd/m²)", value: Binding(
-                    get: { device.whiteLevelNits },
-                    set: { value in library.updateSelectedDevice { $0.whiteLevelNits = value } }
-                ), format: .number)
-                TextField("Base del blanco", text: Binding(
-                    get: { device.whiteBasis },
-                    set: { value in library.updateSelectedDevice { $0.whiteBasis = value } }
-                ))
+                CommittedNumberField(label: "EOTF gamma", value: device.eotfGamma) { value in
+                    library.updateSelectedDevice { $0.eotfGamma = value }
+                }
+                CommittedNumberField(label: "Negro (nits)", value: device.blackLevelNits) { value in
+                    library.updateSelectedDevice { $0.blackLevelNits = value }
+                }
+                CommittedNumberField(label: "White Luminance mínima (cd/m²)", value: device.minimumWhiteLuminance) { value in
+                    library.updateSelectedDevice { $0.minimumWhiteLuminance = value }
+                }
+                CommittedNumberField(label: "White Luminance máxima (cd/m²)", value: device.maximumWhiteLuminance) { value in
+                    library.updateSelectedDevice { $0.maximumWhiteLuminance = value }
+                }
+                CommittedNumberField(label: "Paso White Luminance (cd/m²)", value: device.whiteLuminanceStep) { value in
+                    library.updateSelectedDevice { $0.whiteLuminanceStep = value }
+                }
+                CommittedNumberField(label: "White Luminance (cd/m²)", value: device.whiteLevelNits) { value in
+                    library.updateSelectedDevice { $0.whiteLevelNits = value }
+                }
+                CommittedTextField(label: "Base del blanco", value: device.whiteBasis) { value in
+                    library.updateSelectedDevice { $0.whiteBasis = value }
+                }
             }
 
             Section("Subpíxeles") {
@@ -1673,10 +1611,9 @@ struct ContentView: View {
                 )) {
                     ForEach(DeviceStripeLayout.allCases) { Text($0.rawValue).tag($0) }
                 }
-                TextField("Black matrix", value: Binding(
-                    get: { device.blackMatrixFraction },
-                    set: { value in library.updateSelectedDevice { $0.blackMatrixFraction = value } }
-                ), format: .number)
+                CommittedNumberField(label: "Black matrix", value: device.blackMatrixFraction) { value in
+                    library.updateSelectedDevice { $0.blackMatrixFraction = value }
+                }
             }
 
             DisclosureGroup("Colorimetría nativa") {
@@ -1696,53 +1633,47 @@ struct ContentView: View {
 
             DisclosureGroup("Respuesta angular y temporal") {
                 ForEach(Array(["R", "G", "B"].enumerated()), id: \.offset) { item in
-                    TextField("Potencia angular \(item.element)", value: Binding(
-                        get: { device.angularEmissionPower[item.offset] },
-                        set: { value in
-                            library.updateSelectedDevice {
-                                $0.angularEmissionPower[item.offset] = value
-                            }
+                    CommittedNumberField(
+                        label: "Potencia angular \(item.element)",
+                        value: device.angularEmissionPower[item.offset]
+                    ) { value in
+                        library.updateSelectedDevice {
+                            $0.angularEmissionPower[item.offset] = value
                         }
-                    ), format: .number)
+                    }
                 }
-                TextField("Flicker residual (Hz)", value: Binding(
-                    get: { 1 / device.residualFlickerPeriod.seconds },
-                    set: { value in
-                        library.updateSelectedDevice {
-                            $0.residualFlickerPeriod = .init(
-                                numerator: 1,
-                                denominator: UInt32(max(1, value.rounded()))
-                            )
-                        }
+                CommittedNumberField(
+                    label: "Flicker residual (Hz)",
+                    value: 1 / device.residualFlickerPeriod.seconds
+                ) { value in
+                    library.updateSelectedDevice {
+                        $0.residualFlickerPeriod = .init(
+                            numerator: 1,
+                            denominator: UInt32(max(1, value.rounded()))
+                        )
                     }
-                ), format: .number)
-                TextField("Amplitud residual", value: Binding(
-                    get: { device.residualFlickerAmplitude },
-                    set: { value in
-                        library.updateSelectedDevice {
-                            $0.residualFlickerAmplitude = value
-                        }
+                }
+                CommittedNumberField(label: "Amplitud residual", value: device.residualFlickerAmplitude) { value in
+                    library.updateSelectedDevice {
+                        $0.residualFlickerAmplitude = value
                     }
-                ), format: .number)
-                TextField("Banding (Hz)", value: Binding(
-                    get: { 1 / device.bandingPeriod.seconds },
-                    set: { value in
-                        library.updateSelectedDevice {
-                            let denominator = UInt32(max(1, value.rounded()))
-                            $0.bandingPeriod = .init(numerator: 1, denominator: denominator)
-                            $0.bandingOnDuration = .init(
-                                numerator: 1,
-                                denominator: denominator * 2
-                            )
-                        }
+                }
+                CommittedNumberField(
+                    label: "Banding (Hz)",
+                    value: 1 / device.bandingPeriod.seconds
+                ) { value in
+                    library.updateSelectedDevice {
+                        let denominator = UInt32(max(1, value.rounded()))
+                        $0.bandingPeriod = .init(numerator: 1, denominator: denominator)
+                        $0.bandingOnDuration = .init(
+                            numerator: 1,
+                            denominator: denominator * 2
+                        )
                     }
-                ), format: .number)
-                TextField("Cantidad de banding", value: Binding(
-                    get: { device.bandingAmount },
-                    set: { value in
-                        library.updateSelectedDevice { $0.bandingAmount = value }
-                    }
-                ), format: .number)
+                }
+                CommittedNumberField(label: "Cantidad de banding", value: device.bandingAmount) { value in
+                    library.updateSelectedDevice { $0.bandingAmount = value }
+                }
             }
 
             Section("Asociación") {
@@ -1778,14 +1709,12 @@ struct ContentView: View {
     ) -> some View {
         LabeledContent(label) {
             HStack {
-                TextField("x", value: Binding(
-                    get: { value.x },
-                    set: { update(.init(x: $0, y: value.y)) }
-                ), format: .number)
-                TextField("y", value: Binding(
-                    get: { value.y },
-                    set: { update(.init(x: value.x, y: $0)) }
-                ), format: .number)
+                CommittedNumberField(label: "x", value: value.x) {
+                    update(.init(x: $0, y: value.y))
+                }
+                CommittedNumberField(label: "y", value: value.y) {
+                    update(.init(x: value.x, y: $0))
+                }
             }
             .frame(maxWidth: 240)
         }
@@ -3317,6 +3246,102 @@ private struct CommittedZoomField: View {
 
     private func synchronize(with value: Double) {
         draft = value.formatted(.number.precision(.fractionLength(0 ... 1)))
+    }
+}
+
+/// Keeps incomplete keyboard input local to the editor. Domain validation and
+/// Global Library persistence run only after Return or focus loss, so values
+/// such as `0.5` can pass through the intermediate text `0` without being
+/// rejected and replaced by the previously committed value.
+private protocol CommittedNumericValue: Equatable {
+    static func parseCommittedDraft(_ text: String) -> Self?
+    var committedDraftText: String { get }
+}
+
+extension Double: CommittedNumericValue {
+    fileprivate static func parseCommittedDraft(_ text: String) -> Double? {
+        let value = Double(text.replacingOccurrences(of: ",", with: "."))
+        return value?.isFinite == true ? value : nil
+    }
+
+    fileprivate var committedDraftText: String { String(format: "%.12g", self) }
+}
+
+extension Int: CommittedNumericValue {
+    fileprivate static func parseCommittedDraft(_ text: String) -> Int? { Int(text) }
+    fileprivate var committedDraftText: String { String(self) }
+}
+
+extension UInt32: CommittedNumericValue {
+    fileprivate static func parseCommittedDraft(_ text: String) -> UInt32? { UInt32(text) }
+    fileprivate var committedDraftText: String { String(self) }
+}
+
+private struct CommittedNumberField<Value: CommittedNumericValue>: View {
+    let label: String
+    let value: Value
+    let onCommit: (Value) -> Void
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(label, text: $draft)
+            .focused($isFocused)
+            .onAppear { synchronize(with: value) }
+            .onSubmit { commit() }
+            .onChange(of: isFocused) { _, focused in
+                if focused { synchronize(with: value) }
+                else { commit() }
+            }
+            .onChange(of: value) { _, newValue in
+                synchronize(with: newValue)
+            }
+    }
+
+    private func commit() {
+        let normalized = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = Value.parseCommittedDraft(normalized) else {
+            synchronize(with: value)
+            return
+        }
+        guard parsed != value else {
+            synchronize(with: value)
+            return
+        }
+        onCommit(parsed)
+    }
+
+    private func synchronize(with value: Value) {
+        draft = value.committedDraftText
+    }
+}
+
+private struct CommittedTextField: View {
+    let label: String
+    let value: String
+    let onCommit: (String) -> Void
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(label, text: $draft)
+            .focused($isFocused)
+            .onAppear { draft = value }
+            .onSubmit { commit() }
+            .onChange(of: isFocused) { _, focused in
+                if focused { draft = value }
+                else { commit() }
+            }
+            .onChange(of: value) { _, newValue in
+                draft = newValue
+            }
+    }
+
+    private func commit() {
+        guard draft != value else { return }
+        onCommit(draft)
     }
 }
 

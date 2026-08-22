@@ -5,6 +5,10 @@ Status: normative.
 <!-- decision-ref: architecture.decision-coherence -->
 <!-- decision-ref: ui.workspace-navigation -->
 
+Headless-output coverage proves preparation cannot activate or submit an interactive Preview, every requested output frame produces exactly one physical submission, an explicit output temporal-sample count replaces the authored Preview count, and zero shutter contribution remains one sample. Settings coverage proves incomplete numeric keyboard text remains local until Return or focus loss and cannot be rejected or persisted per keypress.
+
+WIP Review host coverage proves the shipped CPU route preserves independent straight RGB and alpha at 0, 0.5 and 1. Metal cannot be advertised until the exact bundle passes that same test; a GPU failure cannot trigger a CPU retry inside a render attempt.
+
 For v23 Saved Scene and Queue tests, “tracks” refers only to the separately typed embedded 3D animation record. No validation may imply that v21 has a generic parameter-track collection.
 
 Reference plate coverage proves that each synthetic plate is opaque linear ACEScg at the requested Delivery Raster, that the selected video uses its persisted authored interpretation and placement, and that Setup, Native and `Device + referencia` Queue composition use the same resulting frame and explicit `DeviceRGB + plateRGB × (1 − physicalMatte)` equation. The complete Camera Result → black Delivery Raster → opaque Recording Output/Codec chain must retain matte values zero, one half and one in a separately typed sidecar while the authored Delivery alpha remains opaque; validation rejects extracting the physical matte from that output alpha. It rejects a persisted video-plate selection without an external reference resource and proves Fusion Scene Package does not request a Reference plate.

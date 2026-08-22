@@ -325,3 +325,26 @@ import Testing
     #expect(workspace.physicalAuthoringState?.sceneLens.radialDistortion == lens.radialDistortion)
     #expect(workspace.physicalAuthoringState?.environment.ambientRadianceACEScg == [12, 13, 14])
 }
+
+@Test @MainActor func explicitOutputTemporalSamplesOverrideAuthoredPreviewSamples() {
+    #expect(WorkspaceModel.effectiveTemporalSampleCount(
+        shutterMotionAmount: 1,
+        authoredSampleCount: 8,
+        requestedSampleCount: 1
+    ) == 1)
+    #expect(WorkspaceModel.effectiveTemporalSampleCount(
+        shutterMotionAmount: 1,
+        authoredSampleCount: 8,
+        requestedSampleCount: 3
+    ) == 3)
+    #expect(WorkspaceModel.effectiveTemporalSampleCount(
+        shutterMotionAmount: 1,
+        authoredSampleCount: 8,
+        requestedSampleCount: nil
+    ) == 8)
+    #expect(WorkspaceModel.effectiveTemporalSampleCount(
+        shutterMotionAmount: 0,
+        authoredSampleCount: 8,
+        requestedSampleCount: 3
+    ) == 1)
+}

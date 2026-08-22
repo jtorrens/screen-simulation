@@ -3,6 +3,25 @@ import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func settingsLibraryEditorsCommitTextOnlyAtAnExplicitBoundary() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let start = try #require(source.range(of: "private var testImageLibrary"))
+    let end = try #require(source.range(
+        of: "@ToolbarContentBuilder", range: start.upperBound ..< source.endIndex
+    ))
+    let libraryEditors = source[start.lowerBound ..< end.lowerBound]
+    let immediateTextFields = libraryEditors.split(separator: "\n").filter {
+        $0.trimmingCharacters(in: .whitespaces).hasPrefix("TextField(")
+    }
+    #expect(immediateTextFields.isEmpty)
+    #expect(source.contains(".onSubmit { commit() }"))
+    #expect(source.contains("else { commit() }"))
+}
+
 @Test func globalLibraryPersistsOnlyUserEntitiesInCurrentSchema() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-global-library-\(UUID().uuidString)")
