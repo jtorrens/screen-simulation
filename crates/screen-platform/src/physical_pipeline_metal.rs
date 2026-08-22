@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use metal::{
-    ComputePipelineState, DeviceRef, FunctionConstantValues, MTLCommandBufferStatus, MTLDataType,
-    MTLRegion, MTLResourceOptions, MTLSize, MTLStorageMode, MTLTextureType, MTLTextureUsage,
-    Texture, TextureDescriptor, TextureRef,
+    BufferRef, CommandBufferRef, ComputePipelineState, DeviceRef, FunctionConstantValues,
+    MTLCommandBufferStatus, MTLDataType, MTLRegion, MTLResourceOptions, MTLSize, MTLStorageMode,
+    MTLTextureType, MTLTextureUsage, Texture, TextureDescriptor, TextureRef,
 };
 use screen_application::{
     DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
@@ -130,6 +130,12 @@ struct PhysicalSignalPreparation {
     veiling_mean_native: metal::Buffer,
 }
 
+struct PhysicalRowBatch<'a> {
+    command: &'a CommandBufferRef,
+    output: &'a TextureRef,
+    veiling_gate_average: &'a BufferRef,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VfxTransparencyRaster {
     pub active_width: u32,
@@ -209,6 +215,8 @@ pub struct MetalPhysicalPipeline {
     signal_preparation_count: AtomicUsize,
     #[cfg(test)]
     veiling_mean_preparation_count: AtomicUsize,
+    #[cfg(test)]
+    temporal_batch_submission_count: AtomicUsize,
 }
 
 pub struct MetalPhysicalPipelineResult {
@@ -392,6 +400,8 @@ impl MetalPhysicalPipeline {
             signal_preparation_count: AtomicUsize::new(0),
             #[cfg(test)]
             veiling_mean_preparation_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            temporal_batch_submission_count: AtomicUsize::new(0),
         })
     }
 
@@ -1094,48 +1104,126 @@ impl MetalPhysicalPipeline {
         let mut final_sampling = None;
         let mut stage_elapsed_nanoseconds = [0_u64; 16];
         let mut signal_preparations = Vec::new();
-        for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
-            if is_cancelled() {
-                return Err(MetalPhysicalPipelineError::Cancelled);
-            }
-            let base = index as f32 / samples.len() as f32;
-            let span = 0.85 / samples.len() as f32;
-            let mut physical_plan = plan.stopped_at_requested_intermediate();
-            let evaluate_sensor = physical_plan.sensor_enabled
-                && Self::requests_sensor_evaluation(physical_plan.requested_intermediate);
-            if evaluate_sensor {
+        if first_plan.requested_intermediate == PhysicalIntermediate::SourceAcesCg {
+            for (index, (source, signal, plan, weight)) in samples.iter().enumerate() {
+                if is_cancelled() {
+                    return Err(MetalPhysicalPipelineError::Cancelled);
+                }
+                let base = index as f32 / samples.len() as f32;
+                let span = 0.85 / samples.len() as f32;
+                let mut physical_plan = plan.stopped_at_requested_intermediate();
                 physical_plan.sensor_enabled = false;
-                physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
-            } else {
+                let evaluated = self.evaluate_rows(
+                    source,
+                    signal,
+                    environment_acescg,
+                    physical_plan,
+                    None,
+                    Some(&mut signal_preparations),
+                    None,
+                    Some((&accumulated, *weight / weight_sum, index == 0)),
+                    None,
+                    |progress| report_progress(base + progress * span),
+                    &is_cancelled,
+                )?;
+                if accumulated.width() != evaluated.texture.width()
+                    || accumulated.height() != evaluated.texture.height()
+                {
+                    return Err(MetalPhysicalPipelineError::InvalidPlan(
+                        "temporal samples changed output geometry".to_owned(),
+                    ));
+                }
+                final_geometry = Some(evaluated.geometry);
+                final_sampling = Some(evaluated.sampling);
+            }
+        } else {
+            let batch_started = Instant::now();
+            let mut physical_plans = Vec::with_capacity(samples.len());
+            for (_, _, plan, _) in samples {
+                let mut physical_plan = plan.stopped_at_requested_intermediate();
+                if physical_plan.sensor_enabled
+                    && Self::requests_sensor_evaluation(physical_plan.requested_intermediate)
+                {
+                    physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+                }
                 physical_plan.sensor_enabled = false;
+                let sampling = physical_plan
+                    .panel
+                    .flat_panel_sampling(
+                        physical_plan.quality,
+                        physical_plan.requested_width,
+                        physical_plan.requested_height,
+                    )
+                    .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+                if sampling.effective_width != first_sampling.effective_width
+                    || sampling.effective_height != first_sampling.effective_height
+                {
+                    return Err(MetalPhysicalPipelineError::InvalidPlan(
+                        "temporal samples changed output geometry".to_owned(),
+                    ));
+                }
+                physical_plans.push(physical_plan);
             }
-            let evaluated = self.evaluate_rows(
-                source,
-                signal,
-                environment_acescg,
-                physical_plan,
-                None,
-                Some(&mut signal_preparations),
-                None,
-                Some((&accumulated, *weight / weight_sum, index == 0)),
-                |progress| report_progress(base + progress * span),
-                &is_cancelled,
-            )?;
-            if accumulated.width() != evaluated.texture.width()
-                || accumulated.height() != evaluated.texture.height()
-            {
-                return Err(MetalPhysicalPipelineError::InvalidPlan(
-                    "temporal samples changed output geometry".to_owned(),
-                ));
+
+            let scratch = samples[0].0.device().new_texture(&descriptor);
+            let zero_veiling = [0.0_f32; 4];
+            let veiling_gate_averages = (0..samples.len())
+                .map(|_| {
+                    samples[0].0.device().new_buffer_with_data(
+                        zero_veiling.as_ptr().cast(),
+                        size_of::<[f32; 4]>() as u64,
+                        MTLResourceOptions::StorageModeShared,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let tile_count = first_sampling.effective_height.div_ceil(TILE_ROWS);
+            for tile in 0..tile_count {
+                if is_cancelled() {
+                    return Err(MetalPhysicalPipelineError::Cancelled);
+                }
+                let origin_y = tile * TILE_ROWS;
+                let height = TILE_ROWS.min(first_sampling.effective_height - origin_y);
+                let command = self.queue.new_command_buffer();
+                for (index, (((source, signal, _, weight), physical_plan), veiling)) in samples
+                    .iter()
+                    .zip(&physical_plans)
+                    .zip(&veiling_gate_averages)
+                    .enumerate()
+                {
+                    let evaluated = self.evaluate_rows(
+                        source,
+                        signal,
+                        environment_acescg,
+                        *physical_plan,
+                        Some((origin_y, height)),
+                        Some(&mut signal_preparations),
+                        None,
+                        Some((&accumulated, *weight / weight_sum, index == 0)),
+                        Some(PhysicalRowBatch {
+                            command: &command,
+                            output: &scratch,
+                            veiling_gate_average: veiling,
+                        }),
+                        |_| {},
+                        &is_cancelled,
+                    )?;
+                    final_geometry = Some(evaluated.geometry);
+                    final_sampling = Some(evaluated.sampling);
+                }
+                command.commit();
+                #[cfg(test)]
+                self.temporal_batch_submission_count
+                    .fetch_add(1, Ordering::Relaxed);
+                command.wait_until_completed();
+                if command.status() != MTLCommandBufferStatus::Completed {
+                    return Err(MetalPhysicalPipelineError::Backend(
+                        "temporal batch command did not complete".to_owned(),
+                    ));
+                }
+                report_progress((tile + 1) as f32 / tile_count as f32 * 0.85);
             }
-            final_geometry = Some(evaluated.geometry);
-            final_sampling = Some(evaluated.sampling);
-            for (total, elapsed) in stage_elapsed_nanoseconds
-                .iter_mut()
-                .zip(evaluated.stage_elapsed_nanoseconds)
-            {
-                *total = total.saturating_add(elapsed);
-            }
+            let elapsed = batch_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            stage_elapsed_nanoseconds[..11].fill(elapsed);
         }
         let physical = MetalPhysicalPipelineResult {
             texture: accumulated,
@@ -1196,6 +1284,7 @@ impl MetalPhysicalPipeline {
             device_signal,
             environment_acescg,
             physical_plan,
+            None,
             None,
             None,
             None,
@@ -1279,6 +1368,7 @@ impl MetalPhysicalPipeline {
             None,
             Some(raster),
             None,
+            None,
             |progress| report_progress(progress * 0.9),
             &is_cancelled,
         )?;
@@ -1300,6 +1390,7 @@ impl MetalPhysicalPipeline {
         mut signal_preparations: Option<&mut Vec<PhysicalSignalPreparation>>,
         vfx_raster: Option<VfxTransparencyRaster>,
         temporal_accumulation: Option<(&TextureRef, f32, bool)>,
+        row_batch: Option<PhysicalRowBatch<'_>>,
         mut report_progress: impl FnMut(f32),
         is_cancelled: impl Fn() -> bool,
     ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
@@ -1497,7 +1588,17 @@ impl MetalPhysicalPipeline {
         descriptor.set_height(u64::from(sampling.effective_height));
         descriptor.set_storage_mode(MTLStorageMode::Shared);
         descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
-        let output = device.new_texture(&descriptor);
+        let output = if let Some(batch) = &row_batch {
+            if batch.output.width() != u64::from(sampling.effective_width)
+                || batch.output.height() != u64::from(sampling.effective_height)
+                || batch.output.pixel_format() != metal::MTLPixelFormat::RGBA32Float
+            {
+                return Err(MetalPhysicalPipelineError::TextureMismatch);
+            }
+            batch.output.to_owned()
+        } else {
+            device.new_texture(&descriptor)
+        };
         let values = plan
             .panel
             .evaluator()
@@ -1927,12 +2028,18 @@ impl MetalPhysicalPipeline {
         let native_emission_signal = &preparation.native_emission_signal;
         let native_emission_prefix = &preparation.native_emission_prefix;
         let veiling_mean_native = &preparation.veiling_mean_native;
-        let zero_veiling = [0.0_f32; 4];
-        let veiling_gate_average = device.new_buffer_with_data(
-            zero_veiling.as_ptr().cast(),
-            size_of::<[f32; 4]>() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let owned_veiling_gate_average;
+        let veiling_gate_average = if let Some(batch) = &row_batch {
+            batch.veiling_gate_average
+        } else {
+            let zero_veiling = [0.0_f32; 4];
+            owned_veiling_gate_average = device.new_buffer_with_data(
+                zero_veiling.as_ptr().cast(),
+                size_of::<[f32; 4]>() as u64,
+                MTLResourceOptions::StorageModeShared,
+            );
+            &owned_veiling_gate_average
+        };
 
         let (work_origin, work_height) = row_range.unwrap_or((0, sampling.effective_height));
         if work_height == 0 || work_origin.saturating_add(work_height) > sampling.effective_height {
@@ -1978,19 +2085,25 @@ impl MetalPhysicalPipeline {
             let origin_y = work_origin + tile * TILE_ROWS;
             let height = TILE_ROWS.min(work_origin + work_height - origin_y);
             params.output_tile[2] = origin_y;
-            let command = self.queue.new_command_buffer();
+            let owned_command;
+            let command = if let Some(batch) = &row_batch {
+                batch.command
+            } else {
+                owned_command = self.queue.new_command_buffer();
+                &owned_command
+            };
             let encoder = command.new_compute_command_encoder();
-            if tile == 0 && params.lens_veiling_glare[0] != 0.0 {
+            if origin_y == 0 && params.lens_veiling_glare[0] != 0.0 {
                 encoder.set_compute_pipeline_state(&self.veiling_finalize_pipeline);
                 encoder.set_buffer(0, Some(veiling_mean_native), 0);
-                encoder.set_buffer(1, Some(&veiling_gate_average), 0);
+                encoder.set_buffer(1, Some(veiling_gate_average), 0);
                 encoder.set_bytes(
                     2,
                     size_of::<PhysicalPipelineParams>() as u64,
                     (&raw const params).cast(),
                 );
                 encoder.dispatch_threads(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
-                encoder.memory_barrier_with_resources(&[&veiling_gate_average]);
+                encoder.memory_barrier_with_resources(&[veiling_gate_average]);
             }
             encoder.set_compute_pipeline_state(physical_pipeline);
             encoder.set_texture(0, Some(source_acescg));
@@ -2009,7 +2122,7 @@ impl MetalPhysicalPipeline {
                 size_of::<PhysicalPipelineParams>() as u64,
                 (&raw const params).cast(),
             );
-            encoder.set_buffer(1, Some(&veiling_gate_average), 0);
+            encoder.set_buffer(1, Some(veiling_gate_average), 0);
             let thread_width = physical_pipeline.thread_execution_width();
             let thread_height =
                 (physical_pipeline.max_total_threads_per_threadgroup() / thread_width).max(1);
@@ -2038,12 +2151,14 @@ impl MetalPhysicalPipeline {
                 );
             }
             encoder.end_encoding();
-            command.commit();
-            command.wait_until_completed();
-            if command.status() != MTLCommandBufferStatus::Completed {
-                return Err(MetalPhysicalPipelineError::Backend(
-                    "compute command did not complete".to_owned(),
-                ));
+            if row_batch.is_none() {
+                command.commit();
+                command.wait_until_completed();
+                if command.status() != MTLCommandBufferStatus::Completed {
+                    return Err(MetalPhysicalPipelineError::Backend(
+                        "compute command did not complete".to_owned(),
+                    ));
+                }
             }
             report_progress((tile + 1) as f32 / tile_count as f32);
         }
@@ -3209,6 +3324,65 @@ mod tests {
         assert!(
             maximum <= 1.0e-7,
             "static temporal accumulation created another image: {maximum}"
+        );
+    }
+
+    #[test]
+    fn temporal_batch_submits_once_per_spatial_stripe_not_per_sample() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Draft,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.requested_width = 12;
+        plan.requested_height = TILE_ROWS * 2 + 4;
+        plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
+        plan.sensor_enabled = false;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .map(|value| [value.r, value.g, value.b, 1.0])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let samples = [
+            (&*source, &*signal, plan, 1.0_f32),
+            (&*source, &*signal, plan, 2.0_f32),
+            (&*source, &*signal, plan, 1.0_f32),
+        ];
+
+        let batched = backend
+            .evaluate_temporal(&samples, |_| {}, || false)
+            .expect("multi-stripe temporal batch");
+        let single = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .expect("single multi-stripe reference");
+
+        assert_eq!(
+            backend
+                .temporal_batch_submission_count
+                .load(Ordering::Relaxed),
+            3,
+            "three spatial stripes must remain three submissions for any temporal sample count"
+        );
+        let maximum = read(&batched.texture)
+            .iter()
+            .zip(read(&single.texture))
+            .flat_map(|(batched, single)| {
+                batched
+                    .iter()
+                    .zip(single)
+                    .map(|(batched, single)| (batched - single).abs())
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            maximum <= 1.0e-7,
+            "stripe batching changed the physical result: {maximum}"
         );
     }
 
