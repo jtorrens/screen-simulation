@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import CoreMedia
+import Metal
 import QuartzCore
 import StudioColor
 import StudioMedia
@@ -107,10 +108,11 @@ import Testing
     #expect(zip(actual, expected).map { abs($0 - $1) }.max() ?? 0 <= 0.001)
 }
 
-@Test @MainActor func separatedDeviceSpillUsesIndependentMatteWithoutDoublePremultiplication() throws {
+@Test @MainActor func separatedDeviceSpillUsesComplementaryBoundedContributions() throws {
+    // Canonical Delivery Raster RGB is premultiplied physical contribution.
     let source: [Float] = [
         0.3, -0.1, 1.2, 0,
-        0.2, 0.4, 0.6, 0.5,
+        0.1, 0.2, 0.3, 0.5,
         0.7, 0.8, 0.9, 1,
     ]
     let passes = try NativeOutputRenderer.editorialDeviceSpillPasses(source)
@@ -125,10 +127,17 @@ import Testing
         #expect(passes.device[offset + 3] == alpha)
         #expect(passes.spill[offset + 3] == 1)
     }
-    #expect(passes.device[0] == 0)
+    #expect(passes.device[0] == 0.3)
     #expect(passes.spill[0] == 0.3)
-    #expect(passes.device[4] == 0.2)
-    #expect(passes.spill[4] == 0.1)
+    #expect(passes.device[4] == 0.1)
+    #expect(passes.spill[4] == 0.05)
+    // A very small matte never creates the unbounded RGB/alpha values that
+    // previously clipped at the ProRes boundary and produced a dark contour.
+    let edge = try NativeOutputRenderer.editorialDeviceSpillPasses([
+        0.2, 0.4, 0.8, 0.000_1,
+    ])
+    #expect(edge.device[0] == 0.2)
+    #expect(edge.spill[0] > 0.199)
 }
 
 @Test @MainActor func separatedVfxProResRetainsDeviceAlphaAndNonBlackSpill() async throws {
@@ -139,16 +148,26 @@ import Testing
         for x in 0 ..< width {
             let offset = (y * width + x) * 4
             let alpha = Float(x) / Float(width - 1)
-            rgba[offset] = 0.3
-            rgba[offset + 1] = Float(y + 1) / Float(height)
-            rgba[offset + 2] = 0.8
+            rgba[offset] = 0.3 * alpha
+            rgba[offset + 1] = Float(y + 1) / Float(height) * alpha
+            rgba[offset + 2] = 0.8 * alpha
             rgba[offset + 3] = alpha
         }
     }
+    // Preserve one genuine additive zero-matte sample for the Spill pass.
+    rgba[0] = 0.2
+    rgba[1] = 0.1
+    rgba[2] = 0.05
+    // A halo contribution crossing a nearly transparent Device edge used to be
+    // divided by this matte and clipped in the Device movie while Spill became black.
+    rgba[4] = 0.2
+    rgba[5] = 0.1
+    rgba[6] = 0.05
+    rgba[7] = 0.000_1
     let input = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
     let frame = try display.makeACEScgFrame(
         width: width, height: height, encodedRGBA: rgba,
-        input: input, alpha: .straight
+        input: input, alpha: .premultiplied
     )
     let preset = StudioRenderPreset.builtIns[9]
     let configuration = renderConfiguration(
@@ -177,8 +196,15 @@ import Testing
     let deviceAlpha = stride(from: 3, to: device.count, by: 4).map { device[$0] }
     #expect((deviceAlpha.min() ?? 1) < 0.05)
     #expect((deviceAlpha.max() ?? 0) > 0.95)
+    #expect(device[4] < 0.7)
+    #expect(spill[4] > 0.3)
     #expect(stride(from: 0, to: spill.count, by: 4).contains {
         spill[$0] > 0.01 || spill[$0 + 1] > 0.01 || spill[$0 + 2] > 0.01
+    })
+    // Fractional-alpha pixels carry a smooth non-black complementary Spill;
+    // the pass is no longer forced to ACEScct black until alpha reaches zero.
+    #expect(stride(from: 4, to: spill.count, by: 4).contains {
+        spill[$0] > 0.11 || spill[$0 + 1] > 0.11 || spill[$0 + 2] > 0.11
     })
 }
 
@@ -340,9 +366,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
         }
     }
     let acescg = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
-    let expectedFrame = try display.makeACEScgFrame(
-        width: width, height: height, encodedRGBA: rgba, input: acescg, alpha: .straight
-    )
+    let expectedFrame = try independentLinearFrame(width: width, height: height, rgba: rgba)
     let expected = try display.readLinearRGBA(expectedFrame)
     let preset = StudioRenderPreset.builtIns[9]
     let destination = FileManager.default.temporaryDirectory
@@ -366,11 +390,33 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
 
     let acescct = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescct" })
     let decodedEncoded = try await decodeFirstProResARGB16(destination)
+    let decodedAlpha = stride(from: 3, to: decodedEncoded.count, by: 4).map {
+        decodedEncoded[$0]
+    }
+    var decodedRGB = decodedEncoded
+    for offset in stride(from: 3, to: decodedRGB.count, by: 4) {
+        decodedRGB[offset] = 1
+    }
     let decodedFrame = try display.makeACEScgFrame(
-        width: width, height: height, encodedRGBA: decodedEncoded,
-        input: acescct, alpha: .straight
+        width: width, height: height, encodedRGBA: decodedRGB,
+        input: acescct, alpha: .ignore
     )
-    let decoded = try display.readLinearRGBA(decodedFrame)
+    var decoded = try display.readLinearRGBA(decodedFrame)
+    for (pixel, alpha) in decodedAlpha.enumerated() {
+        decoded[pixel * 4 + 3] = alpha
+    }
+    #expect(expected[3] == 0)
+    #expect(expected[0] > 0.1)
+    #expect(decoded[3] <= 0.002)
+    #expect(decoded[0] > 0.1)
+    for offset in stride(from: 0, to: decoded.count, by: 4) {
+        let alpha = decoded[offset + 3]
+        for channel in 0 ..< 3 {
+            let device = decoded[offset + channel] * alpha
+            let spill = decoded[offset + channel] * (1 - alpha)
+            #expect(abs(device + spill - decoded[offset + channel]) < 0.000_01)
+        }
+    }
     var alphaMaximum: Float = 0
     for offset in stride(from: 3, to: expected.count, by: 4) {
         alphaMaximum = max(alphaMaximum, abs(expected[offset] - decoded[offset]))
@@ -836,6 +882,26 @@ private func renderConfiguration(
         firstFrame: frameRange.lowerBound,
         lastFrame: frameRange.upperBound
     )
+}
+
+private func independentLinearFrame(
+    width: Int, height: Int, rgba: [Float]
+) throws -> StudioColorMetalFrame {
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+        pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
+    )
+    descriptor.storageMode = .shared
+    descriptor.usage = [.shaderRead]
+    let texture = try #require(device.makeTexture(descriptor: descriptor))
+    rgba.withUnsafeBytes { bytes in
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+            withBytes: bytes.baseAddress!,
+            bytesPerRow: width * 4 * MemoryLayout<Float>.size
+        )
+    }
+    return StudioColorMetalFrame(texture: texture)
 }
 
 @MainActor

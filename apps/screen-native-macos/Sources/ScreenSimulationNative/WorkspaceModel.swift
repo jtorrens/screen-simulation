@@ -4513,8 +4513,9 @@ final class WorkspaceModel: ObservableObject {
             signalRange: outputSignalRange,
             alpha: renderWIPReviewPreset != nil
                 ? .ignore
-                : (renderComposition == .deviceAndSpillSeparate
-                    ? .straight : (outputFormat.supportsAlpha ? outputAlphaMode : .ignore)),
+                : ([.deviceAndSpillTogether, .deviceAndSpillSeparate]
+                    .contains(renderComposition) && outputFormat.supportsAlpha
+                    ? .straight : .ignore),
             includeAudio: renderOutputType == .standard && outputFormat.isMovie
                 && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
@@ -4762,14 +4763,17 @@ final class WorkspaceModel: ObservableObject {
     ) async throws -> StudioColorMetalFrame {
         try Task.checkCancellation()
         currentFrame = index
-        let resolvedSceneFrame = try resolveSceneFrame(index)
+        let temporalSamples: UInt16 = configuration.motionBlurEnabled
+            ? configuration.motionSamples : 1
+        let resolvedSceneFrame = try resolveSceneFrame(
+            index, temporalSamplesOverride: temporalSamples
+        )
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
         let submission = try await submitPhysicalJob(
             quality: .native,
-            temporalSamplesOverride: configuration.motionBlurEnabled
-                ? configuration.motionSamples : 1,
+            temporalSamplesOverride: temporalSamples,
             resolvedSceneFrameOverride: resolvedSceneFrame
         )
         while true {
@@ -4799,10 +4803,11 @@ final class WorkspaceModel: ObservableObject {
                         "Render Queue no recibió el checkpoint de cámara solicitado."
                     )
                 }
-                if configuration.composition == .deviceAndSpillSeparate {
-                    // Separate VFX media consume the typed Delivery Raster with its
-                    // independent physical matte. The ordinary camera composite is
-                    // intentionally opaque and would erase both Device alpha and Spill.
+                if configuration.composition != .fullComposite {
+                    // Both the reversible single carrier and separate VFX media consume
+                    // the typed transparent Delivery Raster with its independent physical
+                    // matte. The ordinary camera composite is intentionally opaque and
+                    // would erase the carrier alpha and RGB below alpha zero.
                     return try RecordingPhaseExecutor.delivery(
                         cameraRendered: camera,
                         width: Int(selection.deliveryWidth),

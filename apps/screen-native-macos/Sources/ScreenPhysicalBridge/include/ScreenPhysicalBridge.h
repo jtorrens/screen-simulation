@@ -1409,6 +1409,13 @@ bool screen_device_vfx_passes_rgba32f(
     float *spill_rgba,
     const char **error_message
 );
+bool screen_editorial_device_spill_passes_rgba32f(
+    const float *delivery_rgba,
+    float *device_rgba,
+    float *spill_rgba,
+    size_t count,
+    const char **error_message
+);
 bool screen_recording_output_transform_rgba32f(
     ScreenUTF8View transform_id,
     const float *input_rgba,

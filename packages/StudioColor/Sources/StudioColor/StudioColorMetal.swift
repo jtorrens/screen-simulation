@@ -572,6 +572,31 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         output: StudioColorOutputTransform,
         alpha: StudioColorAlphaAssociation = .premultiplied
     ) throws -> [Float] {
+        try renderRGBAFloat(
+            frame, output: output, alpha: alpha,
+            inputRGBIsIndependent: false
+        )
+    }
+
+    /// Applies the RGB transform without associating or unassociating RGB with alpha.
+    /// Additive RGB may therefore remain non-zero where the independent matte is zero.
+    public func renderIndependentRGBAFloat(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform,
+        alpha: StudioColorAlphaAssociation
+    ) throws -> [Float] {
+        try renderRGBAFloat(
+            frame, output: output, alpha: alpha,
+            inputRGBIsIndependent: true
+        )
+    }
+
+    private func renderRGBAFloat(
+        _ frame: StudioColorMetalFrame,
+        output: StudioColorOutputTransform,
+        alpha: StudioColorAlphaAssociation,
+        inputRGBIsIndependent: Bool
+    ) throws -> [Float] {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba16Float, width: frame.width, height: frame.height, mipmapped: false
         )
@@ -587,7 +612,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         try encode(
             input: frame.texture, output: target, pass: pass,
             transform: output, command: command, fitInputAspect: false,
-            outputAlpha: alpha
+            outputAlpha: alpha,
+            inputRGBIsIndependent: inputRGBIsIndependent
         )
         command.commit()
         command.waitUntilCompleted()
@@ -928,10 +954,12 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         transform: StudioColorOutputTransform,
         command: MTLCommandBuffer,
         fitInputAspect: Bool,
-        outputAlpha: StudioColorAlphaAssociation = .premultiplied
+        outputAlpha: StudioColorAlphaAssociation = .premultiplied,
+        inputRGBIsIndependent: Bool = false
     ) throws {
         let resources = try displayResources(
-            transform, pixelFormat: output.pixelFormat, alpha: outputAlpha
+            transform, pixelFormat: output.pixelFormat, alpha: outputAlpha,
+            inputRGBIsIndependent: inputRGBIsIndependent
         )
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
             throw StudioColorMetalError.commandFailure
@@ -965,9 +993,10 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
     private func displayResources(
         _ transform: StudioColorOutputTransform,
         pixelFormat: MTLPixelFormat,
-        alpha: StudioColorAlphaAssociation = .premultiplied
+        alpha: StudioColorAlphaAssociation = .premultiplied,
+        inputRGBIsIndependent: Bool = false
     ) throws -> Resources {
-        let key = "\(transform.id):\(pixelFormat.rawValue):\(alpha.rawValue)"
+        let key = "\(transform.id):\(pixelFormat.rawValue):\(alpha.rawValue):independent=\(inputRGBIsIndependent)"
         if let cached = resources[key] { return cached }
         let processor: StudioColorProcessor = switch transform.processor {
         case let .displayView(display, view):
@@ -981,7 +1010,10 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         }
         let shader = try processor.makeMetalShader()
         let library = try device.makeLibrary(
-            source: Self.displayShaderSource(shader, alpha: alpha),
+            source: Self.displayShaderSource(
+                shader, alpha: alpha,
+                inputRGBIsIndependent: inputRGBIsIndependent
+            ),
             options: nil
         )
         guard let vertex = library.makeFunction(name: "fullscreenVertex"),
@@ -1003,7 +1035,8 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
 
     private static func displayShaderSource(
         _ shader: StudioColorMetalShader,
-        alpha: StudioColorAlphaAssociation
+        alpha: StudioColorAlphaAssociation,
+        inputRGBIsIndependent: Bool
     ) -> String {
         let declarations = shader.textures.indices.map { index in
             let type = switch shader.textures[index].dimension {
@@ -1024,6 +1057,9 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         case .ignore:
             "color.a = 1.0;"
         }
+        let alphaPreparation = inputRGBIsIndependent
+            ? ""
+            : "if (alpha > 0.0) { color.rgb /= alpha; }"
         return """
         #include <metal_stdlib>
         using namespace metal;
@@ -1046,7 +1082,7 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         fragment float4 displayFragment(FullscreenOutput input [[stage_in]], texture2d<float> composition [[texture(0)]], sampler compositionSampler [[sampler(0)]] \(suffix)) {
             float4 color = composition.sample(compositionSampler, input.textureCoordinate);
             float alpha = color.a;
-            if (alpha > 0.0) { color.rgb /= alpha; }
+            \(alphaPreparation)
             color = \(shader.functionName)(\(prefix)color);
             \(alphaOutput)
             return color;

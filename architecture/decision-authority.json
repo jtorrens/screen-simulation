@@ -44,6 +44,8 @@
         "scripts/test_migrate_global_library_v14_to_v15.py",
         "scripts/migrate_global_library_v15_to_v16.py",
         "scripts/test_migrate_global_library_v15_to_v16.py",
+        "scripts/migrate_global_library_v16_to_v17.py",
+        "scripts/test_migrate_global_library_v16_to_v17.py",
         "scripts/migrate_render_queue_v3_to_v4.py",
         "scripts/test_migrate_render_queue_v3_to_v4.py",
         "scripts/migrate_render_queue_v4_to_v5.py",
@@ -296,6 +298,8 @@
       },
       "enforcement": [
         "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-native-bridge/src/lib.rs",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderOutputPlanning.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",

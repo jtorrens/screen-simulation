@@ -94,6 +94,43 @@ private func scalarControl(
 }
 
 @MainActor
+@Test func duplicatingScenePreservesExplicitThinLensOverride() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-duplicate-lens-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let controller = SceneLibraryController(store: store)
+    let base = try sceneAuthoring()
+    let authoring = SceneAuthoringDocument(
+        profiles: base.profiles,
+        overrides: base.overrides + [.choice("lens-evaluation-model", "thin-lens")],
+        modelOverrides: base.modelOverrides,
+        context: base.context,
+        environmentCalibration: base.environmentCalibration
+    )
+    let original = try controller.add(capture: .init(
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern,
+                patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+            viewerIsFitted: true, authoring: authoring
+        ),
+        thumbnailPNG: Data([1, 2, 3]),
+        generatedEnvironmentEXR: nil
+    ))
+
+    let duplicate = try controller.duplicate(original)
+
+    #expect(duplicate.snapshot.authoring == original.snapshot.authoring)
+    #expect(duplicate.snapshot.authoring.overrides.contains(
+        SceneControlOverride.choice("lens-evaluation-model", "thin-lens")
+    ))
+}
+
+@MainActor
 @Test func savedSceneResolvesCurrentProfileDefaultsButKeepsItsExplicitOverrides() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-profile-resolution-\(UUID().uuidString)")

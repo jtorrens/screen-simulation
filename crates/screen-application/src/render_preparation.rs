@@ -390,7 +390,7 @@ impl PreparedRender {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PreparedRenderError {
     EmptyRaster,
     RasterOverflow,
@@ -400,12 +400,12 @@ pub enum PreparedRenderError {
     InvalidShutter,
     FrameRateMismatch,
     ActiveSensorChangesDuringExposure,
-    SceneResolution,
+    SceneResolution(SceneFrameResolutionError),
 }
 
 impl From<SceneFrameResolutionError> for PreparedRenderError {
-    fn from(_: SceneFrameResolutionError) -> Self {
-        Self::SceneResolution
+    fn from(error: SceneFrameResolutionError) -> Self {
+        Self::SceneResolution(error)
     }
 }
 

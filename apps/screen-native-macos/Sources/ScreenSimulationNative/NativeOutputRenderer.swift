@@ -103,8 +103,11 @@ enum NativeOutputRenderer {
                     .appendingPathComponent(".\(UUID().uuidString)-video")
                     .appendingPathExtension(format.fileExtension)
                 : finalURL
+            let firstWIPInput = configuration.composition == .deviceAndSpillTogether
+                ? try display.renderIndependentRGBAFloat(first, output: output, alpha: .ignore)
+                : try display.renderRGBAFloat(first, output: output, alpha: .ignore)
             let firstWIP = configuration.wipReview == nil ? nil : try await wipProcessedRGBA(
-                try display.renderRGBAFloat(first, output: output, alpha: .ignore),
+                firstWIPInput,
                 sourceWidth: first.width, sourceHeight: first.height,
                 frameNumber: firstIndex, outputFilename: finalURL.lastPathComponent,
                 configuration: configuration, session: wipSession
@@ -116,14 +119,22 @@ enum NativeOutputRenderer {
                 pixelEncoding: configuration.pixelEncoding,
                 peakNits: configuration.peakNits,
                 signalRange: configuration.signalRange,
-                alpha: format.supportsAlpha ? alpha : .ignore, output: output
+                alpha: format.supportsAlpha ? alpha : .ignore, output: output,
+                preservesIndependentRGB: configuration.composition == .deviceAndSpillTogether
+                    && configuration.wipReview == nil
             )
             for (position, index) in frames.enumerated() {
                 try Task.checkCancellation()
                 let frame = index == firstIndex ? first : try await frameProvider(index)
                 if configuration.wipReview != nil {
                     let processed = index == firstIndex ? firstWIP! : try await wipProcessedRGBA(
-                        try display.renderRGBAFloat(frame, output: output, alpha: .ignore),
+                        configuration.composition == .deviceAndSpillTogether
+                            ? try display.renderIndependentRGBAFloat(
+                                frame, output: output, alpha: .ignore
+                            )
+                            : try display.renderRGBAFloat(
+                                frame, output: output, alpha: .ignore
+                            ),
                         sourceWidth: frame.width, sourceHeight: frame.height,
                         frameNumber: index, outputFilename: finalURL.lastPathComponent,
                         configuration: configuration, session: wipSession
@@ -366,20 +377,27 @@ enum NativeOutputRenderer {
         guard rgba.count.isMultiple(of: 4), rgba.allSatisfy({ $0.isFinite }) else {
             throw NativeOutputError.invalidFrame
         }
-        var device = rgba
+        var device = [Float](repeating: 0, count: rgba.count)
         var spill = [Float](repeating: 0, count: rgba.count)
-        for offset in stride(from: 0, to: rgba.count, by: 4) {
-            let matte = min(1, max(0, rgba[offset + 3]))
-            if matte == 0 {
-                device[offset] = 0
-                device[offset + 1] = 0
-                device[offset + 2] = 0
+        var error: UnsafePointer<CChar>?
+        let accepted = rgba.withUnsafeBufferPointer { input in
+            device.withUnsafeMutableBufferPointer { deviceOutput in
+                spill.withUnsafeMutableBufferPointer { spillOutput in
+                    screen_editorial_device_spill_passes_rgba32f(
+                        input.baseAddress,
+                        deviceOutput.baseAddress,
+                        spillOutput.baseAddress,
+                        rgba.count / 4,
+                        &error
+                    )
+                }
             }
-            device[offset + 3] = matte
-            spill[offset] = rgba[offset] * (1 - matte)
-            spill[offset + 1] = rgba[offset + 1] * (1 - matte)
-            spill[offset + 2] = rgba[offset + 2] * (1 - matte)
-            spill[offset + 3] = 1
+        }
+        guard accepted else {
+            throw NativeOutputError.unsupported(
+                error.map(String.init(cString:))
+                    ?? "no se publicaron las contribuciones editoriales Device/Spill"
+            )
         }
         return (device, spill)
     }
@@ -720,13 +738,15 @@ final class MovieWriter {
     private let width: Int
     private let height: Int
     private let outputEncoding: StudioColorOutputTransform.Encoding
+    private let preservesIndependentRGB: Bool
 
     init(
         url: URL, width: Int, height: Int, frameRate: StudioFrameRate,
         format: StudioOutputFormat, pixelEncoding: StudioPixelEncoding, peakNits: Double,
         signalRange: StudioSignalRange,
         alpha: StudioColorAlphaAssociation,
-        output: StudioColorOutputTransform
+        output: StudioColorOutputTransform,
+        preservesIndependentRGB: Bool = false
     ) throws {
         self.frameRate = frameRate
         self.format = format
@@ -734,6 +754,7 @@ final class MovieWriter {
         self.signalRange = signalRange
         self.width = width
         self.height = height
+        self.preservesIndependentRGB = preservesIndependentRGB
         outputEncoding = output.encoding
         usesYUV = format != .proRes4444 && format != .proRes4444XQ
         usesTenBitYUV = switch format {
@@ -854,7 +875,11 @@ final class MovieWriter {
             )
         } else {
             if CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64ARGB {
-                let rgba = try display.renderRGBAFloat(frame, output: output, alpha: alpha)
+                let rgba = preservesIndependentRGB
+                    ? try display.renderIndependentRGBAFloat(
+                        frame, output: output, alpha: alpha
+                    )
+                    : try display.renderRGBAFloat(frame, output: output, alpha: alpha)
                 try writeEncodedARGB16(rgba, into: buffer)
             } else {
                 try display.render(frame, output: output, into: buffer, alpha: alpha)

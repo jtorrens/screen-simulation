@@ -51,7 +51,7 @@ struct SpatialParams {
 }
 
 impl SpatialParams {
-    fn new(plan: &SpatialOpticalPlan) -> Self {
+    fn new(plan: &SpatialOpticalPlan) -> Result<Self, MetalNativeError> {
         let CameraSample {
             position,
             focal_length,
@@ -84,6 +84,12 @@ impl SpatialParams {
                         screen_application::ProceduralTestPattern::AnimatedCheckerboard => 0,
                         screen_application::ProceduralTestPattern::EyeChart => 1,
                         screen_application::ProceduralTestPattern::PhotometricDeviceScale => 2,
+                        screen_application::ProceduralTestPattern::VfxDeliveryStress => {
+                            return Err(MetalNativeError(
+                                "VFX Delivery Stress cannot enter the RGB-only procedural Metal route; use the explicit Color, Feeder and Raster boundaries"
+                                    .to_owned(),
+                            ));
+                        }
                     },
                     *time_seconds,
                 ),
@@ -107,7 +113,7 @@ impl SpatialParams {
                 ),
             };
         let pad = |value: [f32; 3], fourth| [value[0], value[1], value[2], fourth];
-        Self {
+        Ok(Self {
             raster: [
                 u32::from(plan.raster.full_width),
                 u32::from(plan.raster.full_height),
@@ -248,7 +254,7 @@ impl SpatialParams {
                 0.0,
                 0.0,
             ],
-        }
+        })
     }
 }
 
@@ -325,7 +331,7 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                 )
             }
         };
-        let params = SpatialParams::new(plan);
+        let params = SpatialParams::new(plan)?;
         let buffer = |values: &[[f32; 4]]| {
             self.device.new_buffer_with_data(
                 values.as_ptr().cast(),
@@ -477,7 +483,10 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
             let signal = buffer(&signal);
             let code_integral = buffer(&code_integral);
             let emission_integral = buffer(&emission_integral);
-            let params = plans.iter().map(SpatialParams::new).collect::<Vec<_>>();
+            let params = plans
+                .iter()
+                .map(SpatialParams::new)
+                .collect::<Result<Vec<_>, _>>()?;
             let params = self.device.new_buffer_with_data(
                 params.as_ptr().cast(),
                 size_of_val(params.as_slice()) as u64,
@@ -583,7 +592,7 @@ impl SpatialOpticalBackend for MetalRawDevelopment {
                     MTLResourceOptions::StorageModeShared,
                 )
             };
-            let params = SpatialParams::new(plan);
+            let params = SpatialParams::new(plan)?;
             let count = usize::from(plan.raster.width) * usize::from(plan.raster.height);
             dispatches.push(Dispatch {
                 signal: buffer(&signal),

@@ -63,7 +63,7 @@ import Testing
     let document = try GlobalLibraryStore(
         documentURL: URL(fileURLWithPath: path)
     ).load()
-    #expect(document.schemaVersion == 16)
+    #expect(document.schemaVersion == 17)
     #expect(document.wipReviewPresets.filter(\.isLocked).count == 4)
     let expectedUserDeviceIDs = Set(
         ProcessInfo.processInfo.environment["SCREEN_EXPECTED_USER_DEVICE_IDS"]?
@@ -72,6 +72,18 @@ import Testing
     #expect(!expectedUserDeviceIDs.isEmpty)
     #expect(Set(document.devices.filter { !$0.isLocked }.map(\.id))
         .isSuperset(of: expectedUserDeviceIDs))
+}
+
+@Test func everyCameraOwnsVFX2DAsItsDefaultLensEvaluator() throws {
+    let cameras = try CameraProfileDefinition.builtIns()
+    #expect(!cameras.isEmpty)
+    #expect(cameras.allSatisfy { $0.defaultLensEvaluationModelID == "vfx-2d-dof" })
+
+    var invalid = cameras
+    invalid[0].defaultLensEvaluationModelID = "thin-lens"
+    #expect(throws: GlobalLibraryError.self) {
+        try GlobalLibraryDocument(cameras: invalid).validate()
+    }
 }
 
 @Test func incompatibleGlobalLibraryIsBlockedWithoutLegacyParsingOrDeletion() throws {

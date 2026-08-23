@@ -4891,11 +4891,14 @@ mod tests {
                 .sensor_bloom
                 .overflow_transfer_fraction
         );
-        assert_eq!(changed_camera.lens_evaluation_model_id, "thin-lens");
+        assert_eq!(changed_camera.lens_evaluation_model_id, "vfx-2d-dof");
     }
 
     #[test]
     fn capture_raster_modes_are_explicit_and_camera_defaults_are_authoritative() {
+        assert!(CAPTURE_DEVICE_PRESETS.iter().all(|preset| {
+            preset.default_lens_evaluation_model == crate::LensEvaluationModel::VfxDepthBlur
+        }));
         let iphone = CAPTURE_DEVICE_PRESETS
             .iter()
             .copied()

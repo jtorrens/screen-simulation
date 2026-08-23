@@ -8,7 +8,7 @@ import Testing
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-wip-library-\(UUID().uuidString)")
     let controller = GlobalLibraryController(store: try GlobalLibraryStore(
-        documentURL: root.appendingPathComponent("GlobalLibrary.v16.json")
+        documentURL: root.appendingPathComponent("GlobalLibrary.v17.json")
     ))
     #expect(controller.document.wipReviewPresets.count == 4)
     #expect(controller.document.wipReviewPresets.allSatisfy { $0.isLocked })
@@ -213,7 +213,7 @@ import Testing
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-wip-workspace-\(UUID().uuidString)")
     let model = WorkspaceModel(globalLibraryStore: try GlobalLibraryStore(
-        documentURL: root.appendingPathComponent("GlobalLibrary.v16.json")
+        documentURL: root.appendingPathComponent("GlobalLibrary.v17.json")
     ))
     model.changeOutputFormat(.tiff16)
     model.outputAlphaMode = .straight

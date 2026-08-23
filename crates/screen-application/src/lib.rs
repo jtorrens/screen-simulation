@@ -287,6 +287,39 @@ pub struct DeviceVfxPassEvaluation {
     pub spill_rgba: Vec<[f32; 4]>,
 }
 
+/// Materializes the two synchronized editorial media from the transparent
+/// Delivery Raster. Device keeps the complete straight RGB carrier and its
+/// physical matte; Spill carries the complementary additive contribution over
+/// opaque black. The two contributions reconstruct Delivery RGB exactly without
+/// dividing by fractional alpha.
+pub fn publish_editorial_device_spill_passes_rgba32f(
+    delivery: &[[f32; 4]],
+) -> Result<DeviceVfxPassEvaluation, ApplicationError> {
+    if delivery.is_empty()
+        || delivery.iter().any(|sample| {
+            sample.iter().any(|value| !value.is_finite()) || !(0.0..=1.0).contains(&sample[3])
+        })
+    {
+        return Err(ApplicationError::InvalidDeviceVfxPasses);
+    }
+    let mut device = Vec::with_capacity(delivery.len());
+    let mut spill = Vec::with_capacity(delivery.len());
+    for sample in delivery {
+        let inverse_matte = 1.0 - sample[3];
+        device.push(*sample);
+        spill.push([
+            sample[0] * inverse_matte,
+            sample[1] * inverse_matte,
+            sample[2] * inverse_matte,
+            1.0,
+        ]);
+    }
+    Ok(DeviceVfxPassEvaluation {
+        device_rgba: device,
+        spill_rgba: spill,
+    })
+}
+
 pub fn publish_device_vfx_passes_rgba32f(
     physical: &[[f32; 4]],
     width: u32,
@@ -535,7 +568,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_recording_profile_id: screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID,
         recommended_recording_profile_ids: &[screen_recording::GENERIC_PRORES_422_HQ_PROFILE_ID],
         native_vfx_encoding_id: Some("arri-logc4-awg4"),
-        default_lens_evaluation_model: LensEvaluationModel::ThinLens,
+        default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(27.99),
@@ -662,7 +695,7 @@ pub const CAPTURE_DEVICE_PRESETS: &[CaptureDevicePreset] = &[
         default_recording_profile_id: screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID,
         recommended_recording_profile_ids: &[screen_recording::GENERIC_JPEG_PHOTO_PROFILE_ID],
         native_vfx_encoding_id: None,
-        default_lens_evaluation_model: LensEvaluationModel::ThinLens,
+        default_lens_evaluation_model: LensEvaluationModel::VfxDepthBlur,
         computational_capture: ComputationalCaptureProfile::SINGLE_EXPOSURE,
         rendering_intent: CameraRenderingIntent::NEUTRAL,
         gate_width: Millimeters(5.76),
@@ -4759,6 +4792,9 @@ pub fn prepare_procedural_spatial_plan(
     sensor: SensorProfile,
     region: SensorRegion,
 ) -> Result<SpatialOpticalPlan, ApplicationError> {
+    if request.procedural_pattern == ProceduralTestPattern::VfxDeliveryStress {
+        return Err(ApplicationError::VfxDeliveryStressRequiresRasterFeeder);
+    }
     let sensor = sensor.validate().map_err(ApplicationError::Sensor)?;
     let region = region.validate(sensor).map_err(ApplicationError::Sensor)?;
     let pattern = request.procedural_pattern;
@@ -7536,6 +7572,7 @@ pub enum ApplicationError {
     DecodedPixelStorageTooLarge,
     MediaSampleUnavailable,
     AlphaAssociationUnresolved,
+    VfxDeliveryStressRequiresRasterFeeder,
     Color(ColorError),
     Panel(PanelError),
     Cover(CoverError),
@@ -7725,6 +7762,9 @@ impl fmt::Display for ApplicationError {
             Self::AlphaAssociationUnresolved => formatter.write_str(
                 "alpha metadata does not identify Straight or Premultiplied association",
             ),
+            Self::VfxDeliveryStressRequiresRasterFeeder => formatter.write_str(
+                "VFX Delivery Stress is scene-linear RGBA and must cross the explicit Color, Feeder and Raster boundaries",
+            ),
             Self::Color(error) => write!(formatter, "invalid color transform: {error}"),
             Self::Panel(error) => write!(formatter, "invalid panel: {error}"),
             Self::Cover(error) => write!(formatter, "invalid optical cover: {error}"),
@@ -7782,6 +7822,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn editorial_device_spill_partition_is_bounded_and_reconstructs_fractional_edges() {
+        let delivery = vec![
+            [0.3, -0.1, 1.2, 0.0],
+            [0.1, 0.2, 0.3, 0.000_1],
+            [0.4, 0.5, 0.6, 0.5],
+            [0.7, 0.8, 0.9, 1.0],
+        ];
+        let passes = publish_editorial_device_spill_passes_rgba32f(&delivery).unwrap();
+        for (index, source) in delivery.iter().enumerate() {
+            let matte = source[3];
+            assert_eq!(passes.device_rgba[index][3], matte);
+            assert_eq!(passes.spill_rgba[index][3], 1.0);
+            for channel in 0..3 {
+                assert_eq!(passes.device_rgba[index][channel], source[channel]);
+                let reconstructed =
+                    passes.device_rgba[index][channel] * matte + passes.spill_rgba[index][channel];
+                assert!((reconstructed - source[channel]).abs() <= 1.0e-6);
+            }
+        }
+        assert!(passes.device_rgba[1][0].abs() < 1.0);
+        assert!(passes.spill_rgba[1][0] > 0.099);
     }
 
     #[test]
@@ -8253,6 +8317,21 @@ mod tests {
                 .into_iter()
                 .flatten()
                 .all(f32::is_finite)
+        );
+    }
+
+    #[test]
+    fn vfx_delivery_stress_cannot_enter_rgb_only_procedural_spatial_plan() {
+        let mut optics = request().optics;
+        optics.procedural_pattern = ProceduralTestPattern::VfxDeliveryStress;
+        let sensor = SensorProfile {
+            native_width: 8,
+            native_height: 8,
+            ..SensorProfile::REFERENCE
+        };
+        assert_eq!(
+            prepare_procedural_spatial_plan(optics, sensor, SensorRegion::full(sensor)),
+            Err(ApplicationError::VfxDeliveryStressRequiresRasterFeeder)
         );
     }
 

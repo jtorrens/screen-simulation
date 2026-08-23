@@ -11,16 +11,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan, RasterPlacement,
     };
     use screen_camera::CameraRenderingIntent;
+    use screen_cover::{
+        COVER_GLASS_PRESETS, EnvironmentProjection, EquirectangularEnvironment,
+        IncidentEnvironment, SphericalEnvironmentPlacement,
+    };
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
     use screen_platform::MetalPhysicalPipeline;
 
-    const WIDTH: u32 = 3_840;
-    const HEIGHT: u32 = 2_160;
+    let width = std::env::var("SCREEN_GGX_BENCH_WIDTH")
+        .map_or(Ok(3_840_u32), |value| value.parse::<u32>())?;
+    if width == 0 || width % 16 != 0 {
+        return Err("SCREEN_GGX_BENCH_WIDTH must be a positive multiple of 16".into());
+    }
+    let motion_samples = std::env::var("SCREEN_GGX_BENCH_MOTION_SAMPLES")
+        .map_or(Ok(1_u16), |value| value.parse::<u16>())?;
+    if !(1..=64).contains(&motion_samples) {
+        return Err("SCREEN_GGX_BENCH_MOTION_SAMPLES must be between 1 and 64".into());
+    }
+    let height = width * 9 / 16;
     let device = metal::Device::system_default().ok_or("this Mac exposes no Metal device")?;
-    let values = (0..u64::from(WIDTH) * u64::from(HEIGHT))
+    let values = (0..u64::from(width) * u64::from(height))
         .map(|index| {
-            let x = (index % u64::from(WIDTH)) as f32 / WIDTH as f32;
-            let y = (index / u64::from(WIDTH)) as f32 / HEIGHT as f32;
+            let x = (index % u64::from(width)) as f32 / width as f32;
+            let y = (index / u64::from(width)) as f32 / height as f32;
             let stripe = if (index % 19) < 9 { 1.0 } else { 0.02 };
             [stripe, x * 0.8 + 0.1, y * 0.8 + 0.1, 1.0]
         })
@@ -28,19 +41,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let descriptor = TextureDescriptor::new();
     descriptor.set_texture_type(MTLTextureType::D2);
     descriptor.set_pixel_format(MTLPixelFormat::RGBA32Float);
-    descriptor.set_width(u64::from(WIDTH));
-    descriptor.set_height(u64::from(HEIGHT));
+    descriptor.set_width(u64::from(width));
+    descriptor.set_height(u64::from(height));
     descriptor.set_storage_mode(MTLStorageMode::Shared);
     descriptor.set_usage(MTLTextureUsage::ShaderRead);
     let source = device.new_texture(&descriptor);
     let signal = device.new_texture(&descriptor);
-    let region = MTLRegion::new_2d(0, 0, u64::from(WIDTH), u64::from(HEIGHT));
-    let row_bytes = u64::from(WIDTH) * size_of::<[f32; 4]>() as u64;
+    let region = MTLRegion::new_2d(0, 0, u64::from(width), u64::from(height));
+    let row_bytes = u64::from(width) * size_of::<[f32; 4]>() as u64;
     source.replace_region(region, 0, values.as_ptr().cast(), row_bytes);
     signal.replace_region(region, 0, values.as_ptr().cast(), row_bytes);
     drop(values);
 
     let backend = MetalPhysicalPipeline::new(&device)?;
+    const ENVIRONMENT_WIDTH: u32 = 64;
+    const ENVIRONMENT_HEIGHT: u32 = 32;
+    let environment_values = (0..u64::from(ENVIRONMENT_WIDTH) * u64::from(ENVIRONMENT_HEIGHT))
+        .map(|index| {
+            let u = (index % u64::from(ENVIRONMENT_WIDTH)) as f32 / (ENVIRONMENT_WIDTH - 1) as f32;
+            let v = (index / u64::from(ENVIRONMENT_WIDTH)) as f32 / (ENVIRONMENT_HEIGHT - 1) as f32;
+            let key = if (u - 0.22).abs() < 0.06 && (v - 0.36).abs() < 0.10 {
+                18.0
+            } else {
+                0.12
+            };
+            [key, 0.2 + 1.4 * v, 0.15 + 0.9 * u, 1.0]
+        })
+        .collect::<Vec<_>>();
+    let environment_descriptor = TextureDescriptor::new();
+    environment_descriptor.set_texture_type(MTLTextureType::D2);
+    environment_descriptor.set_pixel_format(MTLPixelFormat::RGBA32Float);
+    environment_descriptor.set_width(u64::from(ENVIRONMENT_WIDTH));
+    environment_descriptor.set_height(u64::from(ENVIRONMENT_HEIGHT));
+    environment_descriptor.set_storage_mode(MTLStorageMode::Shared);
+    environment_descriptor.set_usage(MTLTextureUsage::ShaderRead);
+    let environment_source = device.new_texture(&environment_descriptor);
+    environment_source.replace_region(
+        MTLRegion::new_2d(
+            0,
+            0,
+            u64::from(ENVIRONMENT_WIDTH),
+            u64::from(ENVIRONMENT_HEIGHT),
+        ),
+        0,
+        environment_values.as_ptr().cast(),
+        u64::from(ENVIRONMENT_WIDTH) * size_of::<[f32; 4]>() as u64,
+    );
+    let environment = backend.prepare_equirectangular_environment(&environment_source)?;
     let preset = DEVICE_PRESETS
         .iter()
         .find(|preset| preset.id == "lcd-asus-proart-pa329cv")
@@ -53,8 +100,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
         placement: RasterPlacement::Stretch,
         quality: FlatPanelQuality::High,
-        requested_width: WIDTH,
-        requested_height: HEIGHT,
+        requested_width: width,
+        requested_height: height,
         device_vfx_alpha_mode: screen_application::DeviceVfxAlphaMode::Ignore,
         screen_amount: 1.0,
         emission_amount: 1.0,
@@ -64,9 +111,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         moire_filter_strength: 0.0,
         temporal_emission_amount: 1.0,
         temporal_emission_gain: 1.0,
-        cover: screen_cover::CoverGlassProfile::NEUTRAL,
+        cover: COVER_GLASS_PRESETS[2].profile,
         cover_glow_exterior_intensity: 1.0,
-        environment: screen_cover::IncidentEnvironment::NONE,
+        environment: IncidentEnvironment::Equirectangular(EquirectangularEnvironment {
+            character_strength: 1.0,
+            source_unit_radiance_candelas_per_square_meter: 100.0,
+            exposure_stops: 0.0,
+            placement: SphericalEnvironmentPlacement::IDENTITY,
+            projection: EnvironmentProjection::Distant,
+        }),
         scene_geometry_lens: scene,
         camera_position: screen_contracts::Vec3 {
             x: 0.0,
@@ -108,27 +161,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!(
-        "benchmark=lens-evaluator device=\"{}\" output={}x{} target_ms=10000",
+        "benchmark=image-environment-ggx device=\"{}\" output={}x{} ggx_samples=96 motion_samples={motion_samples}",
         device.name(),
-        WIDTH,
-        HEIGHT
+        width,
+        height
     );
-    for model in [
-        LensEvaluationModel::ThinLens,
-        LensEvaluationModel::VfxDepthBlur,
-    ] {
-        let mut plan = base_plan;
-        plan.lens_evaluation_model = model;
-        let started = Instant::now();
-        let result = backend.evaluate(&source, &signal, plan, |_| {}, || false)?;
-        let elapsed = started.elapsed();
-        println!(
-            "model={model:?} output={}x{} samples_per_pixel={} metal_submit_to_result_ms={:.3}",
-            result.sampling.effective_width,
-            result.sampling.effective_height,
-            result.sampling.samples_per_output_pixel,
-            elapsed.as_secs_f64() * 1_000.0,
-        );
+    let requested_intermediates = if std::env::var_os("SCREEN_GGX_BENCH_STAGE_MATRIX").is_some() {
+        &[
+            PhysicalIntermediate::SourceAcesCg,
+            PhysicalIntermediate::PanelEmission,
+            PhysicalIntermediate::RelativeGeometry,
+            PhysicalIntermediate::CoverEnvironment,
+            PhysicalIntermediate::LensProjection,
+        ][..]
+    } else {
+        &[PhysicalIntermediate::LensProjection][..]
+    };
+    let models = match std::env::var("SCREEN_GGX_BENCH_MODEL").ok().as_deref() {
+        None => &[
+            LensEvaluationModel::ThinLens,
+            LensEvaluationModel::VfxDepthBlur,
+        ][..],
+        Some("vfx-2d-dof") => &[LensEvaluationModel::VfxDepthBlur][..],
+        Some("thin-lens") => &[LensEvaluationModel::ThinLens][..],
+        Some(_) => {
+            return Err(
+                "SCREEN_GGX_BENCH_MODEL must be vfx-2d-dof or thin-lens when specified".into(),
+            );
+        }
+    };
+    for &model in models {
+        for &requested_intermediate in requested_intermediates {
+            let mut plan = base_plan;
+            plan.lens_evaluation_model = model;
+            plan.requested_intermediate = requested_intermediate;
+            let started = Instant::now();
+            let result = if motion_samples == 1 {
+                backend.evaluate_with_environment(
+                    &source,
+                    &signal,
+                    Some(&environment),
+                    plan,
+                    |_| {},
+                    || false,
+                )?
+            } else {
+                let middle_sample = (f32::from(motion_samples) - 1.0) * 0.5;
+                let scheduled = (0..motion_samples)
+                    .map(|sample_index| {
+                        let mut sample_plan = plan;
+                        sample_plan.camera_position.x +=
+                            (f32::from(sample_index) - middle_sample) * 0.004;
+                        (&*source, &*signal, sample_plan, 1.0_f32)
+                    })
+                    .collect::<Vec<_>>();
+                backend.evaluate_temporal_with_environment(
+                    &scheduled,
+                    Some(&environment),
+                    |_| {},
+                    || false,
+                )?
+            };
+            let elapsed = started.elapsed();
+            println!(
+                "model={model:?} intermediate={requested_intermediate:?} output={}x{} samples_per_pixel={} metal_submit_to_result_ms={:.3}",
+                result.sampling.effective_width,
+                result.sampling.effective_height,
+                result.sampling.samples_per_output_pixel,
+                elapsed.as_secs_f64() * 1_000.0,
+            );
+        }
     }
     Ok(())
 }

@@ -20,16 +20,16 @@ use screen_application::{
     DeliveryRasterPlacement, DeliveryRasterRequest, DeviceVfxAlphaMode, FullSensorRaster,
     HostRenderContext, PHYSICAL_STAGE_DESCRIPTORS, PhaseSpatialRequirement, PhysicalIntermediate,
     PhysicalPipelineExecutionPlan, PhysicalPipelineSnapshot, PhysicalStageControl,
-    PlanarEnvironmentFraming, PreparedRender, ProceduralTestPattern, RasterExtent, RasterPlacement,
-    RecordingAdapterAvailability, RecordingAdapterKind, ReflectionEmitter,
-    ReflectionEnvironmentRig, ReflectionLightAppearance, ReflectionPracticalLight,
-    ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow, ResolvedRateControl,
-    ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot, SceneFocusAuthoring,
-    SceneFrameAuthoring, SceneFrameResolver, SceneRevision, TemporalCacheConfiguration,
-    TestAuthoringError, TestAuthoringProfileSource, TestAuthoringSelection,
-    TestCaptureAuthoringProfile, TestCaptureRasterMode, TestControlRequirement,
-    TestCoverAuthoringProfile, TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile,
-    TestLensAuthoringProfile, TestOwnedChoiceOption,
+    PlanarEnvironmentFraming, PreparedRender, PreparedRenderError, ProceduralTestPattern,
+    RasterExtent, RasterPlacement, RecordingAdapterAvailability, RecordingAdapterKind,
+    ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
+    ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
+    ResolvedRateControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
+    SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolver, SceneRevision,
+    TemporalCacheConfiguration, TestAuthoringError, TestAuthoringProfileSource,
+    TestAuthoringSelection, TestCaptureAuthoringProfile, TestCaptureRasterMode,
+    TestControlRequirement, TestCoverAuthoringProfile, TestDeviceAuthoringProfile,
+    TestEnvironmentAuthoringProfile, TestLensAuthoringProfile, TestOwnedChoiceOption,
     TestPageDescriptor as ApplicationTestPageDescriptor, WORKSTATION_RESOLVED_SCENE_CACHE_BYTES,
     apply_test_choice, apply_test_choice_with_profiles, apply_test_scalar,
     apply_test_scalar_with_profiles, apply_test_toggle, apply_test_toggle_with_profiles,
@@ -39,9 +39,9 @@ use screen_application::{
     evaluate_delivery_raster_with_physical_matte_rgba32f, evaluate_tracking_overlay,
     prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
     project_device_focus_target, publish_device_vfx_passes_rgba32f,
-    resolve_physical_stage_contributions, resolve_planar_environment_framing,
-    test_inspector_location, test_page_descriptor, test_page_descriptor_with_profiles,
-    vfx_delivery_stress_sample,
+    publish_editorial_device_spill_passes_rgba32f, resolve_physical_stage_contributions,
+    resolve_planar_environment_framing, test_inspector_location, test_page_descriptor,
+    test_page_descriptor_with_profiles, vfx_delivery_stress_sample,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -2534,8 +2534,8 @@ pub unsafe extern "C" fn screen_prepared_render_v1_create(
         PhaseSpatialRequirement::FullFrame,
     ) {
         Ok(value) => value,
-        Err(_) => {
-            unsafe { set_error(error_message, b"Application could not prepare the render\0") };
+        Err(error) => {
+            unsafe { set_error(error_message, prepared_render_error_message(error)) };
             return std::ptr::null_mut();
         }
     };
@@ -2546,6 +2546,55 @@ pub unsafe extern "C" fn screen_prepared_render_v1_create(
         pipeline: resolver.pipeline,
         is_temporally_varying: resolver.resolver.is_temporally_varying(),
     }))
+}
+
+fn prepared_render_error_message(error: PreparedRenderError) -> &'static [u8] {
+    match error {
+        PreparedRenderError::EmptyRaster => {
+            b"Render preparation failed: the requested output raster is empty\0"
+        }
+        PreparedRenderError::RasterOverflow => {
+            b"Render preparation failed: the requested output raster exceeds supported bounds\0"
+        }
+        PreparedRenderError::WindowOutsideRaster => {
+            b"Render preparation failed: the render window lies outside the output raster\0"
+        }
+        PreparedRenderError::InvalidGate => {
+            b"Render preparation failed: pixel aspect or render scale is invalid\0"
+        }
+        PreparedRenderError::InvalidRatio => {
+            b"Render preparation failed: a required rational value has an invalid denominator\0"
+        }
+        PreparedRenderError::InvalidShutter => {
+            b"Render preparation failed: the shutter interval or temporal sample schedule is invalid\0"
+        }
+        PreparedRenderError::FrameRateMismatch => {
+            b"Render preparation failed: output frame rate does not match the saved scene frame rate\0"
+        }
+        PreparedRenderError::ActiveSensorChangesDuringExposure => {
+            b"Render preparation failed: the active sensor window changes during the shutter interval\0"
+        }
+        PreparedRenderError::SceneResolution(error) => match error {
+            screen_application::SceneFrameResolutionError::InvalidTime => {
+                b"Render preparation failed: a shutter sample has an invalid exact scene time\0"
+            }
+            screen_application::SceneFrameResolutionError::InvalidActiveSensorWindow => {
+                b"Render preparation failed: a shutter sample resolves an invalid active sensor window\0"
+            }
+            screen_application::SceneFrameResolutionError::SensorRasterMismatch => {
+                b"Render preparation failed: the saved sensor raster does not match the resolved camera\0"
+            }
+            screen_application::SceneFrameResolutionError::InvalidFocusAuthoring => {
+                b"Render preparation failed: the saved autofocus target is invalid\0"
+            }
+            screen_application::SceneFrameResolutionError::InvalidResolvedFocusDistance => {
+                b"Render preparation failed: autofocus resolves behind the camera at a shutter sample\0"
+            }
+            screen_application::SceneFrameResolutionError::Geometry(_) => {
+                b"Render preparation failed: camera or Device geometry cannot be sampled across the shutter interval\0"
+            }
+        },
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -7039,6 +7088,38 @@ pub unsafe extern "C" fn screen_device_vfx_passes_rgba32f(
     true
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_editorial_device_spill_passes_rgba32f(
+    delivery_rgba: *const f32,
+    device_rgba: *mut f32,
+    spill_rgba: *mut f32,
+    count: usize,
+    error_message: *mut *const c_char,
+) -> bool {
+    if delivery_rgba.is_null() || device_rgba.is_null() || spill_rgba.is_null() || count == 0 {
+        unsafe { set_error(error_message, b"invalid editorial Device/Spill buffers\0") };
+        return false;
+    }
+    let delivery = unsafe { std::slice::from_raw_parts(delivery_rgba.cast::<[f32; 4]>(), count) };
+    let Ok(result) = publish_editorial_device_spill_passes_rgba32f(delivery) else {
+        unsafe {
+            set_error(
+                error_message,
+                b"editorial Device/Spill publication failed\0",
+            )
+        };
+        return false;
+    };
+    unsafe {
+        std::slice::from_raw_parts_mut(device_rgba.cast::<[f32; 4]>(), count)
+            .copy_from_slice(&result.device_rgba);
+        std::slice::from_raw_parts_mut(spill_rgba.cast::<[f32; 4]>(), count)
+            .copy_from_slice(&result.spill_rgba);
+        set_error(error_message, b"\0");
+    }
+    true
+}
+
 /// Color-owned ACEScg -> recording-output-signal-v2 CPU reference boundary.
 /// The caller owns both buffers and supplies exact stable transform identity.
 #[unsafe(no_mangle)]
@@ -7314,6 +7395,30 @@ unsafe fn set_error(destination: *mut *const c_char, message: &'static [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_render_errors_retain_their_actionable_boundary_cause() {
+        assert_eq!(
+            std::ffi::CStr::from_bytes_with_nul(prepared_render_error_message(
+                PreparedRenderError::FrameRateMismatch
+            ))
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "Render preparation failed: output frame rate does not match the saved scene frame rate"
+        );
+        assert_eq!(
+            std::ffi::CStr::from_bytes_with_nul(prepared_render_error_message(
+                PreparedRenderError::SceneResolution(
+                    screen_application::SceneFrameResolutionError::InvalidResolvedFocusDistance
+                )
+            ))
+            .unwrap()
+            .to_str()
+            .unwrap(),
+            "Render preparation failed: autofocus resolves behind the camera at a shutter sample"
+        );
+    }
 
     #[test]
     fn tracking_scale_bridge_uses_the_geometry_owner_and_rejects_old_abi() {

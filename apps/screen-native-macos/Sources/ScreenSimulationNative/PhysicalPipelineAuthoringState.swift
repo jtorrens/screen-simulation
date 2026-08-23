@@ -31,7 +31,7 @@ struct PhysicalPipelineAuthoringState: Codable, Equatable, Sendable {
     }
 
     struct SceneLens: Codable, Equatable, Sendable {
-        var evaluationModel = "thin-lens"
+        var evaluationModel = "vfx-2d-dof"
         var focalLengthMillimeters = 50.0
         var sensorWidthMillimeters = 36.0
         var sensorHeightMillimeters = 24.0

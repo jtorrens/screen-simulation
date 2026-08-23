@@ -119,7 +119,7 @@ struct CameraProfileDefinition: Codable, Equatable, Identifiable, Sendable {
               defaultFStop.isFinite, defaultFStop > 0,
               defaultShutterAngleDegrees.isFinite,
               defaultTemporalSamples > 0,
-              ["thin-lens", "vfx-2d-dof"].contains(defaultLensEvaluationModelID)
+              defaultLensEvaluationModelID == "vfx-2d-dof"
         else { throw GlobalLibraryError.invalidEntity("El perfil de cámara \(name) no es válido.") }
     }
 
