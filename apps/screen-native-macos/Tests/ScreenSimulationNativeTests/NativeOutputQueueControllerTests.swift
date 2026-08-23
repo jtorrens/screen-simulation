@@ -200,7 +200,7 @@ import Testing
     #expect(controller.jobs.first?.scene.name == "Guardada")
     #expect(controller.jobs.first?.generatedEnvironmentEXR == Data([1, 2, 3]))
     #expect(controller.jobs.first?.scene.snapshot == outputQueueTestScene(name: "Otra").snapshot)
-    #expect(controller.jobs.first?.configuration.motionBlurEnabled == true)
+    #expect(controller.jobs.first?.configuration.motionBlurMode == .physical)
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }
 
@@ -334,6 +334,36 @@ import Testing
     #expect(restored.jobs[0].generatedEnvironmentEXR == Data([9, 4]))
     #expect(restored.jobs[0].configuration.overwritePolicy == .failIfExists)
     #expect(restored.jobs[0].state == .pending)
+}
+
+@Test @MainActor func renderQueueV6StrictlyRequiresTheExplicitMotionBlurMode() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-v6-strict-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try RenderQueueStore(directoryURL: root)
+    let controller = try NativeOutputQueueController(store: store)
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Contrato v6"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/v6.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    let encoded = try Data(contentsOf: store.documentURL)
+    let rootObject = try #require(
+        try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v6")
+
+    var legacy = rootObject
+    var jobs = try #require(legacy["jobs"] as? [[String: Any]])
+    var configuration = try #require(jobs[0]["configuration"] as? [String: Any])
+    configuration.removeValue(forKey: "motionBlurMode")
+    configuration["motionBlurEnabled"] = true
+    jobs[0]["configuration"] = configuration
+    legacy["jobs"] = jobs
+    try JSONSerialization.data(withJSONObject: legacy).write(
+        to: store.documentURL, options: .atomic
+    )
+    #expect(throws: (any Error).self) { try store.load() }
 }
 
 @Test @MainActor func inactiveJobCanBeRemovedWithoutTouchingAnyOutput() throws {
@@ -506,7 +536,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: true,
+        motionBlurMode: .physical,
         motionSamples: 8,
         format: .proRes4444,
         pipeline: .aces,

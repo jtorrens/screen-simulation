@@ -2194,7 +2194,11 @@ struct ContentView: View {
                 }
                 Section("Movimiento") {
                     if model.renderOutputType == .standard {
-                    Toggle("Desenfoque de movimiento", isOn: $model.renderMotionBlurEnabled)
+                    Picker("Motion Blur", selection: $model.renderMotionBlurMode) {
+                        ForEach(StudioRenderMotionBlurMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
                     LabeledContent("Muestras temporales") {
                         Stepper(
                             value: $model.renderMotionSamples,
@@ -2206,8 +2210,10 @@ struct ContentView: View {
                                 .frame(width: 34, alignment: .trailing)
                         }
                     }
-                    .disabled(!model.renderMotionBlurEnabled)
-                    Text("Integra cámara, Device y emisión durante el intervalo físico de obturación. No aplica un blur 2D posterior.")
+                    .disabled(model.renderMotionBlurMode == .disabled)
+                    Text(model.renderMotionBlurMode == .approximate2D
+                        ? "Aproximación 2D posterior a una sola evaluación física. No resuelve disoclusiones, parallax, reflejos temporales ni integración física de shutter."
+                        : "El modo físico integra cámara, Device y emisión durante el intervalo físico de obturación.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     } else {
@@ -2786,13 +2792,17 @@ struct ContentView: View {
                         Text(composition.label).tag(composition)
                     }
                 }
-                Toggle("Desenfoque de movimiento", isOn: $model.renderMotionBlurEnabled)
+                Picker("Motion Blur", selection: $model.renderMotionBlurMode) {
+                    ForEach(StudioRenderMotionBlurMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
                 Stepper(
                     "Muestras temporales · \(model.renderMotionSamples)",
                     value: $model.renderMotionSamples,
                     in: 2...64
                 )
-                .disabled(!model.renderMotionBlurEnabled)
+                .disabled(model.renderMotionBlurMode == .disabled)
                 Picker("Alpha", selection: $model.outputAlphaMode) {
                     ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
                 }

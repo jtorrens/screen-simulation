@@ -195,7 +195,7 @@ import Testing
     let straight = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "WIP", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false, motionSamples: 2, format: .tiff16,
+        motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
         view: "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -229,7 +229,7 @@ import Testing
     let valid = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "HLG", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
-        motionBlurEnabled: false, motionSamples: 2, format: .h265High,
+        motionBlurMode: .disabled, motionSamples: 2, format: .h265High,
         pipeline: .aces, target: .hdr, peakNits: preset.hlgPeakNits,
         display: "Rec.2100-HLG - Display",
         view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
@@ -243,7 +243,7 @@ import Testing
     let mismatched = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "HLG", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
-        motionBlurEnabled: false, motionSamples: 2, format: .h265High,
+        motionBlurMode: .disabled, motionSamples: 2, format: .h265High,
         pipeline: .aces, target: .hdr, peakNits: preset.hlgPeakNits,
         display: "Rec.2100-PQ - Display",
         view: "ACES 2.0 - HDR 1000 nits (Rec.2020)",

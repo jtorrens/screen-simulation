@@ -555,7 +555,7 @@ enum NativeOutputRenderer {
                 "un render que no es VFX Log no puede declarar un Log/Gamut VFX"
             )
         }
-        guard !configuration.motionBlurEnabled
+        guard configuration.motionBlurMode == .disabled
             || (2...64).contains(configuration.motionSamples) else {
             throw NativeOutputError.unsupported(
                 "el desenfoque de movimiento requiere entre 2 y 64 muestras temporales"

@@ -59,7 +59,7 @@ import Testing
     let separated = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillSeparate,
-        motionBlurEnabled: false, motionSamples: 2, format: .tiff16,
+        motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
         view: "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -82,7 +82,7 @@ import Testing
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 0
         ), composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false, motionSamples: 2, format: .tiff16,
+        motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
         view: "ACES 2.0 - SDR 100 nits (Rec.709)",
@@ -104,7 +104,7 @@ private func derivationConfiguration(
     StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
-        motionBlurEnabled: false, motionSamples: 2, format: format,
+        motionBlurMode: .disabled, motionSamples: 2, format: format,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
         view: "ACES 2.0 - SDR 100 nits (Rec.709)",

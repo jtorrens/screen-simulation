@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v5"
+    static let schema = "ScreenSimulation.RenderQueue.v6"
 
     let schema: String
     let isPaused: Bool
@@ -78,7 +78,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v5.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v6.json")
     }
 
     func load() throws -> RenderQueueDocument {
@@ -120,6 +120,27 @@ struct RenderQueueStore: Sendable {
                 || keys == keysWithoutDerived || keys == keysWithoutOptional
         }) else {
             throw RenderQueueStoreError.invalidDocument("Un trabajo de Render Queue contiene campos desconocidos.")
+        }
+        let requiredConfigurationKeys: Set<String> = [
+            "outputType", "jobName", "overwritePolicy", "composition",
+            "motionBlurMode", "motionSamples", "format", "pipeline", "target",
+            "peakNits", "pixelEncoding", "signalRange", "alpha", "includeAudio",
+            "frameRate", "firstFrame", "lastFrame",
+        ]
+        let optionalConfigurationKeys: Set<String> = [
+            "fusionScene", "display", "view", "vfxInterchangeEncodingID", "wipReview",
+        ]
+        guard jobs.allSatisfy({ job in
+            guard let configuration = job["configuration"] as? [String: Any] else {
+                return false
+            }
+            let keys = Set(configuration.keys)
+            return requiredConfigurationKeys.isSubset(of: keys)
+                && keys.isSubset(of: requiredConfigurationKeys.union(optionalConfigurationKeys))
+        }) else {
+            throw RenderQueueStoreError.invalidDocument(
+                "La configuración persistida de Render Queue no pertenece al contrato vigente."
+            )
         }
     }
 }

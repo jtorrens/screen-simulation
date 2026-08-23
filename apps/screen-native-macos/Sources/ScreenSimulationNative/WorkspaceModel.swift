@@ -415,7 +415,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderOutputType = StudioOutputType.standard
     @Published var renderJobName = "ScreenSimulation"
     @Published var renderComposition = StudioRenderComposition.deviceAndSpillTogether
-    @Published var renderMotionBlurEnabled = true
+    @Published var renderMotionBlurMode = StudioRenderMotionBlurMode.physical
     @Published var renderMotionSamples: UInt16 = 8
     @Published var fusionDOFMode = StudioFusionDOFMode.fusion
     @Published var fusionResolutionMode = StudioFusionResolutionMode.maximumProjectedDensity
@@ -4499,7 +4499,7 @@ final class WorkspaceModel: ObservableObject {
             fusionScene: fusion,
             composition: renderOutputType == .fusionScenePackage
                 ? .deviceAndSpillTogether : renderComposition,
-            motionBlurEnabled: renderOutputType == .fusionScenePackage ? false : renderMotionBlurEnabled,
+            motionBlurMode: renderOutputType == .fusionScenePackage ? .disabled : renderMotionBlurMode,
             motionSamples: renderMotionSamples,
             format: outputFormat,
             pipeline: renderWIPReviewPreset == nil ? renderPreset.pipeline : .aces,
@@ -4579,7 +4579,7 @@ final class WorkspaceModel: ObservableObject {
         renderOutputType = configuration.outputType
         renderJobName = configuration.jobName
         renderComposition = configuration.composition
-        renderMotionBlurEnabled = configuration.motionBlurEnabled
+        renderMotionBlurMode = configuration.motionBlurMode
         renderMotionSamples = configuration.motionSamples
         outputFormat = configuration.format
         outputPixelEncoding = configuration.pixelEncoding
@@ -4763,8 +4763,7 @@ final class WorkspaceModel: ObservableObject {
     ) async throws -> StudioColorMetalFrame {
         try Task.checkCancellation()
         currentFrame = index
-        let temporalSamples: UInt16 = configuration.motionBlurEnabled
-            ? configuration.motionSamples : 1
+        let temporalSamples = configuration.physicalTemporalSamples
         let resolvedSceneFrame = try resolveSceneFrame(
             index, temporalSamplesOverride: temporalSamples
         )
@@ -4803,12 +4802,12 @@ final class WorkspaceModel: ObservableObject {
                         "Render Queue no recibió el checkpoint de cámara solicitado."
                     )
                 }
-                if configuration.composition != .fullComposite {
-                    // Both the reversible single carrier and separate VFX media consume
-                    // the typed transparent Delivery Raster with its independent physical
-                    // matte. The ordinary camera composite is intentionally opaque and
-                    // would erase the carrier alpha and RGB below alpha zero.
-                    return try RecordingPhaseExecutor.delivery(
+                // Approximate 2D Motion Blur alone materializes the transparent carrier
+                // before Reference. Disabled and physical modes retain the prior route.
+                let deliveryCarrier: StudioColorMetalFrame?
+                if configuration.composition != .fullComposite
+                    || configuration.motionBlurMode == .approximate2D {
+                    let delivery = try RecordingPhaseExecutor.delivery(
                         cameraRendered: camera,
                         width: Int(selection.deliveryWidth),
                         height: Int(selection.deliveryHeight),
@@ -4816,6 +4815,18 @@ final class WorkspaceModel: ObservableObject {
                         backgroundID: "transparent",
                         display: metalDisplay
                     ).compositionFrame
+                    deliveryCarrier = configuration.motionBlurMode == .approximate2D
+                        ? try approximate2DMotionBlur(
+                            delivery, scene: resolvedSceneFrame,
+                            configuration: configuration,
+                            deliveryPlacementID: selection.deliveryPlacementID
+                        )
+                        : delivery
+                } else {
+                    deliveryCarrier = nil
+                }
+                if configuration.composition != .fullComposite {
+                    return deliveryCarrier!
                 }
                 let reference: StudioColorMetalFrame?
                 if configuration.composition == .fullComposite {
@@ -4846,13 +4857,83 @@ final class WorkspaceModel: ObservableObject {
                     deliveryBackgroundID: selection.deliveryBackgroundID
                 )
                 return try setupFramingRenderer!.renderCameraComposite(
-                    cameraResult: camera,
+                    cameraResult: deliveryCarrier ?? camera,
                     reference: reference,
                     referencePlacement: referencePlacement,
-                    plan: plan
+                    plan: plan,
+                    deliveryAligned: deliveryCarrier != nil
                 ).frame
             }
         }
+    }
+
+    private func approximate2DMotionBlur(
+        _ carrier: StudioColorMetalFrame,
+        scene: ResolvedSceneFrame,
+        configuration: StudioResolvedRenderConfiguration,
+        deliveryPlacementID: String
+    ) throws -> StudioColorMetalFrame {
+        let width = carrier.width
+        let height = carrier.height
+        let frame = Int(scene.selection.frameIndex)
+        let rate = configuration.frameRate
+        func frameSelection(_ index: Int) throws -> PhysicalFrameSelection {
+            let (timeNumerator, overflow) = Int64(index).multipliedReportingOverflow(
+                by: Int64(rate.denominator)
+            )
+            guard !overflow else { throw PhysicalContractError.invalidFrameTime }
+            return try PhysicalFrameSelection(
+                frameIndex: Int64(index), timeNumerator: timeNumerator,
+                timeDenominator: rate.numerator,
+                frameRateNumerator: rate.numerator,
+                frameRateDenominator: rate.denominator
+            )
+        }
+        guard let placement = Self.deliveryPlacementCode(deliveryPlacementID) else {
+            throw SetupFramingError.invalidContract
+        }
+        func projectedCenter(_ selection: PhysicalFrameSelection) throws -> CGPoint {
+            let plan = try scene.resolver.prepareSetupDiagnostic(
+                frame: selection,
+                deliveryWidth: width, deliveryHeight: height,
+                previewWidth: width, previewHeight: height,
+                deliveryPlacement: placement, deliveryBackground: 0,
+                expectedRevision: scene.revision
+            )
+            guard let point = SetupFramingRenderer.projectedDevicePoint(
+                u: 0.5, v: 0.5, plan: plan, applyLensDistortion: true
+            ) else { throw SetupFramingError.invalidContract }
+            return point
+        }
+        let (previousFrame, underflow) = frame.subtractingReportingOverflow(1)
+        let (nextFrame, overflow) = frame.addingReportingOverflow(1)
+        guard !underflow, !overflow else { throw PhysicalContractError.invalidFrameTime }
+        let previous = try projectedCenter(frameSelection(previousFrame))
+        let next = try projectedCenter(frameSelection(nextFrame))
+        let shutter = scene.authored.shutterMotion
+        let open = Double(shutter.openOffsetNumerator)
+            / Double(shutter.openOffsetDenominator)
+        let close = Double(shutter.closeOffsetNumerator)
+            / Double(shutter.closeOffsetDenominator)
+        let durationFrames = (close - open) * rate.framesPerSecond
+        guard durationFrames.isFinite, durationFrames >= 0 else {
+            throw SetupFramingError.invalidContract
+        }
+        let dx = (next.x - previous.x) * 0.5 * durationFrames
+        let dy = (next.y - previous.y) * 0.5 * durationFrames
+        let values = try metalDisplay.readLinearRGBA(carrier)
+        let blurred = try Approximate2DMotionBlur.apply(
+            to: values, width: width, height: height,
+            shutterStart: CGPoint(x: -dx * 0.5, y: -dy * 0.5),
+            shutterEnd: CGPoint(x: dx * 0.5, y: dy * 0.5),
+            samples: configuration.motionSamples
+        )
+        guard let acescg = StudioColorInputTransform.catalog.first(where: { $0.id == "acescg" })
+        else { throw SetupFramingError.invalidContract }
+        return try metalDisplay.makeACEScgFrame(
+            width: width, height: height, encodedRGBA: blurred,
+            input: acescg, alpha: .straight
+        )
     }
 
     private func cancelAndDrainPhysicalJob(_ job: PhysicalMetalFrameJob) async {

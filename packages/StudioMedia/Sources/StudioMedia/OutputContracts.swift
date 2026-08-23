@@ -238,6 +238,7 @@ public struct StudioFusionSceneConfiguration: Codable, Equatable, Sendable {
 public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case invalidJobName
     case invalidFrameRange
+    case invalidMotionSamples
     case invalidFusionSpillSupport
     case invalidFusionCustomResolution
     case unexpectedFusionCustomResolution
@@ -251,6 +252,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         switch self {
         case .invalidJobName: "El nombre del trabajo no puede estar vacío."
         case .invalidFrameRange: "El rango del trabajo no es válido."
+        case .invalidMotionSamples: "Las muestras de Motion Blur deben estar entre 2 y 64."
         case .invalidFusionSpillSupport:
             "El threshold ACEScg scene-linear debe ser positivo y el fade no puede ser negativo."
         case .invalidFusionCustomResolution:
@@ -369,7 +371,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let overwritePolicy: StudioOverwritePolicy
     public let fusionScene: StudioFusionSceneConfiguration?
     public let composition: StudioRenderComposition
-    public let motionBlurEnabled: Bool
+    public let motionBlurMode: StudioRenderMotionBlurMode
     public let motionSamples: UInt16
     public let format: StudioOutputFormat
     public let pipeline: StudioRenderPipeline
@@ -394,7 +396,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         overwritePolicy: StudioOverwritePolicy,
         fusionScene: StudioFusionSceneConfiguration?,
         composition: StudioRenderComposition,
-        motionBlurEnabled: Bool,
+        motionBlurMode: StudioRenderMotionBlurMode,
         motionSamples: UInt16,
         format: StudioOutputFormat,
         pipeline: StudioRenderPipeline,
@@ -417,7 +419,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.overwritePolicy = overwritePolicy
         self.fusionScene = fusionScene
         self.composition = composition
-        self.motionBlurEnabled = motionBlurEnabled
+        self.motionBlurMode = motionBlurMode
         self.motionSamples = motionSamples
         self.format = format
         self.pipeline = pipeline
@@ -437,10 +439,16 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     }
 
     public var frameRange: ClosedRange<Int> { firstFrame ... lastFrame }
+    public var physicalTemporalSamples: UInt16 {
+        motionBlurMode == .physical ? motionSamples : 1
+    }
 
     public func validate() throws {
         guard !jobName.isEmpty else { throw StudioOutputContractError.invalidJobName }
         guard firstFrame <= lastFrame else { throw StudioOutputContractError.invalidFrameRange }
+        guard (2 ... 64).contains(motionSamples) else {
+            throw StudioOutputContractError.invalidMotionSamples
+        }
         switch outputType {
         case .standard:
             guard fusionScene == nil else {
@@ -500,7 +508,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                   format.supportedSignalRanges(for: pixelEncoding).contains(signalRange),
                   alpha == .straight, !includeAudio,
                   composition == .deviceAndSpillTogether,
-                  motionBlurEnabled == false else {
+                  motionBlurMode == .disabled else {
                 throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
             }
             guard let fusionScene else {
@@ -516,7 +524,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         StudioResolvedRenderConfiguration(
             outputType: outputType, jobName: jobName,
             overwritePolicy: policy, fusionScene: fusionScene,
-            composition: composition, motionBlurEnabled: motionBlurEnabled,
+            composition: composition, motionBlurMode: motionBlurMode,
             motionSamples: motionSamples, format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
@@ -531,7 +539,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         StudioResolvedRenderConfiguration(
             outputType: outputType, jobName: name,
             overwritePolicy: overwritePolicy, fusionScene: fusionScene,
-            composition: composition, motionBlurEnabled: motionBlurEnabled,
+            composition: composition, motionBlurMode: motionBlurMode,
             motionSamples: motionSamples, format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
@@ -539,6 +547,22 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             includeAudio: includeAudio, frameRate: frameRate,
             firstFrame: firstFrame, lastFrame: lastFrame, wipReview: wipReview
         )
+    }
+}
+
+public enum StudioRenderMotionBlurMode: String, CaseIterable, Identifiable, Codable, Sendable {
+    case disabled
+    case physical
+    case approximate2D = "approximate-2d"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .disabled: "Desactivado"
+        case .physical: "Físico"
+        case .approximate2D: "2D aproximado"
+        }
     }
 }
 

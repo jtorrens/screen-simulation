@@ -10,7 +10,8 @@ private func fusionConfiguration(
     dof: StudioFusionDOFMode = .fusion,
     resolution: StudioFusionResolutionMode = .maximumProjectedDensity,
     policy: StudioOverwritePolicy = .failIfExists,
-    frames: ClosedRange<Int> = 1 ... 2
+    frames: ClosedRange<Int> = 1 ... 2,
+    motionBlurMode: StudioRenderMotionBlurMode = .disabled
 ) -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
         outputType: .fusionScenePackage,
@@ -25,7 +26,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false,
+        motionBlurMode: motionBlurMode,
         motionSamples: 8,
         format: .openEXR,
         pipeline: .aces,
@@ -44,6 +45,12 @@ private func fusionConfiguration(
     )
 }
 
+@Test func fusionScenePackageRejectsStandardApproximate2DMotionBlur() {
+    #expect(throws: StudioOutputContractError.fusionDeliveryConfigurationInvalid) {
+        try fusionConfiguration(motionBlurMode: .approximate2D).validate()
+    }
+}
+
 private func standardSequenceConfiguration(
     policy: StudioOverwritePolicy = .failIfExists
 ) -> StudioResolvedRenderConfiguration {
@@ -53,7 +60,7 @@ private func standardSequenceConfiguration(
         overwritePolicy: policy,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false,
+        motionBlurMode: .disabled,
         motionSamples: 8,
         format: .openEXR,
         pipeline: .aces,
@@ -91,7 +98,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false,
+        motionBlurMode: .disabled,
         motionSamples: 8,
         format: format,
         pipeline: preset.pipeline,
@@ -869,7 +876,7 @@ private func temporaryDirectory() throws -> URL {
             spillThresholdSceneLinear: 0.1, spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false, motionSamples: 8,
+        motionBlurMode: .disabled, motionSamples: 8,
         format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
@@ -952,7 +959,7 @@ private func temporaryDirectory() throws -> URL {
             spillFadeWidthPixels: 4
         ),
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: false,
+        motionBlurMode: .disabled,
         motionSamples: 8,
         format: .openEXR,
         pipeline: .aces,

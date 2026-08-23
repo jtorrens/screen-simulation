@@ -115,7 +115,7 @@ import Testing
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
-        motionBlurEnabled: true,
+        motionBlurMode: .physical,
         motionSamples: 8,
         format: .proRes4444,
         pipeline: preset.pipeline,
@@ -144,6 +144,40 @@ import Testing
         from: JSONEncoder().encode(configuration)
     )
     #expect(roundtrip == configuration)
+    #expect(configuration.physicalTemporalSamples == 8)
+}
+
+@Test func renderJobRequiresKnownExplicitMotionBlurMode() throws {
+    let configuration = StudioResolvedRenderConfiguration(
+        outputType: .standard, jobName: "motion-mode",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillTogether, motionBlurMode: .approximate2D,
+        motionSamples: 8, format: .openEXR, pipeline: .aces, target: .acescg,
+        peakNits: 0, display: nil, view: nil, vfxInterchangeEncodingID: nil,
+        pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 0
+    )
+    let encoded = try JSONEncoder().encode(configuration)
+    #expect(configuration.physicalTemporalSamples == 1)
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    var missing = object
+    missing.removeValue(forKey: "motionBlurMode")
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(
+            StudioResolvedRenderConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: missing)
+        )
+    }
+    var unknown = object
+    unknown["motionBlurMode"] = "temporal-magic"
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(
+            StudioResolvedRenderConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: unknown)
+        )
+    }
 }
 
 @Test func vfxRenderJobFreezesCodecAndLogGamutIndependentlyOfCamera() throws {
@@ -153,7 +187,7 @@ import Testing
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .fullComposite,
-        motionBlurEnabled: false,
+        motionBlurMode: .disabled,
         motionSamples: 8,
         format: .proRes4444XQ,
         pipeline: .aces,

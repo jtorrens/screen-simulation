@@ -140,6 +140,41 @@ import Testing
     #expect(edge.spill[0] > 0.199)
 }
 
+@Test @MainActor func approximate2DMotionBlurFiltersCarrierAndMatteBeforeSeparation() throws {
+    let source: [Float] = [
+        0.8, -0.2, 1.4, 0,
+        0.4, 0.2, 0.1, 0.5,
+        1.0, 0.6, 0.3, 1,
+        0.2, 0.1, 0.9, 0.5,
+        0.7, 0.3, 0.2, 0,
+    ]
+    let identity = try Approximate2DMotionBlur.apply(
+        to: source, width: 5, height: 1,
+        shutterStart: .zero, shutterEnd: .zero, samples: 8
+    )
+    #expect(identity == source)
+
+    let blurred = try Approximate2DMotionBlur.apply(
+        to: source, width: 5, height: 1,
+        shutterStart: CGPoint(x: -2, y: 0),
+        shutterEnd: CGPoint(x: 2, y: 0), samples: 8
+    )
+    #expect(blurred != source)
+    #expect(blurred.allSatisfy { $0.isFinite })
+    #expect(blurred[0] != 0) // additive RGB survives independently of zero matte
+    let passes = try NativeOutputRenderer.editorialDeviceSpillPasses(blurred)
+    for pixel in 0 ..< 5 {
+        let offset = pixel * 4
+        let matte = blurred[offset + 3]
+        #expect((0 ... 1).contains(matte))
+        for channel in 0 ..< 3 {
+            let reconstruction = passes.device[offset + channel] * matte
+                + passes.spill[offset + channel]
+            #expect(abs(reconstruction - blurred[offset + channel]) < 0.000_001)
+        }
+    }
+}
+
 @Test @MainActor func separatedVfxProResRetainsDeviceAlphaAndNonBlackSpill() async throws {
     let display = try StudioColorMetalDisplay()
     let width = 32, height = 18
@@ -863,7 +898,7 @@ private func renderConfiguration(
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: composition,
-        motionBlurEnabled: false,
+        motionBlurMode: .disabled,
         motionSamples: 8,
         format: format,
         pipeline: preset.pipeline,
