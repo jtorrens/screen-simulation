@@ -131,6 +131,57 @@ import Testing
     #expect(passes.spill[4] == 0.1)
 }
 
+@Test @MainActor func separatedVfxProResRetainsDeviceAlphaAndNonBlackSpill() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 32, height = 18
+    var rgba = [Float](repeating: 0, count: width * height * 4)
+    for y in 0 ..< height {
+        for x in 0 ..< width {
+            let offset = (y * width + x) * 4
+            let alpha = Float(x) / Float(width - 1)
+            rgba[offset] = 0.3
+            rgba[offset + 1] = Float(y + 1) / Float(height)
+            rgba[offset + 2] = 0.8
+            rgba[offset + 3] = alpha
+        }
+    }
+    let input = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
+    let frame = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: rgba,
+        input: input, alpha: .straight
+    )
+    let preset = StudioRenderPreset.builtIns[9]
+    let configuration = renderConfiguration(
+        format: preset.format, preset: preset, alpha: .straight,
+        signalRange: .full, frameRange: 0 ... 0,
+        composition: .deviceAndSpillSeparate
+    )
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("separate-vfx-prores-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    _ = try await NativeOutputRenderer.render(
+        configuration: configuration, outputPlan: plan,
+        audioSource: nil, display: display,
+        frameProvider: { _ in frame }, progress: { _, _ in }
+    )
+
+    let device = try await decodeFirstProResARGB16(
+        plan.destination.appendingPathComponent("ScreenSimulation_Device.mov")
+    )
+    let spill = try await decodeFirstProResARGB16(
+        plan.destination.appendingPathComponent("ScreenSimulation_Spill.mov")
+    )
+    let deviceAlpha = stride(from: 3, to: device.count, by: 4).map { device[$0] }
+    #expect((deviceAlpha.min() ?? 1) < 0.05)
+    #expect((deviceAlpha.max() ?? 0) > 0.95)
+    #expect(stride(from: 0, to: spill.count, by: 4).contains {
+        spill[$0] > 0.01 || spill[$0 + 1] > 0.01 || spill[$0 + 2] > 0.01
+    })
+}
+
 @Test func separatedDeviceSpillPlanOwnsBothMovieAndSequenceManifests() throws {
     let root = FileManager.default.temporaryDirectory
     let movie = renderConfiguration(
@@ -213,6 +264,33 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
     }
 }
 
+@Test @MainActor func proRes4444HDRPortraitEncodesMoreThanTwoFrames() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 1_000
+    let height = 1_500
+    let input = try #require(
+        StudioColorInputTransform.catalog.first { $0.id == "acescg" }
+    )
+    let values = [Float](repeating: 0.18, count: width * height * 4)
+        .enumerated().map { $0.offset % 4 == 3 ? 1 : $0.element }
+    let frame = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: values,
+        input: input, alpha: .straight
+    )
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-native-prores-hdr-\(UUID().uuidString).mov")
+    let url = try await NativeOutputRenderer.render(
+        configuration: renderConfiguration(
+            format: .proRes4444, preset: StudioRenderPreset.builtIns[1],
+            alpha: .straight, signalRange: .video, frameRange: 0 ... 2
+        ),
+        destination: destination, audioSource: nil,
+        display: display, frameProvider: { _ in frame }, progress: { _, _ in }
+    )
+    let timeline = try NativeFFmpegMedia.probe(url: url)
+    #expect(timeline.frameCount == 3)
+}
+
 @Test @MainActor func vfxProResDoesNotMasqueradeAsARec709Master() async throws {
     let display = try StudioColorMetalDisplay()
     let frame = try display.makeACEScgFrame(
@@ -244,6 +322,140 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
         isVideo: true
     )
     #expect(detection.proposedInputTransformID == nil)
+}
+
+@Test @MainActor func vfxEditorialACEScctFullStraightRoundtripComposesVisually() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 96, height = 54
+    var rgba = [Float](repeating: 0, count: width * height * 4)
+    for y in 0 ..< height {
+        for x in 0 ..< width {
+            let offset = (y * width + x) * 4
+            let alpha = Float(x) / Float(width - 1)
+            let intensity: Float = y < height / 3 ? 0.18 : (y < 2 * height / 3 ? 8 : 64)
+            rgba[offset] = intensity
+            rgba[offset + 1] = intensity * Float(x % 3 == 0 ? 0.25 : 1)
+            rgba[offset + 2] = intensity * Float(x % 3 == 2 ? 1 : 0.125)
+            rgba[offset + 3] = alpha
+        }
+    }
+    let acescg = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescg" })
+    let expectedFrame = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: rgba, input: acescg, alpha: .straight
+    )
+    let expected = try display.readLinearRGBA(expectedFrame)
+    let preset = StudioRenderPreset.builtIns[9]
+    let destination = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vfx-editorial-\(UUID().uuidString).mov")
+    defer { try? FileManager.default.removeItem(at: destination) }
+    _ = try await NativeOutputRenderer.render(
+        configuration: renderConfiguration(
+            format: preset.format, preset: preset, alpha: .straight,
+            signalRange: .full, frameRange: 0 ... 0
+        ),
+        destination: destination, audioSource: nil,
+        display: display, frameProvider: { _ in expectedFrame }, progress: { _, _ in }
+    )
+    let detection = await StudioMediaMetadataDetector.detect(url: destination, isVideo: true)
+    #expect(detection.proposedInputTransformID == nil)
+    #expect(detection.hasAlpha)
+    #expect(detection.alpha == .straight)
+    // Apple defines the selected high-bit-depth source format as RGB, where code values are
+    // inherently full range; the ProRes sample description has no Y′CbCr range flag.
+    #expect(detection.range == nil)
+
+    let acescct = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescct" })
+    let decodedEncoded = try await decodeFirstProResARGB16(destination)
+    let decodedFrame = try display.makeACEScgFrame(
+        width: width, height: height, encodedRGBA: decodedEncoded,
+        input: acescct, alpha: .straight
+    )
+    let decoded = try display.readLinearRGBA(decodedFrame)
+    var alphaMaximum: Float = 0
+    for offset in stride(from: 3, to: expected.count, by: 4) {
+        alphaMaximum = max(alphaMaximum, abs(expected[offset] - decoded[offset]))
+    }
+    #expect(alphaMaximum <= 0.002)
+
+    let viewer = try #require(StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-srgb-sdr-100"
+    })
+    var maximumDisplayDifference = 0
+    var squaredDisplayDifference: Double = 0
+    var displaySampleCount = 0
+    for background: Float in [0, 0.18, 1] {
+        func composite(_ values: [Float]) -> [Float] {
+            var result = values
+            for offset in stride(from: 0, to: result.count, by: 4) {
+                let alpha = result[offset + 3]
+                result[offset] += background * (1 - alpha)
+                result[offset + 1] += background * (1 - alpha)
+                result[offset + 2] += background * (1 - alpha)
+                result[offset + 3] = 1
+            }
+            return result
+        }
+        let expectedComposite = try display.makeACEScgFrame(
+            width: width, height: height, encodedRGBA: composite(expected),
+            input: acescg, alpha: .straight
+        )
+        let decodedComposite = try display.makeACEScgFrame(
+            width: width, height: height, encodedRGBA: composite(decoded),
+            input: acescg, alpha: .straight
+        )
+        for (lhs, rhs) in zip(
+            try display.renderRGBA8(expectedComposite, output: viewer),
+            try display.renderRGBA8(decodedComposite, output: viewer)
+        ) {
+            let difference = abs(Int(lhs) - Int(rhs))
+            maximumDisplayDifference = max(maximumDisplayDifference, difference)
+            squaredDisplayDifference += Double(difference * difference)
+            displaySampleCount += 1
+        }
+    }
+    let displayRMSE = sqrt(squaredDisplayDifference / Double(displaySampleCount))
+    // ProRes RGB is visually, not mathematically, lossless. This operational saturated
+    // envelope must remain within a small display-code difference after three backgrounds;
+    // the separate stress pattern deliberately retains harder primaries for inspection.
+    #expect(maximumDisplayDifference <= 16)
+    #expect(displayRMSE <= 3)
+}
+
+private func decodeFirstProResARGB16(_ url: URL) async throws -> [Float] {
+    let asset = AVURLAsset(url: url)
+    let tracks = try await asset.loadTracks(withMediaType: .video)
+    let track = try #require(tracks.first)
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(
+        track: track,
+        outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_64ARGB,
+        ]
+    )
+    #expect(reader.canAdd(output))
+    reader.add(output)
+    #expect(reader.startReading())
+    let sample = try #require(output.copyNextSampleBuffer())
+    let buffer = try #require(CMSampleBufferGetImageBuffer(sample))
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+    let width = CVPixelBufferGetWidth(buffer)
+    let height = CVPixelBufferGetHeight(buffer)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    let base = try #require(CVPixelBufferGetBaseAddress(buffer))
+    var rgba = [Float](repeating: 0, count: width * height * 4)
+    for y in 0 ..< height {
+        let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt16.self)
+        for x in 0 ..< width {
+            let source = x * 4
+            let destination = (y * width + x) * 4
+            rgba[destination] = Float(UInt16(bigEndian: row[source + 1])) / 65_535
+            rgba[destination + 1] = Float(UInt16(bigEndian: row[source + 2])) / 65_535
+            rgba[destination + 2] = Float(UInt16(bigEndian: row[source + 3])) / 65_535
+            rgba[destination + 3] = Float(UInt16(bigEndian: row[source])) / 65_535
+        }
+    }
+    return rgba
 }
 
 @Test @MainActor func h264RoundtripSeparatesCodecLossFromColorContract() async throws {
@@ -614,8 +826,9 @@ private func renderConfiguration(
         display: preset.display,
         view: preset.view,
         vfxInterchangeEncodingID: preset.target == .vfxLog
-            ? "arri-logc4-awg4" : nil,
-        pixelEncoding: format.defaultPixelEncoding,
+            ? (preset.fixedVFXInterchangeEncodingID ?? "arri-logc4-awg4") : nil,
+        pixelEncoding: preset.fixedVFXInterchangeEncodingID == nil
+            ? format.defaultPixelEncoding : preset.pixelEncoding,
         signalRange: signalRange,
         alpha: alphaMode,
         includeAudio: false,

@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func activeSceneIdentityAndOpenInteractionAreExplicitInTheNativeShelf() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(source.contains("WindowTitleUpdater(title: activeSceneTitle)"))
+    #expect(source.contains("isActive: model.activeSceneID == scene.id"))
+    #expect(source.contains(".stroke(isActive ? NativeTheme.accent : .clear, lineWidth: 2)"))
+    #expect(source.contains(".onTapGesture(count: 2, perform: onOpen)"))
+    #expect(source.contains("Button(\"Guardar cambios\")"))
+    #expect(source.contains("Button(\"Descartar cambios\", role: .destructive)"))
+    #expect(source.contains("Button(\"Cancelar\", role: .cancel)"))
+    #expect(source.contains("try model.savedSceneNeedsUpdate(activeScene)"))
+}
+
 @Test func captureCheckpointsOwnTheCameraRasterInsteadOfTheDeviceRaster() {
     let captureOwned: [PhysicalIntermediate] = [
         .sensorCollection, .sensorBloom, .sensorReadoutRaw,
@@ -265,13 +282,33 @@ import Testing
 @Test func everySyntheticPatternDeclaresCompleteInputEvidence() {
     for pattern in SyntheticPattern.allCases {
         let evidence = pattern.sourceDetection
-        #expect(evidence.proposedInputTransformID == "srgb-encoded-rec709")
+        #expect(evidence.proposedInputTransformID == (
+            pattern == .vfxDeliveryStress ? "acescg" : "srgb-encoded-rec709"
+        ))
         #expect(evidence.inputTransformProvenance == .proposed)
-        #expect(evidence.alpha == .ignore)
+        #expect(evidence.alpha == (pattern == .vfxDeliveryStress ? .straight : .ignore))
+        #expect(evidence.hasAlpha == (pattern == .vfxDeliveryStress))
         #expect(evidence.matrix == .bt709)
         #expect(evidence.range == .full)
         #expect(evidence.colorModel == .rgb)
     }
+}
+
+@Test func vfxDeliveryStressPublishesHDRStraightAlphaAt4K() throws {
+    let pattern = SyntheticPattern.vfxDeliveryStress
+    let frame = try pattern.frame()
+    #expect(frame.width == 3_840)
+    #expect(frame.height == 2_160)
+    #expect(pattern.authoredPlacementID == "one-to-one")
+    #expect(stride(from: 3, to: frame.rgba.count, by: 4).contains {
+        frame.rgba[$0] == 0
+    })
+    #expect(stride(from: 3, to: frame.rgba.count, by: 4).contains {
+        frame.rgba[$0] > 0 && frame.rgba[$0] < 1
+    })
+    #expect(stride(from: 0, to: frame.rgba.count, by: 4).contains {
+        frame.rgba[$0] >= 224
+    })
 }
 
 @Test func vfxComparisonPatternPreservesThePhotographedRaster() throws {

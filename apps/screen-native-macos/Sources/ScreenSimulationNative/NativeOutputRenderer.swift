@@ -10,13 +10,17 @@ import UniformTypeIdentifiers
 import VideoToolbox
 
 enum NativeOutputError: Error, LocalizedError {
-    case invalidFrame, cannotCreateWriter, cannotAppend(Int), cannotFinish, unsupported(String)
+    case invalidFrame, cannotCreateWriter, cannotAppend(Int, String?), cannotFinish(String?), unsupported(String)
     var errorDescription: String? {
         switch self {
         case .invalidFrame: "Frame de salida no válido."
         case .cannotCreateWriter: "No se puede crear el writer AVFoundation."
-        case let .cannotAppend(frame): "No se puede codificar el frame \(frame)."
-        case .cannotFinish: "No se puede finalizar el archivo de salida."
+        case let .cannotAppend(frame, detail):
+            detail.map { "No se puede codificar el frame \(frame): \($0)." }
+                ?? "No se puede codificar el frame \(frame)."
+        case let .cannotFinish(detail):
+            detail.map { "No se puede finalizar el archivo de salida: \($0)." }
+                ?? "No se puede finalizar el archivo de salida."
         case let .unsupported(value): "Combinación de salida no compatible: \(value)."
         }
     }
@@ -109,6 +113,7 @@ enum NativeOutputRenderer {
                 url: writerURL, width: firstWIP?.width ?? first.width,
                 height: firstWIP?.height ?? first.height,
                 frameRate: frameRate, format: format,
+                pixelEncoding: configuration.pixelEncoding,
                 peakNits: configuration.peakNits,
                 signalRange: configuration.signalRange,
                 alpha: format.supportsAlpha ? alpha : .ignore, output: output
@@ -302,10 +307,12 @@ enum NativeOutputRenderer {
                     throw NativeOutputError.unsupported("las películas requieren encoding de entrega")
                 }
                 let deviceFrame = try makeACEScgFrame(
-                    passes.device, width: frame.width, height: frame.height, display: display
+                    passes.device, width: frame.width, height: frame.height,
+                    alpha: .straight, display: display
                 )
                 let spillFrame = try makeACEScgFrame(
-                    passes.spill, width: frame.width, height: frame.height, display: display
+                    passes.spill, width: frame.width, height: frame.height,
+                    alpha: .ignore, display: display
                 )
                 if deviceMovie == nil {
                     for url in [deviceURL, spillURL] where FileManager.default.fileExists(atPath: url.path) {
@@ -314,12 +321,14 @@ enum NativeOutputRenderer {
                     deviceMovie = try MovieWriter(
                         url: deviceURL, width: frame.width, height: frame.height,
                         frameRate: configuration.frameRate, format: configuration.format,
+                        pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
                         alpha: .straight, output: output
                     )
                     spillMovie = try MovieWriter(
                         url: spillURL, width: frame.width, height: frame.height,
                         frameRate: configuration.frameRate, format: configuration.format,
+                        pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
                         alpha: .ignore, output: output
                     )
@@ -377,6 +386,7 @@ enum NativeOutputRenderer {
 
     private static func makeACEScgFrame(
         _ rgba: [Float], width: Int, height: Int,
+        alpha: StudioColorAlphaAssociation,
         display: StudioColorMetalDisplay
     ) throws -> StudioColorMetalFrame {
         guard let identity = StudioColorInputTransform.catalog.first(where: { $0.id == "acescg" }) else {
@@ -384,7 +394,7 @@ enum NativeOutputRenderer {
         }
         return try display.makeACEScgFrame(
             width: width, height: height, encodedRGBA: rgba,
-            input: identity, alpha: .ignore
+            input: identity, alpha: alpha
         )
     }
 
@@ -407,7 +417,9 @@ enum NativeOutputRenderer {
             try encodeEXR(values, width: width, height: height).write(to: url, options: .atomic)
         case .dpx10RGB, .tiff16:
             guard let output else { throw NativeOutputError.unsupported("el still requiere ODT") }
-            let frame = try makeACEScgFrame(rgba, width: width, height: height, display: display)
+            let frame = try makeACEScgFrame(
+                rgba, width: width, height: height, alpha: alpha, display: display
+            )
             let rendered = try display.renderRGBAFloat(frame, output: output)
             if configuration.format == .dpx10RGB {
                 try encodeDPX(rendered, width: width, height: height).write(to: url, options: .atomic)
@@ -579,7 +591,7 @@ enum NativeOutputRenderer {
               let videoTrack = composition.addMutableTrack(
                 withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid
               )
-        else { throw NativeOutputError.cannotFinish }
+        else { throw NativeOutputError.cannotFinish(nil) }
         try videoTrack.insertTimeRange(
             CMTimeRange(start: .zero, duration: duration), of: videoSource, at: .zero
         )
@@ -593,13 +605,15 @@ enum NativeOutputRenderer {
         }
         guard let exporter = AVAssetExportSession(
             asset: composition, presetName: AVAssetExportPresetPassthrough
-        ) else { throw NativeOutputError.cannotFinish }
+        ) else { throw NativeOutputError.cannotFinish(nil) }
         exporter.outputURL = outputURL
         exporter.outputFileType = fileType
         await withCheckedContinuation { continuation in
             exporter.exportAsynchronously { continuation.resume() }
         }
-        guard exporter.status == .completed else { throw NativeOutputError.cannotFinish }
+        guard exporter.status == .completed else {
+            throw NativeOutputError.cannotFinish(exporter.error?.localizedDescription)
+        }
     }
 
     static func encodeEXR(_ values: [Float], width: Int, height: Int) throws -> Data {
@@ -709,7 +723,7 @@ final class MovieWriter {
 
     init(
         url: URL, width: Int, height: Int, frameRate: StudioFrameRate,
-        format: StudioOutputFormat, peakNits: Double,
+        format: StudioOutputFormat, pixelEncoding: StudioPixelEncoding, peakNits: Double,
         signalRange: StudioSignalRange,
         alpha: StudioColorAlphaAssociation,
         output: StudioColorOutputTransform
@@ -725,6 +739,11 @@ final class MovieWriter {
         usesTenBitYUV = switch format {
         case .h265Low, .h265Medium, .h265High: true
         default: false
+        }
+        guard width.isMultiple(of: 2), height.isMultiple(of: 2) else {
+            throw NativeOutputError.unsupported(
+                "\(format.displayName) requiere un raster de dimensiones pares; se recibió \(width) × \(height)"
+            )
         }
         writer = try AVAssetWriter(outputURL: url, fileType: format == .h264Low || format == .h264Medium || format == .h264High ? .mp4 : .mov)
         let codec: AVVideoCodecType
@@ -777,7 +796,9 @@ final class MovieWriter {
         input.mediaTimeScale = CMTimeScale(frameRate.numerator)
         let pixelFormat: OSType
         if format == .proRes4444 || format == .proRes4444XQ {
-            pixelFormat = kCVPixelFormatType_64RGBAHalf
+            pixelFormat = pixelEncoding == .rgb44412
+                ? kCVPixelFormatType_64ARGB
+                : kCVPixelFormatType_64RGBAHalf
         } else if usesTenBitYUV {
             pixelFormat = signalRange == .full
                 ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
@@ -787,15 +808,18 @@ final class MovieWriter {
                 ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                 : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         }
+        var sourceAttributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+        ]
+        if pixelFormat != kCVPixelFormatType_64ARGB {
+            sourceAttributes[kCVPixelBufferMetalCompatibilityKey as String] = true
+        }
         adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: input,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferMetalCompatibilityKey as String: true,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
-            ]
+            sourcePixelBufferAttributes: sourceAttributes
         )
         guard writer.canAdd(input) else { throw NativeOutputError.cannotCreateWriter }
         writer.add(input)
@@ -829,14 +853,49 @@ final class MovieWriter {
                 tenBit: usesTenBitYUV
             )
         } else {
-            try display.render(frame, output: output, into: buffer, alpha: alpha)
+            if CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64ARGB {
+                let rgba = try display.renderRGBAFloat(frame, output: output, alpha: alpha)
+                try writeEncodedARGB16(rgba, into: buffer)
+            } else {
+                try display.render(frame, output: output, into: buffer, alpha: alpha)
+            }
         }
         let time = CMTime(
             value: CMTimeValue(presentationFrame) * CMTimeValue(frameRate.denominator),
             timescale: CMTimeScale(frameRate.numerator)
         )
         guard adaptor.append(buffer, withPresentationTime: time) else {
-            throw NativeOutputError.cannotAppend(presentationFrame)
+            throw NativeOutputError.cannotAppend(
+                presentationFrame, writer.error?.localizedDescription
+            )
+        }
+    }
+
+    /// Writes full-range RGB code values in the encoder's native 16-bit big-endian ARGB layout.
+    /// ProRes XQ retains 12 bits for RGB and its mathematically lossless alpha channel.
+    private func writeEncodedARGB16(_ rgba: [Float], into buffer: CVPixelBuffer) throws {
+        guard rgba.count == width * height * 4,
+              CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64ARGB
+        else { throw NativeOutputError.cannotCreateWriter }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw NativeOutputError.cannotCreateWriter
+        }
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        func code(_ value: Float) -> UInt16 {
+            UInt16((min(1, max(0, value)) * 65_535).rounded()).bigEndian
+        }
+        for y in 0 ..< height {
+            let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt16.self)
+            for x in 0 ..< width {
+                let source = (y * width + x) * 4
+                let destination = x * 4
+                row[destination] = code(alpha == .ignore ? 1 : rgba[source + 3])
+                row[destination + 1] = code(rgba[source])
+                row[destination + 2] = code(rgba[source + 1])
+                row[destination + 3] = code(rgba[source + 2])
+            }
         }
     }
 
@@ -860,6 +919,27 @@ final class MovieWriter {
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         if usesYUV {
             try writeEncodedYUV420(rgba, into: buffer)
+        } else if CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_64ARGB {
+            guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+                throw NativeOutputError.cannotCreateWriter
+            }
+            let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0 ..< height {
+                let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt16.self)
+                for x in 0 ..< width {
+                    let source = (y * width + x) * 4
+                    let destination = x * 4
+                    let a = min(1, max(0, rgba[source + 3]))
+                    let association = alpha == .premultiplied ? a : 1
+                    func code(_ value: Float) -> UInt16 {
+                        UInt16((min(1, max(0, value)) * 65_535).rounded()).bigEndian
+                    }
+                    row[destination] = code(alpha == .ignore ? 1 : a)
+                    row[destination + 1] = code(rgba[source] * association)
+                    row[destination + 2] = code(rgba[source + 1] * association)
+                    row[destination + 3] = code(rgba[source + 2] * association)
+                }
+            }
         } else {
             guard let base = CVPixelBufferGetBaseAddress(buffer) else {
                 throw NativeOutputError.cannotCreateWriter
@@ -873,10 +953,13 @@ final class MovieWriter {
                     let destination = x * 4
                     let a = min(1, max(0, rgba[source + 3]))
                     let association = alpha == .premultiplied ? a : 1
-                    row[destination] = Float16(rgba[source] * association).bitPattern
-                    row[destination + 1] = Float16(rgba[source + 1] * association).bitPattern
-                    row[destination + 2] = Float16(rgba[source + 2] * association).bitPattern
-                    row[destination + 3] = Float16(alpha == .ignore ? 1 : a).bitPattern
+                    func code(_ value: Float) -> UInt16 {
+                        UInt16((min(1, max(0, value)) * 65_535).rounded()).bigEndian
+                    }
+                    row[destination] = code(alpha == .ignore ? 1 : a)
+                    row[destination + 1] = code(rgba[source] * association)
+                    row[destination + 2] = code(rgba[source + 1] * association)
+                    row[destination + 3] = code(rgba[source + 2] * association)
                 }
             }
         }
@@ -885,7 +968,9 @@ final class MovieWriter {
             timescale: CMTimeScale(frameRate.numerator)
         )
         guard adaptor.append(buffer, withPresentationTime: time) else {
-            throw NativeOutputError.cannotAppend(presentationFrame)
+            throw NativeOutputError.cannotAppend(
+                presentationFrame, writer.error?.localizedDescription
+            )
         }
     }
 
@@ -970,6 +1055,8 @@ final class MovieWriter {
     func finish() async throws {
         input.markAsFinished()
         await writer.finishWriting()
-        guard writer.status == .completed else { throw NativeOutputError.cannotFinish }
+        guard writer.status == .completed else {
+            throw NativeOutputError.cannotFinish(writer.error?.localizedDescription)
+        }
     }
 }

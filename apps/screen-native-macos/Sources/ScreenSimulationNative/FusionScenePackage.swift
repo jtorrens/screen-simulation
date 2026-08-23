@@ -44,7 +44,7 @@ struct FusionRawPhysicalFrame: Equatable, Sendable {
     let width: Int
     let height: Int
     let activeRect: FusionRasterRect
-    /// Surface contribution plus the complete independent Device occlusion matte.
+    /// Surface contribution with the complete physical Device occlusion matte embedded in alpha.
     let deviceRGBA: [Float]
     /// Additive exterior contribution over black. Alpha is opaque and has no matte meaning.
     let spillRGBA: [Float]
@@ -223,6 +223,12 @@ struct FusionProjectedRaster: Equatable, Sendable {
 
 enum FusionProjectionResolver {
     static let depthOfFieldBoundarySamples = 1_024
+
+    private static func evenCeiling(_ value: Double) -> Int {
+        let ceiling = max(1, Int(ceil(value)))
+        return ceiling.isMultiple(of: 2) ? ceiling : ceiling + 1
+    }
+
     /// Resolves one fixed frontal raster from the complete, unclipped Device projection. Camera
     /// samples must include every authored curve evaluation relevant to the job range.
     static func maximumProjectedDensity(
@@ -268,8 +274,11 @@ enum FusionProjectionResolver {
             throw FusionScenePackageError.invalidCamera
         }
         return FusionProjectedRaster(
-            activeWidth: max(1, Int(ceil(deviceWidthMeters * density))),
-            activeHeight: max(1, Int(ceil(deviceHeightMeters * density))),
+            // The alpha-capable ProRes writer requires even coded dimensions. Fusion support is
+            // symmetric, so resolving the active raster to even dimensions here preserves that
+            // symmetry and never undersamples the measured maximum projected density.
+            activeWidth: evenCeiling(deviceWidthMeters * density),
+            activeHeight: evenCeiling(deviceHeightMeters * density),
             pixelsPerMeter: density
         )
     }
@@ -671,6 +680,10 @@ struct FusionMediaColorContract: Equatable, Sendable {
             guard let id = configuration.vfxInterchangeEncodingID else {
                 throw FusionScenePackageError.unsupportedMediaEncoding
             }
+            guard StudioVFXInterchangeEncoding.catalog.first(where: { $0.id == id })?
+                .supportsFusionScenePackage == true else {
+                throw FusionScenePackageError.unsupportedMediaEncoding
+            }
             let acesIDs: [String: String] = [
                 "arri-logc4-awg4": "IDT_ARRI_LOGC4_CSC",
                 "arri-logc3-ei800-awg3": "IDT_ARRI_LOGC_EI800_AWG_CSC",
@@ -826,12 +839,14 @@ enum FusionScenePackageWriter {
                     deviceMovie = try MovieWriter(
                         url: deviceURL, width: prepared.width, height: prepared.height,
                         frameRate: configuration.frameRate, format: configuration.format,
+                        pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
                         alpha: .straight, output: output
                     )
                     spillMovie = try MovieWriter(
                         url: spillURL, width: prepared.width, height: prepared.height,
                         frameRate: configuration.frameRate, format: configuration.format,
+                        pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
                         alpha: .ignore, output: output
                     )
@@ -1045,8 +1060,8 @@ enum FusionScenePackageWriter {
             transfer: "scene-linear",
             channels: ["R", "G", "B", "A"],
             rgbMeaning: "two typed media: Device surface RGB and additive Spill RGB",
-            alphaMeaning: "Device media carries the non-chromatic occlusion matte; Spill has no alpha meaning",
-            alphaAssociation: "independent-physical-rgb-and-matte",
+            alphaMeaning: "Device media embeds the non-chromatic physical occlusion alpha; Spill is opaque RGB over black",
+            alphaAssociation: "device-embedded-physical-alpha-spill-opaque-black",
             physicalCompositeEquation: "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
             raster: .init(
                 width: prepared.width,
@@ -1167,11 +1182,10 @@ enum FusionScenePackageWriter {
         // halved or have the texture aspect applied a second time.
         let planeScaleX = planeWidth
         let planeScaleY = planeHeight * Double(prepared.width) / Double(prepared.height)
-        // RGB and matte travel through separate opaque 3D carriers. This prevents ImagePlane3D
-        // or Renderer3D from treating the independent matte as premultiplication and suppressing
-        // additive spill where A is zero. They are recombined only after projection and motion/DOF.
-        // The final Custom node implements the physical equation directly. A Merge/Over node is
-        // intentionally absent, so RGB outside the matte cannot be suppressed.
+        // Device travels as the exported RGBA medium through one 3D carrier. Spill is already
+        // composed over opaque black and travels through its own RGB carrier. Their projected RGB
+        // is added while Device alpha remains unchanged. The final Custom node implements the
+        // physical equation directly; a Merge/Over node is intentionally absent.
         return """
         Composition {
           CurrentTime = \(configuration.firstFrame),
@@ -1180,7 +1194,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Device.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: independent occlusion matte; RGB is not alpha-divided or premultiplied again.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Spill.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; RGB additive over black.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(configuration.jobName)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Device.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Spill.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; opaque RGB already composed over black for Add.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(configuration.jobName)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1216,7 +1230,7 @@ enum FusionScenePackageWriter {
                 ["Clip1.OpenEXRFormat.BlueName"] = Input { Value = FuID { "B" } },
                 ["Clip1.OpenEXRFormat.AlphaName"] = Input { Value = FuID { "A" } }
               },
-              CustomData = { SourceEncoding = "\(mediaEncodingDescription)", AlphaSemantics = "independent-occlusion-matte" },
+              CustomData = { SourceEncoding = "\(mediaEncodingDescription)", AlphaSemantics = "embedded-physical-occlusion-alpha" },
               ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }
             },
             \(deviceColorTool)
@@ -1243,42 +1257,9 @@ enum FusionScenePackageWriter {
               ViewInfo = OperatorInfo { Pos = { 110, 346.5 } }
             },
             \(spillColorTool)
-            DeviceRGBOpaque = Custom {
+            DeviceRGBAPlane = ImagePlane3D {
               Inputs = {
-                Image1 = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
-                RedExpression = Input { Value = "r1" },
-                GreenExpression = Input { Value = "g1" },
-                BlueExpression = Input { Value = "b1" },
-                AlphaExpression = Input { Value = "1" }
-              },
-              CustomData = { Role = "opaque-additive-rgb-carrier", PreservesRGBAtZeroSourceAlpha = true },
-              ViewInfo = OperatorInfo { Pos = { 275, 148.5 } }
-            },
-            SpillRGBOpaque = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "SpillToACEScg", Source = "Output" },
-                RedExpression = Input { Value = "r1" },
-                GreenExpression = Input { Value = "g1" },
-                BlueExpression = Input { Value = "b1" },
-                AlphaExpression = Input { Value = "1" }
-              },
-              CustomData = { Role = "opaque-additive-spill-carrier", PreservesRGBAtZeroSourceAlpha = true },
-              ViewInfo = OperatorInfo { Pos = { 440, 214.5 } }
-            },
-            DeviceMatteOpaque = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
-                RedExpression = Input { Value = "a1" },
-                GreenExpression = Input { Value = "a1" },
-                BlueExpression = Input { Value = "a1" },
-                AlphaExpression = Input { Value = "1" }
-              },
-              CustomData = { Role = "opaque-occlusion-matte-carrier" },
-              ViewInfo = OperatorInfo { Pos = { 275, 280.5 } }
-            },
-            DeviceRGBPlane = ImagePlane3D {
-              Inputs = {
-                MaterialInput = Input { SourceOp = "DeviceRGBOpaque", Source = "Output" },
+                MaterialInput = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
@@ -1287,20 +1268,9 @@ enum FusionScenePackageWriter {
               CustomData = { TransformContract = "identity-at-origin", WidthMeters = \(planeWidth), HeightMeters = \(planeHeight), TextureAspectAppliedByImagePlane3D = true, ActiveRect = "\(prepared.activeRect.x),\(prepared.activeRect.y),\(prepared.activeRect.width),\(prepared.activeRect.height)" },
               ViewInfo = OperatorInfo { Pos = { 440, 148.5 } }
             },
-            DeviceMattePlane = ImagePlane3D {
-              Inputs = {
-                MaterialInput = Input { SourceOp = "DeviceMatteOpaque", Source = "Output" },
-                ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
-                ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
-                ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
-                ["Transform3DOp.Scale.Z"] = Input { Value = 1 }
-              },
-              CustomData = { TransformContract = "identity-at-origin", Role = "occlusion-matte" },
-              ViewInfo = OperatorInfo { Pos = { 440, 280.5 } }
-            },
             SpillRGBPlane = ImagePlane3D {
               Inputs = {
-                MaterialInput = Input { SourceOp = "SpillRGBOpaque", Source = "Output" },
+                MaterialInput = Input { SourceOp = "SpillToACEScg", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
@@ -1349,19 +1319,12 @@ enum FusionScenePackageWriter {
             CameraLensShiftY = BezierSpline { KeyFrames = { \(lensShiftY) } },
             LensDE4Degree2 = BezierSpline { KeyFrames = { \(lensDegree2) } },
             LensDE4Degree4 = BezierSpline { KeyFrames = { \(lensDegree4) } },
-            DeviceRGBScene3D = Merge3D {
+            DeviceRGBAScene3D = Merge3D {
               Inputs = {
-                SceneInput1 = Input { SourceOp = "DeviceRGBPlane", Source = "Output" },
+                SceneInput1 = Input { SourceOp = "DeviceRGBAPlane", Source = "Output" },
                 SceneInput2 = Input { SourceOp = "Camera3D_Device", Source = "Output" }
               },
               ViewInfo = OperatorInfo { Pos = { 605, 148.5 } }
-            },
-            DeviceMatteScene3D = Merge3D {
-              Inputs = {
-                SceneInput1 = Input { SourceOp = "DeviceMattePlane", Source = "Output" },
-                SceneInput2 = Input { SourceOp = "Camera3D_Device", Source = "Output" }
-              },
-              ViewInfo = OperatorInfo { Pos = { 605, 280.5 } }
             },
             SpillRGBScene3D = Merge3D {
               Inputs = {
@@ -1370,9 +1333,9 @@ enum FusionScenePackageWriter {
               },
               ViewInfo = OperatorInfo { Pos = { 770, 346.5 } }
             },
-            RenderDeviceRGB = Renderer3D {
+            RenderDeviceRGBA = Renderer3D {
               Inputs = {
-                SceneInput = Input { SourceOp = "DeviceRGBScene3D", Source = "Output" },
+                SceneInput = Input { SourceOp = "DeviceRGBAScene3D", Source = "Output" },
                 Width = Input { Value = \(request.deliveryWidth) },
                 Height = Input { Value = \(request.deliveryHeight) },
                 PixelAspect = Input { Value = { 1, 1 } },
@@ -1389,25 +1352,6 @@ enum FusionScenePackageWriter {
                 ["RendererOpenGL.MaximumTextureDepth"] = Input { Value = 4 }
               },
               ViewInfo = OperatorInfo { Pos = { 770, 148.5 } }
-            },
-            RenderDeviceMatte = Renderer3D {
-              Inputs = {
-                SceneInput = Input { SourceOp = "DeviceMatteScene3D", Source = "Output" },
-                Width = Input { Value = \(request.deliveryWidth) },
-                Height = Input { Value = \(request.deliveryHeight) },
-                PixelAspect = Input { Value = { 1, 1 } },
-                CameraSelector = Input { Value = FuID { "Camera3D_Device" } },
-                RendererType = Input { Value = FuID { "RendererOpenGL" } },
-                MotionBlur = Input { Value = 1 },
-                Quality = Input { Value = \(configuration.motionSamples) },
-                ShutterAngle = Input { Value = \(request.motionBlur.shutterAngleDegrees) },
-                CenterBias = Input { Value = \(request.motionBlur.fusionCenterBias) },
-                ["RendererOpenGL.EnableAccumEffects"] = Input { Value = \(dofEnabled) },
-                ["RendererOpenGL.EnableAccumDepthOfField"] = Input { Value = \(dofEnabled) },
-                ["RendererOpenGL.AccumQuality"] = Input { Value = 32 },
-                ["RendererOpenGL.DoFBlur"] = Input { SourceOp = "CameraApertureRadius", Source = "Value" }
-              },
-              ViewInfo = OperatorInfo { Pos = { 770, 280.5 } }
             },
             RenderSpillRGB = Renderer3D {
               Inputs = {
@@ -1431,27 +1375,15 @@ enum FusionScenePackageWriter {
             },
             AddProjectedDeviceSpill = Custom {
               Inputs = {
-                Image1 = Input { SourceOp = "RenderDeviceRGB", Source = "Output" },
+                Image1 = Input { SourceOp = "RenderDeviceRGBA", Source = "Output" },
                 Image2 = Input { SourceOp = "RenderSpillRGB", Source = "Output" },
                 RedExpression = Input { Value = "r1+r2" },
                 GreenExpression = Input { Value = "g1+g2" },
                 BlueExpression = Input { Value = "b1+b2" },
-                AlphaExpression = Input { Value = "1" }
+                AlphaExpression = Input { Value = "a1" }
               },
-              CustomData = { Equation = "projectedDeviceRGB + projectedSpillRGB" },
+              CustomData = { Equation = "projectedDeviceRGB + projectedSpillRGB", AlphaSemantics = "preserve-projected-device-alpha" },
               ViewInfo = OperatorInfo { Pos = { 935, 148.5 } }
-            },
-            RecombineDeviceRGBA = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" },
-                Image2 = Input { SourceOp = "RenderDeviceMatte", Source = "Output" },
-                RedExpression = Input { Value = "r1" },
-                GreenExpression = Input { Value = "g1" },
-                BlueExpression = Input { Value = "b1" },
-                AlphaExpression = Input { Value = "r2" }
-              },
-              CustomData = { AlphaSemantics = "independent-occlusion-matte", PremultiplicationForbidden = true },
-              ViewInfo = OperatorInfo { Pos = { 935, 214.5 } }
             },
             DeviceLensDistortion = LensDistort {
               Inputs = {
@@ -1469,7 +1401,7 @@ enum FusionScenePackageWriter {
                 ApertureH = Input { Value = \(apertureHeightInches) },
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
                 LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
-                Input = Input { SourceOp = "RecombineDeviceRGBA", Source = "Output" }
+                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
               },
               CustomData = { Contract = "syntheyes-de4-radial-standard-degree4-v1", LensBakedInEXR = false },
               ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }

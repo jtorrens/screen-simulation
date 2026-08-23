@@ -32,6 +32,103 @@ import Testing
     #expect(controller.jobs.map(\.detail) == ["first.mov", "second.mov"])
 }
 
+@Test @MainActor func outputCollisionIsAuthorizedImmediatelyBeforeTheAttempt() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-preflight-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let outputURL = root.appendingPathComponent("test_Device.mov")
+    try Data([1, 2, 3]).write(to: outputURL)
+
+    let controller = try queueTestController()
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Colisión"),
+        generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan(outputURL.path),
+        configuration: outputQueueTestConfiguration()
+    )
+    var events: [String] = []
+    controller.run(
+        preflight: { job in
+            events.append("preflight")
+            let collision = try job.outputPlan.inspectCollision()
+            #expect(collision.requiresConfirmation)
+            return .replaceGeneratedFiles
+        },
+        operation: { job, _ in
+            events.append("operation")
+            #expect(job.configuration.overwritePolicy == .replaceGeneratedFiles)
+            return job.destination
+        },
+        onFailure: { _ in }
+    )
+
+    while controller.isRendering { await Task.yield() }
+    #expect(events == ["preflight", "operation"])
+    #expect(controller.jobs.first?.state == .completed)
+    #expect(controller.jobs.first?.configuration.overwritePolicy == .replaceGeneratedFiles)
+}
+
+@Test @MainActor func cancellingOutputCollisionPreflightLeavesTheJobPending() async throws {
+    let controller = try queueTestController()
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Cancelar colisión"),
+        generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/cancel-preflight.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    var operationRan = false
+    controller.run(
+        preflight: { _ in nil },
+        operation: { job, _ in
+            operationRan = true
+            return job.destination
+        },
+        onFailure: { _ in }
+    )
+
+    await Task.yield()
+    #expect(!operationRan)
+    #expect(controller.jobs.first?.state == .pending)
+}
+
+@Test @MainActor func eachQueuedAttemptRechecksFilesProducedByAnEarlierJob() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-sequential-preflight-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let outputURL = root.appendingPathComponent("test_Device.mov")
+    let plan = queueTestPlan(outputURL.path)
+    let controller = try queueTestController()
+    for name in ["Primero", "Segundo"] {
+        controller.enqueue(
+            scene: outputQueueTestScene(name: name), generatedEnvironmentEXR: nil,
+            outputPlan: plan, configuration: outputQueueTestConfiguration()
+        )
+    }
+    var preflightCollisions: [Bool] = []
+    controller.run(
+        preflight: { job in
+            let collision = try job.outputPlan.inspectCollision().requiresConfirmation
+            preflightCollisions.append(collision)
+            return collision ? .replaceGeneratedFiles : job.configuration.overwritePolicy
+        },
+        operation: { job, _ in
+            if FileManager.default.fileExists(atPath: job.destination.path) {
+                #expect(job.configuration.overwritePolicy == .replaceGeneratedFiles)
+            }
+            try Data(job.scene.name.utf8).write(to: job.destination, options: .atomic)
+            return job.destination
+        },
+        onFailure: { _ in }
+    )
+
+    while controller.isRendering { await Task.yield() }
+    #expect(preflightCollisions == [false, true])
+    #expect(controller.jobs.map(\.state) == [.completed, .completed])
+    #expect(controller.jobs[1].configuration.overwritePolicy == .replaceGeneratedFiles)
+}
+
 @Test @MainActor func outputQueuePublishesFailureWithoutASecondLifecycleOwner() async throws {
     struct ExpectedFailure: LocalizedError {
         var errorDescription: String? { "fallo controlado" }

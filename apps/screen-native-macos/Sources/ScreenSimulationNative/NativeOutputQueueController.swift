@@ -49,6 +49,9 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     typealias Progress = @MainActor (_ completed: Int, _ total: Int) -> Void
+    typealias AttemptPreflight = @MainActor (
+        _ job: RenderJob
+    ) throws -> StudioOverwritePolicy?
     typealias RenderOperation = @MainActor (
         _ job: RenderJob,
         _ progress: @escaping Progress
@@ -113,12 +116,36 @@ final class NativeOutputQueueController: ObservableObject {
     }
 
     func run(
+        preflight: @escaping AttemptPreflight = { $0.configuration.overwritePolicy },
         operation: @escaping RenderOperation,
         onFailure: @escaping @MainActor (String) -> Void
     ) {
         guard persistenceError == nil, !isPaused, activeTask == nil,
               let index = jobs.firstIndex(where: { $0.state == .pending })
         else { return }
+        do {
+            let pending = jobs[index]
+            guard let overwritePolicy = try preflight(pending) else { return }
+            if overwritePolicy != pending.configuration.overwritePolicy {
+                jobs[index] = RenderJob(
+                    id: pending.id, derivedFromJobID: pending.derivedFromJobID,
+                    scene: pending.scene,
+                    generatedEnvironmentEXR: pending.generatedEnvironmentEXR,
+                    outputPlan: pending.outputPlan,
+                    configuration: pending.configuration.replacingOverwritePolicy(
+                        overwritePolicy
+                    ),
+                    state: pending.state, progress: pending.progress,
+                    detail: pending.detail
+                )
+                persist()
+            }
+        } catch {
+            jobs[index].detail = "Preflight: \(error.localizedDescription)"
+            persist()
+            onFailure(error.localizedDescription)
+            return
+        }
         jobs[index].state = .rendering
         jobs[index].detail = "Preparando grafo Metal"
         persist()
@@ -160,7 +187,7 @@ final class NativeOutputQueueController: ObservableObject {
             }
             endTiming(jobID: job.id)
             activeTask = nil
-            run(operation: operation, onFailure: onFailure)
+            run(preflight: preflight, operation: operation, onFailure: onFailure)
         }
     }
 

@@ -39,6 +39,8 @@ These rules apply to every task in this repository.
 - During development there is one current world. Contract, profiles, fixtures, tests, and renderer change together; changed results are accepted.
 - A contract migration is a one-way maintenance operation over a disposable copy or explicitly selected project.
 - A migration updates the schema, every affected record, references, fixtures, assets, documentation, and validation together.
+- Every library-version migration preserves every user-authored item in every collection unless the user explicitly authorizes deletion or semantic replacement of identified items. Preservation includes stable identity, authored content, collection membership, ordering, lock state and references; adding or replacing bundled seeds cannot rebuild a library from defaults or omit user items.
+- Each library migration test starts with at least one user-authored item in every collection and proves those items are unchanged in the result, in addition to proving the intended schema transformation.
 - Normal readers accept only the resulting current contract. Temporary migration code is not reachable from normal open/read/render paths.
 - Unknown schema or document versions are rejected.
 - Do not preserve an earlier evaluator, profile behavior, output result, or document reader during development.

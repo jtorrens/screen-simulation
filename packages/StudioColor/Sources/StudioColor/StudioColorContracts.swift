@@ -32,6 +32,12 @@ public struct StudioColorInputTransform: Hashable, Identifiable, Sendable {
 
     public static let catalog: [Self] = [
         .init(
+            id: "acescct",
+            label: "ACEScct / AP1",
+            referenceDomain: .sceneReferred,
+            processor: .colorSpace("ACEScct")
+        ),
+        .init(
             id: "display-rec709-gamma22-aces2-sdr",
             label: "Display · Rec.709 Gamma 2.2 (ACES 2.0 SDR)",
             referenceDomain: .acesOutputReferred,
@@ -430,6 +436,11 @@ public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
 
     public static let catalog: [Self] = [
         .init(
+            id: "acescct-ap1",
+            label: "ACEScct / AP1",
+            ocioColorSpace: "ACEScct"
+        ),
+        .init(
             id: "arri-logc4-awg4",
             label: "ARRI LogC4 / ARRI Wide Gamut 4",
             ocioColorSpace: "ARRI LogC4"
@@ -479,6 +490,8 @@ public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
             encoding: .cameraLog
         )
     }
+
+    public var supportsFusionScenePackage: Bool { id != "acescct-ap1" }
 }
 
 public enum StudioColorAlphaAssociation: String, CaseIterable, Identifiable, Sendable {

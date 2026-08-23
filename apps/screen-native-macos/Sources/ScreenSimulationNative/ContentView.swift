@@ -14,9 +14,70 @@ enum NativeTheme {
     )
 }
 
+private struct CopyableErrorDialog: View {
+    let detail: String
+    let dismiss: () -> Void
+
+    @State private var selectableDetail: String
+    @FocusState private var detailIsFocused: Bool
+
+    init(detail: String, dismiss: @escaping () -> Void) {
+        self.detail = detail
+        self.dismiss = dismiss
+        _selectableDetail = State(initialValue: detail)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("SCREEN-SIMULATION")
+                .font(.headline)
+            Text("No se ha podido completar la operación. Puedes seleccionar el detalle o copiarlo completo.")
+                .foregroundStyle(.secondary)
+            TextEditor(text: $selectableDetail)
+                .font(.system(.body, design: .monospaced))
+                .focused($detailIsFocused)
+                .frame(minWidth: 540, minHeight: 190)
+                .padding(6)
+                .background(
+                    Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+            HStack {
+                Button("Copiar detalle") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(detail, forType: .string)
+                }
+                Spacer()
+                Button("Aceptar", action: dismiss)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .onAppear { detailIsFocused = true }
+    }
+}
+
+private struct WindowTitleUpdater: NSViewRepresentable {
+    let title: String
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        updateWindowTitle(for: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        updateWindowTitle(for: nsView)
+    }
+
+    private func updateWindowTitle(for view: NSView) {
+        DispatchQueue.main.async { view.window?.title = title }
+    }
+}
+
 struct ContentView: View {
     enum PendingSceneAction {
-        case open, update, renderAfterUpdate, delete
+        case update, renderAfterUpdate, delete
     }
     enum LibraryDeletion: String {
         case pattern = "patrón"
@@ -100,6 +161,7 @@ struct ContentView: View {
     @State private var sidebarIsVisible = true
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
+    @State private var pendingSceneOpen: SavedScene?
     @State private var pendingRenderScene: SavedScene?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
 
@@ -141,6 +203,7 @@ struct ContentView: View {
             .frame(height: 46)
             .background(Color(nsColor: .windowBackgroundColor))
         }
+        .background(WindowTitleUpdater(title: activeSceneTitle))
         .toolbar { workspaceToolbar }
         .onAppear {
             model.configureSceneEnvironmentPersistence { sceneID, data in
@@ -161,14 +224,16 @@ struct ContentView: View {
         .onChange(of: page) { _, destination in
             activateWorkspacePage(destination)
         }
-        .alert(
-            "SCREEN-SIMULATION",
+        .sheet(
             isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } }
             )
-        ) { Button("Aceptar") { model.errorMessage = nil } }
-        message: { Text(model.errorMessage ?? "") }
+        ) {
+            CopyableErrorDialog(detail: model.errorMessage ?? "Error sin detalle.") {
+                model.errorMessage = nil
+            }
+        }
         .sheet(item: $pendingRenderScene) { scene in
             renderOptionsSheet(scene)
         }
@@ -184,6 +249,27 @@ struct ContentView: View {
                     } catch { model.errorMessage = error.localizedDescription }
                 }
             )
+        }
+        .confirmationDialog(
+            activeSceneSavePromptTitle,
+            isPresented: Binding(
+                get: { pendingSceneOpen != nil },
+                set: { if !$0 { pendingSceneOpen = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let target = pendingSceneOpen {
+                Button("Guardar cambios") { saveCurrentSceneAndOpen(target) }
+                Button("Descartar cambios", role: .destructive) {
+                    pendingSceneOpen = nil
+                    openScene(target)
+                }
+            }
+            Button("Cancelar", role: .cancel) { pendingSceneOpen = nil }
+        } message: {
+            if let target = pendingSceneOpen {
+                Text("La escena actual tiene cambios sin guardar. Elige qué hacer antes de abrir ‘\(target.name)’.")
+            }
         }
         .confirmationDialog(
             "¿Eliminar \(pendingLibraryDeletion?.rawValue ?? "elemento")?",
@@ -233,9 +319,7 @@ struct ContentView: View {
                 pendingScene = nil
             }
         } message: {
-            if pendingSceneAction == .open {
-                Text("Se sustituirá la escena cargada actualmente por el snapshot guardado.")
-            } else if pendingSceneAction == .update {
+            if pendingSceneAction == .update {
                 Text("Se reemplazarán los datos y la miniatura guardados por el estado activo.")
             } else if pendingSceneAction == .renderAfterUpdate {
                 Text("La escena activa ha cambiado. Se guardará primero y Render Queue conservará una copia inmutable de ese estado.")
@@ -1501,7 +1585,7 @@ struct ContentView: View {
                 preset.display = nil
                 preset.view = nil
                 preset.format = .proRes4444XQ
-                preset.pixelEncoding = .yuv44412
+                preset.pixelEncoding = .rgb44412
                 preset.signalRange = .video
                 preset.alpha = .straight
             }
@@ -1827,11 +1911,12 @@ struct ContentView: View {
                             SceneLibraryItemView(
                                 scene: scene,
                                 thumbnailURL: scenes.thumbnailURL(for: scene),
+                                isActive: model.activeSceneID == scene.id,
                                 onRename: { name in
                                     do { try scenes.rename(scene, to: name) }
                                     catch { model.errorMessage = error.localizedDescription }
                                 },
-                                onOpen: { requestSceneAction(.open, scene: scene) },
+                                onOpen: { requestOpenScene(scene) },
                                 onUpdate: { requestSceneAction(.update, scene: scene) },
                                 onDuplicate: {
                                     do { _ = try scenes.duplicate(scene) }
@@ -1853,7 +1938,6 @@ struct ContentView: View {
     private var sceneConfirmationTitle: String {
         guard let action = pendingSceneAction, let scene = pendingScene else { return "Escena" }
         return switch action {
-        case .open: "¿Abrir ‘\(scene.name)’?"
         case .update: "¿Actualizar ‘\(scene.name)’?"
         case .renderAfterUpdate: "¿Actualizar ‘\(scene.name)’ antes de renderizar?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
@@ -1862,7 +1946,6 @@ struct ContentView: View {
 
     private func sceneConfirmationButton(_ action: PendingSceneAction) -> String {
         switch action {
-        case .open: "Abrir escena"
         case .update: "Actualizar escena"
         case .renderAfterUpdate: "Actualizar y añadir a cola"
         case .delete: "Eliminar escena"
@@ -1872,6 +1955,54 @@ struct ContentView: View {
     private func requestSceneAction(_ action: PendingSceneAction, scene: SavedScene) {
         pendingScene = scene
         pendingSceneAction = action
+    }
+
+    private var activeSceneTitle: String {
+        guard let activeSceneID = model.activeSceneID,
+              let scene = scenes.scene(id: activeSceneID)
+        else { return "SCREEN-SIMULATION" }
+        return scene.name
+    }
+
+    private var activeSceneSavePromptTitle: String {
+        guard let activeSceneID = model.activeSceneID,
+              let scene = scenes.scene(id: activeSceneID)
+        else { return "¿Guardar los cambios de la escena actual?" }
+        return "¿Guardar los cambios de ‘\(scene.name)’?"
+    }
+
+    private func requestOpenScene(_ scene: SavedScene) {
+        guard scene.id != model.activeSceneID else { return }
+        do {
+            if let activeSceneID = model.activeSceneID,
+               let activeScene = scenes.scene(id: activeSceneID),
+               try model.savedSceneNeedsUpdate(activeScene) {
+                pendingSceneOpen = scene
+            } else {
+                openScene(scene)
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func saveCurrentSceneAndOpen(_ target: SavedScene) {
+        do {
+            guard let activeSceneID = model.activeSceneID,
+                  let activeScene = scenes.scene(id: activeSceneID)
+            else { throw SceneLibraryError.inaccessible("La escena activa ya no existe.") }
+            let capture = try model.captureSavedScene()
+            try scenes.update(activeScene, capture: capture, undoManager: undoManager)
+            model.markActiveScene(activeScene.id)
+            pendingSceneOpen = nil
+            openScene(target)
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func openScene(_ scene: SavedScene) {
+        Task { await model.openSavedScene(scene, undoManager: undoManager) }
     }
 
     private func requestSceneRender(_ scene: SavedScene) {
@@ -1900,8 +2031,6 @@ struct ContentView: View {
         pendingSceneAction = nil
         pendingScene = nil
         switch action {
-        case .open:
-            Task { await model.openSavedScene(scene, undoManager: undoManager) }
         case .update:
             do {
                 let capture = try model.captureSavedScene()
@@ -1954,7 +2083,10 @@ struct ContentView: View {
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
                     )) {
-                        ForEach(library.allRenderPresets) { preset in
+                        ForEach(library.allRenderPresets.filter {
+                            model.renderOutputType != .fusionScenePackage
+                                || $0.supportsFusionScenePackage
+                        }) { preset in
                             Text(preset.name).tag(preset)
                         }
                     }
@@ -1970,22 +2102,31 @@ struct ContentView: View {
                             Text(format.displayName).tag(format)
                         }
                     }
+                    .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
                     if model.renderPreset.target == .vfxLog {
-                        Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
-                            ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
-                                Text(encoding.label).tag(encoding.id)
-                            }
-                        }
-                        if let recommendation = model.recommendedVFXInterchangeEncoding {
-                            HStack {
-                                Text("Sugerido por cámara: \(recommendation.label)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Usar sugerido") {
-                                    model.vfxInterchangeEncodingID = recommendation.id
+                        if model.renderPreset.fixedVFXInterchangeEncodingID == nil {
+                            Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
+                                ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
+                                    Text(encoding.label).tag(encoding.id)
                                 }
                             }
+                            if let recommendation = model.recommendedVFXInterchangeEncoding {
+                                HStack {
+                                    Text("Sugerido por cámara: \(recommendation.label)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Usar sugerido") {
+                                        model.vfxInterchangeEncodingID = recommendation.id
+                                    }
+                                }
+                            }
+                        } else {
+                            LabeledContent(
+                                "Log / Gamut VFX",
+                                value: model.selectedVFXInterchangeEncoding?.label
+                                    ?? StudioVFXEditorialDeliveryContract.colorEncodingID
+                            )
                         }
                     }
                     if model.renderOutputType == .standard {
@@ -2575,7 +2716,10 @@ struct ContentView: View {
                     get: { model.renderPreset },
                     set: { model.applyRenderPreset($0) }
                 )) {
-                    ForEach(library.allRenderPresets) { Text($0.name).tag($0) }
+                    ForEach(library.allRenderPresets.filter {
+                        model.renderOutputType != .fusionScenePackage
+                            || $0.supportsFusionScenePackage
+                    }) { Text($0.name).tag($0) }
                 }
                 LabeledContent(
                     "ODT del preset",
@@ -2602,16 +2746,25 @@ struct ContentView: View {
                         $0.supports(target: model.renderPreset.target)
                     }) { Text($0.displayName).tag($0) }
                 }
+                .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
                 if model.renderPreset.target == .vfxLog {
-                    Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
-                        ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
-                            Text(encoding.label).tag(encoding.id)
+                    if model.renderPreset.fixedVFXInterchangeEncodingID == nil {
+                        Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
+                            ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
+                                Text(encoding.label).tag(encoding.id)
+                            }
                         }
-                    }
-                    if let recommendation = model.recommendedVFXInterchangeEncoding {
-                        Button("Usar sugerido · \(recommendation.label)") {
-                            model.vfxInterchangeEncodingID = recommendation.id
+                        if let recommendation = model.recommendedVFXInterchangeEncoding {
+                            Button("Usar sugerido · \(recommendation.label)") {
+                                model.vfxInterchangeEncodingID = recommendation.id
+                            }
                         }
+                    } else {
+                        LabeledContent(
+                            "Log / Gamut VFX",
+                            value: model.selectedVFXInterchangeEncoding?.label
+                                ?? StudioVFXEditorialDeliveryContract.colorEncodingID
+                        )
                     }
                 }
                 LabeledContent("Codificación", value: model.outputPixelEncoding.label)
@@ -2623,6 +2776,7 @@ struct ContentView: View {
                             ).contains(range))
                     }
                 }
+                .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
                 Picker("Rango", selection: $model.renderRange) {
                     Text("Todo").tag(StudioRenderRange.all)
                     Text("IN / OUT").tag(StudioRenderRange.inOut)
@@ -4391,6 +4545,7 @@ private struct SceneAutosaveHistoryView: View {
 private struct SceneLibraryItemView: View {
     let scene: SavedScene
     let thumbnailURL: URL?
+    let isActive: Bool
     let onRename: (String) -> Void
     let onOpen: () -> Void
     let onUpdate: () -> Void
@@ -4403,6 +4558,7 @@ private struct SceneLibraryItemView: View {
     init(
         scene: SavedScene,
         thumbnailURL: URL?,
+        isActive: Bool,
         onRename: @escaping (String) -> Void,
         onOpen: @escaping () -> Void,
         onUpdate: @escaping () -> Void,
@@ -4413,6 +4569,7 @@ private struct SceneLibraryItemView: View {
     ) {
         self.scene = scene
         self.thumbnailURL = thumbnailURL
+        self.isActive = isActive
         self.onRename = onRename
         self.onOpen = onOpen
         self.onUpdate = onUpdate
@@ -4440,6 +4597,7 @@ private struct SceneLibraryItemView: View {
             .background(.black)
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay { RoundedRectangle(cornerRadius: 5).stroke(.separator) }
+            .onTapGesture(count: 2, perform: onOpen)
             TextField("Nombre de escena", text: $draftName)
                 .textFieldStyle(.plain)
                 .font(.caption)
@@ -4447,6 +4605,16 @@ private struct SceneLibraryItemView: View {
                 .onSubmit(commitName)
                 .onChange(of: scene.name) { _, name in draftName = name }
         }
+        .padding(7)
+        .background(
+            isActive ? NativeTheme.accent.opacity(0.08) : .clear,
+            in: RoundedRectangle(cornerRadius: 9)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(isActive ? NativeTheme.accent : .clear, lineWidth: 2)
+        }
+        .accessibilityValue(isActive ? "Escena abierta" : "")
         .contextMenu {
             Button("Abrir escena", action: onOpen)
             Button("Actualizar con el estado actual", action: onUpdate)

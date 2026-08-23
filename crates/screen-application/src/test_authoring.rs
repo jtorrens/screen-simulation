@@ -4180,6 +4180,18 @@ pub fn apply_test_toggle_with_profiles<'a>(
 mod tests {
     use super::*;
 
+    #[test]
+    fn linear_acescg_source_resolves_through_the_test_authoring_boundary() {
+        let selection = default_test_authoring_selection(
+            "acescg",
+            "lcd-asus-proart-pa329cv",
+            FrameRate::new(24, 1).expect("valid frame rate"),
+        )
+        .expect("ACEScg is a valid explicit input transform");
+
+        assert_eq!(selection.input_transform_id, "acescg");
+    }
+
     fn asus() -> TestAuthoringSelection<'static> {
         TestAuthoringSelection {
             input_transform_id: "srgb-encoded-rec709",

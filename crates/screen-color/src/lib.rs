@@ -324,6 +324,7 @@ impl CameraOutputTransform {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OcioInputTransform {
+    AcesCg,
     SrgbEncodedRec709,
     LinearRec709,
     Rec709Gamma24Display,
@@ -339,7 +340,8 @@ pub enum OcioInputTransform {
 }
 
 impl OcioInputTransform {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::AcesCg,
         Self::SrgbEncodedRec709,
         Self::LinearRec709,
         Self::Rec709Gamma24Display,
@@ -356,6 +358,7 @@ impl OcioInputTransform {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::AcesCg => "ACEScg",
             Self::SrgbEncodedRec709 => "sRGB encoded Rec.709",
             Self::LinearRec709 => "Linear Rec.709 (sRGB)",
             Self::Rec709Gamma24Display => "Display Rec.709 Gamma 2.4",
@@ -373,6 +376,7 @@ impl OcioInputTransform {
 
     pub const fn stable_id(self) -> &'static str {
         match self {
+            Self::AcesCg => "acescg",
             Self::SrgbEncodedRec709 => "srgb-encoded-rec709",
             Self::LinearRec709 => "linear-rec709",
             Self::Rec709Gamma24Display => "display-rec709-gamma24",
@@ -396,6 +400,7 @@ impl OcioInputTransform {
 
     const fn ocio_color_space(self) -> &'static str {
         match self {
+            Self::AcesCg => ACESCG_COLOR_SPACE,
             Self::SrgbEncodedRec709 => "sRGB Encoded Rec.709 (sRGB)",
             Self::LinearRec709 => "Linear Rec.709 (sRGB)",
             Self::Rec709Gamma24Display => "Gamma 2.4 Encoded Rec.709",
@@ -416,7 +421,8 @@ impl OcioInputTransform {
             Self::SrgbEncodedRec709 | Self::Rec709Gamma24Display => {
                 SourceReferenceDomain::DisplayReferred
             }
-            Self::LinearRec709
+            Self::AcesCg
+            | Self::LinearRec709
             | Self::CameraRec709
             | Self::ArriLogC3Ei800
             | Self::ArriLogC4

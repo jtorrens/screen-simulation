@@ -154,11 +154,16 @@ private func fusionConfiguration(
     #expect(dcmTool.contains("ToneMapping = Input { Value = FuID { \"TM_NONE\" } }"))
 
     let vfxPreset = StudioRenderPreset.builtIns.first { $0.target == .vfxLog }!
-    for encoding in StudioVFXInterchangeEncoding.catalog {
+    for encoding in StudioVFXInterchangeEncoding.catalog.filter(\.supportsFusionScenePackage) {
         let color = try FusionMediaColorContract.resolve(fusionConfiguration(
             preset: vfxPreset, format: .tiff16, vfxEncodingID: encoding.id
         ))
         #expect(color.encodingDescription.contains(encoding.label))
+    }
+    #expect(throws: FusionScenePackageError.unsupportedMediaEncoding) {
+        try FusionMediaColorContract.resolve(fusionConfiguration(
+            preset: vfxPreset, format: .tiff16, vfxEncodingID: "acescct-ap1"
+        ))
     }
 }
 
@@ -171,6 +176,24 @@ private func fusionConfiguration(
     #expect(model.outputFormat == .tiff16)
     #expect(model.renderPreset == hdr)
     #expect(model.outputAlphaMode == .straight)
+}
+
+@Test @MainActor func vfxEditorialPresetFreezesItsStandardDeliveryContract() {
+    let model = WorkspaceModel()
+    let preset = StudioRenderPreset.builtIns[9]
+    model.applyRenderPreset(preset)
+    #expect(model.vfxInterchangeEncodingID == "acescct-ap1")
+    #expect(model.outputFormat == .proRes4444XQ)
+    #expect(model.outputPixelEncoding == .rgb44412)
+    #expect(model.outputSignalRange == .full)
+    #expect(model.outputAlphaMode == .straight)
+    #expect(model.includeAudio == false)
+
+    model.changeOutputFormat(.proRes4444)
+    model.outputSignalRange = .video
+    model.ensureRenderOptionsCompatible()
+    #expect(model.outputFormat == .proRes4444XQ)
+    #expect(model.outputSignalRange == .full)
 }
 
 private func camera(frame: Int = 1, z: Double = 1) -> FusionCameraKeyframe {
@@ -214,8 +237,10 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 1920,
         deliveryHeight: 1080
     )
-    #expect((960 ... 961).contains(raster.activeWidth))
-    #expect((640 ... 641).contains(raster.activeHeight))
+    #expect((960 ... 962).contains(raster.activeWidth))
+    #expect((640 ... 642).contains(raster.activeHeight))
+    #expect(raster.activeWidth.isMultiple(of: 2))
+    #expect(raster.activeHeight.isMultiple(of: 2))
 
     let projectedOutsideFrame = try FusionProjectionResolver.maximumProjectedDensity(
         cameraSamples: [camera(z: 0.1)],
@@ -224,8 +249,10 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 1920,
         deliveryHeight: 1080
     )
-    #expect((9_600 ... 9_601).contains(projectedOutsideFrame.activeWidth))
-    #expect((6_400 ... 6_401).contains(projectedOutsideFrame.activeHeight))
+    #expect((9_600 ... 9_602).contains(projectedOutsideFrame.activeWidth))
+    #expect((6_400 ... 6_402).contains(projectedOutsideFrame.activeHeight))
+    #expect(projectedOutsideFrame.activeWidth.isMultiple(of: 2))
+    #expect(projectedOutsideFrame.activeHeight.isMultiple(of: 2))
 }
 
 @Test @MainActor func fusionEulerRoundTripsTheSynthEyesImporterConvention() {
@@ -464,22 +491,30 @@ private func temporaryDirectory() throws -> URL {
         #expect(comp.contains("CenterBias = Input { Value = -1.0 }"))
         #expect(comp.contains("RendererType = Input { Value = FuID { \"RendererOpenGL\" } }"))
         #expect(comp.contains("[\"RendererOpenGL.EnableAccumDepthOfField\"] = Input { Value = \(dof == .fusion ? 1 : 0) }"))
-        let rgbRenderer = try! #require(comp.range(of: "RenderDeviceRGB = Renderer3D"))
-        let matteRenderer = try! #require(comp.range(of: "RenderDeviceMatte = Renderer3D"))
+        let rgbaRenderer = try! #require(comp.range(of: "RenderDeviceRGBA = Renderer3D"))
         let spillRenderer = try! #require(comp.range(of: "RenderSpillRGB = Renderer3D"))
-        let rgbBlock = String(comp[rgbRenderer.lowerBound ..< matteRenderer.lowerBound])
-        let matteBlock = String(comp[matteRenderer.lowerBound ..< spillRenderer.lowerBound])
-        #expect(rgbBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
-        #expect(!matteBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"]"))
+        let addNode = try! #require(comp.range(of: "AddProjectedDeviceSpill = Custom"))
+        let rgbaBlock = String(comp[rgbaRenderer.lowerBound ..< spillRenderer.lowerBound])
+        let spillBlock = String(comp[spillRenderer.lowerBound ..< addNode.lowerBound])
+        #expect(rgbaBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
+        #expect(spillBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
+        #expect(comp.contains("DeviceRGBAPlane = ImagePlane3D"))
+        #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceToACEScg\", Source = \"Output\" }"))
         #expect(comp.contains("SpillRGBPlane = ImagePlane3D"))
+        #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillToACEScg\", Source = \"Output\" }"))
         #expect(comp.contains("AddProjectedDeviceSpill = Custom"))
+        #expect(comp.contains("Image1 = Input { SourceOp = \"RenderDeviceRGBA\", Source = \"Output\" }"))
         #expect(comp.contains("Image2 = Input { SourceOp = \"RenderSpillRGB\", Source = \"Output\" }"))
+        #expect(comp.contains("AlphaExpression = Input { Value = \"a1\" }"))
+        #expect(comp.contains("AlphaSemantics = \"preserve-projected-device-alpha\""))
         #expect(comp.contains("CameraApertureRadius = BezierSpline"))
-        #expect(comp.contains("DeviceRGBOpaque = Custom"))
-        #expect(comp.contains("DeviceMatteOpaque = Custom"))
-        #expect(comp.contains("RecombineDeviceRGBA = Custom"))
-        #expect(comp.contains("AlphaExpression = Input { Value = \"r2\" }"))
-        #expect(comp.contains("PremultiplicationForbidden = true"))
+        #expect(!comp.contains("DeviceRGBOpaque"))
+        #expect(!comp.contains("DeviceMatteOpaque"))
+        #expect(!comp.contains("DeviceMattePlane"))
+        #expect(!comp.contains("DeviceMatteScene3D"))
+        #expect(!comp.contains("RenderDeviceMatte"))
+        #expect(!comp.contains("RecombineDeviceRGBA"))
+        #expect(comp.contains("Input = Input { SourceOp = \"AddProjectedDeviceSpill\", Source = \"Output\" }"))
         #expect(!comp.contains("PlateOccluded"))
         #expect(comp.contains("r1+r2*(1-a1)"))
         #expect(comp.contains("Equation = \"resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)\""))

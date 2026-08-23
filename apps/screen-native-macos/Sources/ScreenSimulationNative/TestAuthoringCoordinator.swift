@@ -491,9 +491,18 @@ enum RustTestAuthoringCoordinator {
                     frameRate.numerator, frameRate.denominator,
                     &output, &error
                 ) else {
+                    let bridgeError = error.map(String.init(cString:))
+                        ?? "Rust no publicó un detalle adicional."
                     throw TestAuthoringCoordinatorError.bridge(
-                        error.map(String.init(cString:))
-                            ?? "Rust no pudo crear la selección inicial de Test."
+                        """
+                        No se pudo resolver la selección inicial de Test.
+
+                        operation=defaultSelection
+                        inputTransformID=\(inputTransformID)
+                        deviceID=\(deviceID)
+                        frameRate=\(frameRate.numerator)/\(frameRate.denominator)
+                        bridgeError=\(bridgeError)
+                        """
                     )
                 }
                 return try resolved(output)
@@ -511,8 +520,19 @@ enum RustTestAuthoringCoordinator {
             guard let descriptor = screen_test_page_descriptor_create_with_profiles(
                 profileContext.handle, rawSelection, &error
             ) else {
+                let bridgeError = error.map(String.init(cString:))
+                    ?? "Rust no publicó un detalle adicional."
                 throw TestAuthoringCoordinatorError.bridge(
-                    error.map(String.init(cString:)) ?? "Rust rechazó el descriptor de Test."
+                    """
+                    No se pudo crear el descriptor de Test para el render.
+
+                    operation=snapshot
+                    inputTransformID=\(selection.inputTransformID)
+                    outputSignalID=\(selection.outputSignalID)
+                    deviceID=\(selection.deviceID)
+                    previewPhaseID=\(selectedPreviewPhaseID ?? "default")
+                    bridgeError=\(bridgeError)
+                    """
                 )
             }
             defer { screen_test_page_descriptor_release(descriptor) }

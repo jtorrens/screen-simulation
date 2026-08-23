@@ -1221,6 +1221,7 @@ def validate_migration_backup_contract() -> None:
             )
     for relative in (
         "scripts/migrate_global_library_v14_to_v15.py",
+        "scripts/migrate_global_library_v15_to_v16.py",
         "scripts/migrate_render_queue_v3_to_v4.py",
         "scripts/migrate_render_queue_v4_to_v5.py",
     ):

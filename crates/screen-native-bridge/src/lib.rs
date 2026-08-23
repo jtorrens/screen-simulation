@@ -41,6 +41,7 @@ use screen_application::{
     project_device_focus_target, publish_device_vfx_passes_rgba32f,
     resolve_physical_stage_contributions, resolve_planar_environment_framing,
     test_inspector_location, test_page_descriptor, test_page_descriptor_with_profiles,
+    vfx_delivery_stress_sample,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -6781,11 +6782,11 @@ pub unsafe extern "C" fn screen_test_pattern_dimensions(
     width: *mut u32,
     height: *mut u32,
 ) -> bool {
-    if width.is_null() || height.is_null() || pattern > 6 {
+    if width.is_null() || height.is_null() || pattern > 7 {
         return false;
     }
     let (resolved_width, resolved_height) = match pattern {
-        2..=4 | 6 => (EMBEDDED_WIDTH, EMBEDDED_HEIGHT),
+        2..=4 | 6 | 7 => (EMBEDDED_WIDTH, EMBEDDED_HEIGHT),
         _ => (PROCEDURAL_WIDTH, PROCEDURAL_HEIGHT),
     };
     // SAFETY: both output pointers were validated and belong to the caller.
@@ -6796,7 +6797,7 @@ pub unsafe extern "C" fn screen_test_pattern_dimensions(
     true
 }
 
-/// Renders the exact seven test-pattern choices exposed by the current Slint shell.
+/// Renders the exact eight test-pattern choices exposed by the current native shell.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
     pattern: u32,
@@ -6846,6 +6847,7 @@ pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
             0 => ProceduralTestPattern::AnimatedCheckerboard,
             1 => ProceduralTestPattern::EyeChart,
             5 => ProceduralTestPattern::PhotometricDeviceScale,
+            7 => ProceduralTestPattern::VfxDeliveryStress,
             _ => unreachable!(),
         };
         let time = RationalTime::new((time_seconds * 1_000_000.0).round() as i64, 1_000_000)
@@ -6856,12 +6858,19 @@ pub unsafe extern "C" fn screen_test_pattern_render_rgba32f(
                     x: x as f32 / (width - 1) as f32,
                     y: y as f32 / (height - 1) as f32,
                 };
-                let value = diagnostic_signal(procedural, uv, time);
+                let sample = if procedural == ProceduralTestPattern::VfxDeliveryStress {
+                    vfx_delivery_stress_sample(uv)
+                } else {
+                    screen_application::ProceduralTestRgba {
+                        rgb: diagnostic_signal(procedural, uv, time),
+                        alpha: 1.0,
+                    }
+                };
                 let offset = (y as usize * width as usize + x as usize) * 4;
-                output[offset] = value.r;
-                output[offset + 1] = value.g;
-                output[offset + 2] = value.b;
-                output[offset + 3] = 1.0;
+                output[offset] = sample.rgb.r;
+                output[offset + 1] = sample.rgb.g;
+                output[offset + 2] = sample.rgb.b;
+                output[offset + 3] = sample.alpha;
             }
         }
     }
@@ -8073,6 +8082,30 @@ mod tests {
         let (mut width, mut height) = (0, 0);
         assert!(unsafe { screen_test_pattern_dimensions(6, &mut width, &mut height) });
         assert_eq!((width, height), (EMBEDDED_WIDTH, EMBEDDED_HEIGHT));
+
+        assert!(unsafe { screen_test_pattern_dimensions(7, &mut width, &mut height) });
+        assert_eq!((width, height), (EMBEDDED_WIDTH, EMBEDDED_HEIGHT));
+        let mut stress = vec![0.0_f32; width as usize * height as usize * 4];
+        assert!(unsafe {
+            screen_test_pattern_render_rgba32f(
+                7,
+                0.0,
+                stress.as_mut_ptr(),
+                stress.len() / 4,
+                std::ptr::null_mut(),
+            )
+        });
+        assert!(stress.chunks_exact(4).any(|pixel| pixel[3] == 0.0));
+        assert!(
+            stress
+                .chunks_exact(4)
+                .any(|pixel| pixel[3] > 0.0 && pixel[3] < 1.0)
+        );
+        assert!(
+            stress
+                .chunks_exact(4)
+                .any(|pixel| pixel[..3].iter().any(|value| *value >= 224.0))
+        );
     }
 
     #[test]

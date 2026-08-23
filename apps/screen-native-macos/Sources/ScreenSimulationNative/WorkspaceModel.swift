@@ -429,7 +429,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderPreset: StudioRenderPreset
     @Published var renderWIPReviewPreset: StudioWIPReviewPreset?
     var renderDerivedFromJobID: UUID?
-    @Published var vfxInterchangeEncodingID = "arri-logc4-awg4"
+    @Published var vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.colorEncodingID
     @Published var peakNits = 100.0
     @Published var includeAudio = true
     @Published var outputAlphaMode = StudioAlphaMode.premultiplied
@@ -497,7 +497,7 @@ final class WorkspaceModel: ObservableObject {
     private var environmentSourceURL: URL?
     private var environmentSourceCalibration: EnvironmentAssetCalibration?
     private var generatedReflectionEnvironmentData: Data?
-    private var activeSceneID: UUID?
+    @Published private(set) var activeSceneID: UUID?
     private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
     private var referenceACEScgFrame: StudioColorMetalFrame?
     private var syntheticReferencePlateCache: (plate: ReferencePlate, width: Int, height: Int, frame: StudioColorMetalFrame)?
@@ -4348,8 +4348,10 @@ final class WorkspaceModel: ObservableObject {
             includeAudio = preset.includeAudio
         }
         ensureRenderOptionsCompatible()
-        if preset.target == .vfxLog,
-           let recommendation = selectedCapturePreset?.nativeVFXEncodingID {
+        if let fixed = preset.fixedVFXInterchangeEncodingID {
+            vfxInterchangeEncodingID = fixed
+        } else if preset.target == .vfxLog,
+                  let recommendation = selectedCapturePreset?.nativeVFXEncodingID {
             vfxInterchangeEncodingID = recommendation
         }
     }
@@ -4377,6 +4379,16 @@ final class WorkspaceModel: ObservableObject {
             }
             outputAlphaMode = .straight
             includeAudio = false
+            return
+        }
+        if renderPreset.fixedVFXInterchangeEncodingID != nil {
+            vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.colorEncodingID
+            outputFormat = .proRes4444XQ
+            outputPixelEncoding = .rgb44412
+            outputSignalRange = .full
+            outputAlphaMode = .straight
+            includeAudio = false
+            renderWIPReviewPreset = nil
             return
         }
         if renderWIPReviewPreset != nil { outputAlphaMode = .ignore }
@@ -4612,6 +4624,30 @@ final class WorkspaceModel: ObservableObject {
         pause()
         outputQueue.resume()
         outputQueue.run(
+            preflight: { job in
+                let collision = try job.outputPlan.inspectCollision()
+                guard collision.requiresConfirmation,
+                      job.configuration.overwritePolicy == .failIfExists
+                else { return job.configuration.overwritePolicy }
+
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = job.outputPlan.kind == .singleFile
+                    ? "El archivo de salida ya existe"
+                    : "Hay archivos de salida que ya existen"
+                alert.informativeText = switch collision {
+                case .none:
+                    ""
+                case let .singleFile(url):
+                    "Antes de iniciar el render se ha encontrado:\n\(url.path)\n\nSi continúas, se reemplazará este archivo."
+                case let .populatedDirectory(url, matching, total):
+                    "Antes de iniciar el render se han encontrado \(matching) archivo(s) del manifiesto dentro de una carpeta con \(total) archivo(s):\n\(url.path)\n\nSi continúas, sólo se reemplazarán los archivos declarados por este trabajo; los demás se conservarán."
+                }
+                alert.addButton(withTitle: "Cancelar")
+                alert.addButton(withTitle: "Sobrescribir archivos existentes")
+                return alert.runModal() == .alertSecondButtonReturn
+                    ? .replaceGeneratedFiles : nil
+            },
             operation: { job, progress in
                 let executor = WorkspaceModel()
                 let materialized = try executor.materializeQueuedScene(
@@ -4762,6 +4798,19 @@ final class WorkspaceModel: ObservableObject {
                     throw PhysicalMetalFrameEngineError.bridge(
                         "Render Queue no recibió el checkpoint de cámara solicitado."
                     )
+                }
+                if configuration.composition == .deviceAndSpillSeparate {
+                    // Separate VFX media consume the typed Delivery Raster with its
+                    // independent physical matte. The ordinary camera composite is
+                    // intentionally opaque and would erase both Device alpha and Spill.
+                    return try RecordingPhaseExecutor.delivery(
+                        cameraRendered: camera,
+                        width: Int(selection.deliveryWidth),
+                        height: Int(selection.deliveryHeight),
+                        placementID: selection.deliveryPlacementID,
+                        backgroundID: "transparent",
+                        display: metalDisplay
+                    ).compositionFrame
                 }
                 let reference: StudioColorMetalFrame?
                 if configuration.composition == .fullComposite {

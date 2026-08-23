@@ -42,6 +42,8 @@
         "scripts/migration_io.py",
         "scripts/migrate_global_library_v14_to_v15.py",
         "scripts/test_migrate_global_library_v14_to_v15.py",
+        "scripts/migrate_global_library_v15_to_v16.py",
+        "scripts/test_migrate_global_library_v15_to_v16.py",
         "scripts/migrate_render_queue_v3_to_v4.py",
         "scripts/test_migrate_render_queue_v3_to_v4.py",
         "scripts/migrate_render_queue_v4_to_v5.py",
@@ -195,6 +197,49 @@
       ]
     },
     {
+      "id": "output.vfx-editorial-delivery",
+      "scope": "standard-only ACEScct ProRes 4444 XQ editorial delivery contract",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "packages/StudioColor/Sources/StudioColor/StudioColorContracts.swift",
+        "packages/StudioColor/Tests/StudioColorTests/StudioColorTests.swift",
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibrary.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift",
+        "scripts/migrate_global_library_v15_to_v16.py",
+        "scripts/test_migrate_global_library_v15_to_v16.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "source.vfx-delivery-stress-pattern",
+      "scope": "deterministic ACEScg RGBA synthetic source for VFX delivery validation",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "crates/screen-color/src/lib.rs",
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-application/src/test_authoring.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/MediaDecoder.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/TestAuthoringCoordinatorTests.swift",
+        "scripts/migrate_global_library_v15_to_v16.py",
+        "scripts/test_migrate_global_library_v15_to_v16.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "output.wip-review-presets",
       "scope": "WIP Review Global Library presets and standard single-media post-output-transform processing",
       "owner": {
@@ -344,6 +389,34 @@
         "crates/screen-application/src/lib.rs",
         "crates/screen-platform/shaders/physical_pipeline.metal",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SetupFramingRenderer.swift"
+      ]
+    },
+    {
+      "id": "ui.active-scene-selection",
+      "scope": "native workstation active Saved Scene identity, opening gesture and dirty-state decision",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Native workspace navigation"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "ui.copyable-error-reporting",
+      "scope": "native workstation presentation of actionable copyable Application failure detail",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Native workspace navigation"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/GlobalLibraryTests.swift",
+        "scripts/check_architecture.py"
       ]
     },
     {

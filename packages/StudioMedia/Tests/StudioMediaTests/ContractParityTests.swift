@@ -7,7 +7,7 @@ import Testing
         "openEXR", "dpx10RGB", "tiff16", "proRes4444", "proRes4444XQ",
         "h264Low", "h264Medium", "h264High", "h265Low", "h265Medium", "h265High",
     ])
-    #expect(StudioRenderPreset.builtIns.count == 9)
+    #expect(StudioRenderPreset.builtIns.count == 10)
     #expect(StudioRenderPreset.builtIns[1].peakNits == 1_000)
     #expect(StudioRenderPreset.builtIns[0].pipeline == .aces)
     #expect(StudioRenderPreset.builtIns[2].pipeline == .davinciColorManaged)
@@ -18,6 +18,15 @@ import Testing
     #expect(StudioRenderPreset.builtIns[7].format == .proRes4444)
     #expect(StudioRenderPreset.builtIns[8].target == .vfxLog)
     #expect(StudioRenderPreset.builtIns[8].format == .proRes4444XQ)
+    let editorial = StudioRenderPreset.builtIns[9]
+    #expect(editorial.id == StudioVFXEditorialDeliveryContract.presetID)
+    #expect(editorial.fixedVFXInterchangeEncodingID == "acescct-ap1")
+    #expect(editorial.format == .proRes4444XQ)
+    #expect(editorial.pixelEncoding == .rgb44412)
+    #expect(editorial.signalRange == .full)
+    #expect(editorial.alpha == .straight)
+    #expect(editorial.includeAudio == false)
+    #expect(editorial.supportsFusionScenePackage == false)
     #expect(StudioOutputFormat.proRes4444.supports(target: .vfxLog))
     #expect(StudioOutputFormat.proRes4444XQ.supports(target: .vfxLog))
     #expect(!StudioOutputFormat.openEXR.supports(target: .vfxLog))
@@ -185,8 +194,8 @@ import Testing
 @Test func outputRangeSupportIsExplicitPerWriter() {
     #expect(StudioOutputFormat.h264High.supportedPixelEncodings == [.yuv4208])
     #expect(StudioOutputFormat.h264High.supportedSignalRanges(for: .yuv4208) == [.video, .full])
-    #expect(StudioOutputFormat.proRes4444.supportedPixelEncodings == [.yuv44412])
-    #expect(StudioOutputFormat.proRes4444.supportedSignalRanges(for: .yuv44412) == [.video])
+    #expect(StudioOutputFormat.proRes4444.supportedPixelEncodings == [.yuv44412, .rgb44412])
+    #expect(StudioOutputFormat.proRes4444.supportedSignalRanges(for: .yuv44412) == [.video, .full])
     #expect(StudioOutputFormat.openEXR.supportedPixelEncodings == [.rgba16Float])
     #expect(StudioOutputFormat.openEXR.supportedSignalRanges(for: .rgba16Float) == [.full])
 }

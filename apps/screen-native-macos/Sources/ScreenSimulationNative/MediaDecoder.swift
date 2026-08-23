@@ -261,6 +261,7 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
     case frequencyMoireReference = 4
     case photometricDeviceScale = 5
     case vfxComparisonReference = 6
+    case vfxDeliveryStress = 7
 
     var id: UInt32 { rawValue }
 
@@ -273,11 +274,27 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
         case .frequencyMoireReference: "Frecuencia / moiré 4K"
         case .photometricDeviceScale: "Escala fotométrica"
         case .vfxComparisonReference: "Referencia VFX fotografiada"
+        case .vfxDeliveryStress: "VFX Delivery Stress · ACEScg RGBA"
         }
     }
 
     var sourceDetection: StudioMediaDetection {
-        StudioMediaDetection(
+        if self == .vfxDeliveryStress {
+            return StudioMediaDetection(
+                proposedInputTransformID: "acescg",
+                inputTransformProvenance: .proposed,
+                matrix: .bt709,
+                matrixProvenance: .proposed,
+                range: .full,
+                rangeProvenance: .proposed,
+                colorModel: .rgb,
+                colorModelProvenance: .proposed,
+                hasAlpha: true,
+                alpha: .straight,
+                alphaProvenance: .proposed
+            )
+        }
+        return StudioMediaDetection(
             proposedInputTransformID: "srgb-encoded-rec709",
             inputTransformProvenance: .proposed,
             matrix: .bt709,
@@ -294,7 +311,7 @@ enum SyntheticPattern: UInt32, Codable, CaseIterable, Identifiable, Sendable {
 
     var authoredPlacementID: String {
         switch self {
-        case .vfxComparisonReference: "one-to-one"
+        case .vfxComparisonReference, .vfxDeliveryStress: "one-to-one"
         default: "fit"
         }
     }

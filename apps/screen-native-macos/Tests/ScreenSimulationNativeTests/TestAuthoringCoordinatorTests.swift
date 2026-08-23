@@ -133,6 +133,16 @@ private func canonicalTestSelection() -> TestAuthoringResolvedSelection {
     #expect(selection.frameRate == rate)
 }
 
+@Test func testAuthoringBridgeAcceptsAnAlreadyLinearAcesCgSource() throws {
+    let selection = try RustTestAuthoringCoordinator.defaultSelection(
+        inputTransformID: "acescg",
+        deviceID: "lcd-asus-proart-pa329cv",
+        frameRate: .fps24
+    )
+
+    #expect(selection.inputTransformID == "acescg")
+}
+
 @Test func exactFrameRateDecodingRejectsZeroDenominator() throws {
     let bytes = Data(#"{"numerator":24000,"denominator":0}"#.utf8)
     #expect(throws: StudioMediaContractError.self) {

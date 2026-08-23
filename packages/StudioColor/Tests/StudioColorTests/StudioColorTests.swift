@@ -21,6 +21,9 @@ import Metal
             destination: encoding.ocioColorSpace
         )
     }
+    let editorial = try #require(catalog.first { $0.id == "acescct-ap1" })
+    #expect(editorial.label == "ACEScct / AP1")
+    #expect(editorial.ocioColorSpace == "ACEScct")
 }
 
 @Test func rawPreviewShowsLinearValuesWithoutAnEncodingCurve() throws {

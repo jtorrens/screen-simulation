@@ -4299,6 +4299,13 @@ pub enum ProceduralTestPattern {
     AnimatedCheckerboard,
     EyeChart,
     PhotometricDeviceScale,
+    VfxDeliveryStress,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProceduralTestRgba {
+    pub rgb: DeviceRgb,
+    pub alpha: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -7236,7 +7243,156 @@ pub fn diagnostic_signal(
         ProceduralTestPattern::AnimatedCheckerboard => checkerboard_signal(uv, time),
         ProceduralTestPattern::EyeChart => eye_chart_signal(uv),
         ProceduralTestPattern::PhotometricDeviceScale => photometric_device_scale_signal(uv),
+        ProceduralTestPattern::VfxDeliveryStress => vfx_delivery_stress_sample(uv).rgb,
     }
+}
+
+/// Deterministic linear-ACEScg RGBA fixture for the VFX editorial delivery boundary.
+/// Alpha is straight and linear; RGB intentionally remains non-black under some zero-alpha pixels.
+pub fn vfx_delivery_stress_sample(uv: Vec2) -> ProceduralTestRgba {
+    const LUMINANCE: [f32; 14] = [
+        0.0, 0.001, 0.01, 0.18, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 220.0, 224.0,
+    ];
+    const HUES: [[f32; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0],
+        [1.0, 0.0, 1.0],
+    ];
+    const LUMINANCE_LABELS: [&str; 14] = [
+        "0", ".001", ".01", ".18", "1", "2", "4", "8", "16", "32", "64", "128", "220", "224",
+    ];
+    let x = uv.x.clamp(0.0, 1.0);
+    let y = uv.y.clamp(0.0, 1.0);
+    let (rgb, alpha) = if y < 0.16 {
+        let index = ((x * LUMINANCE.len() as f32).floor() as usize).min(LUMINANCE.len() - 1);
+        let value = LUMINANCE[index];
+        let patch_x = x * LUMINANCE.len() as f32 - index as f32;
+        let patch_y = y / 0.16;
+        let label = vfx_patch_label_mask(LUMINANCE_LABELS[index], patch_x, patch_y);
+        let displayed = if label {
+            if value <= 1.0 { 0.8 } else { 0.0 }
+        } else {
+            value
+        };
+        ([displayed, displayed, displayed], 1.0)
+    } else if y < 0.34 {
+        let hue = HUES[((x * HUES.len() as f32).floor() as usize).min(HUES.len() - 1)];
+        let row = (((y - 0.16) / 0.18 * 4.0).floor() as usize).min(3);
+        let intensity = [0.18, 1.0, 16.0, 64.0][row];
+        (
+            [hue[0] * intensity, hue[1] * intensity, hue[2] * intensity],
+            1.0,
+        )
+    } else if y < 0.52 {
+        let hue = HUES[((x * HUES.len() as f32).floor() as usize).min(HUES.len() - 1)];
+        ([hue[0] * 16.0, hue[1] * 16.0, hue[2] * 16.0], x)
+    } else if y < 0.70 {
+        let local_y = (y - 0.52) / 0.18;
+        let circle = (x - 0.25).hypot(local_y - 0.5) <= 0.22;
+        let diagonal = x >= 0.48 && local_y <= (x - 0.48) / 0.52;
+        let alpha = if circle || diagonal { 1.0 } else { 0.0 };
+        ([8.0, 0.25 + 3.75 * x, 16.0 * (1.0 - x)], alpha)
+    } else if y < 0.86 {
+        let pixel_x = (x * 3_839.0).round() as u32;
+        let row = (((y - 0.70) / 0.16 * 3.0).floor() as u32).min(2);
+        let alpha = match row {
+            0 => {
+                if pixel_x.is_multiple_of(2) {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            1 => {
+                if (pixel_x / 2).is_multiple_of(2) {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            _ => (pixel_x % 256) as f32 / 255.0,
+        };
+        ([4.0 * x, 16.0 * (1.0 - x), 2.0 + 30.0 * x], alpha)
+    } else {
+        let alpha = if x < 0.5 { 0.0 } else { 1.0 };
+        let smooth = x * x * (3.0 - 2.0 * x);
+        ([128.0 * smooth, 32.0 * (1.0 - smooth), 8.0], alpha)
+    };
+    ProceduralTestRgba {
+        rgb: DeviceRgb::new(rgb[0], rgb[1], rgb[2]),
+        alpha,
+    }
+}
+
+/// Small embedded 5×7 font used only by the deterministic test fixture. Keeping the labels in
+/// the generated raster makes the patch identity survive exports without host font dependencies.
+fn vfx_patch_label_mask(label: &str, patch_x: f32, patch_y: f32) -> bool {
+    const GLYPH_WIDTH: usize = 5;
+    const GLYPH_HEIGHT: usize = 7;
+    const GAP: usize = 1;
+    const LABEL_TOP: f32 = 0.60;
+    const LABEL_BOTTOM: f32 = 0.92;
+
+    if !(LABEL_TOP..LABEL_BOTTOM).contains(&patch_y) {
+        return false;
+    }
+    let units = label.len() * (GLYPH_WIDTH + GAP) - GAP;
+    let cell = 0.82 / units as f32;
+    let label_width = units as f32 * cell;
+    let origin_x = (1.0 - label_width) * 0.5;
+    if patch_x < origin_x || patch_x >= origin_x + label_width {
+        return false;
+    }
+    let column = ((patch_x - origin_x) / cell).floor() as usize;
+    let glyph_index = column / (GLYPH_WIDTH + GAP);
+    let glyph_column = column % (GLYPH_WIDTH + GAP);
+    if glyph_column >= GLYPH_WIDTH || glyph_index >= label.len() {
+        return false;
+    }
+    let row =
+        ((patch_y - LABEL_TOP) / (LABEL_BOTTOM - LABEL_TOP) * GLYPH_HEIGHT as f32).floor() as usize;
+    let character = label.as_bytes()[glyph_index];
+    (vfx_label_glyph_row(character, row) & (1 << (GLYPH_WIDTH - 1 - glyph_column))) != 0
+}
+
+fn vfx_label_glyph_row(character: u8, row: usize) -> u8 {
+    const ZERO: [u8; 7] = [
+        0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+    ];
+    const ONE: [u8; 7] = [
+        0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+    ];
+    const TWO: [u8; 7] = [
+        0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+    ];
+    const THREE: [u8; 7] = [
+        0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+    ];
+    const FOUR: [u8; 7] = [
+        0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+    ];
+    const SIX: [u8; 7] = [
+        0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+    ];
+    const EIGHT: [u8; 7] = [
+        0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+    ];
+    const DOT: [u8; 7] = [0, 0, 0, 0, 0, 0b00110, 0b00110];
+    let glyph = match character {
+        b'0' => ZERO,
+        b'1' => ONE,
+        b'2' => TWO,
+        b'3' => THREE,
+        b'4' => FOUR,
+        b'6' => SIX,
+        b'8' => EIGHT,
+        b'.' => DOT,
+        _ => [0; 7],
+    };
+    glyph.get(row).copied().unwrap_or(0)
 }
 
 fn photometric_device_scale_signal(uv: Vec2) -> DeviceRgb {
@@ -10813,6 +10969,42 @@ mod tests {
                 time,
             );
             assert_eq!(value, DeviceRgb::new(expected, expected, expected));
+        }
+    }
+
+    #[test]
+    fn vfx_delivery_stress_covers_hdr_saturation_and_alpha_extremes() {
+        for label in [
+            "0", ".001", ".01", ".18", "1", "2", "4", "8", "16", "32", "64", "128", "220", "224",
+        ] {
+            assert!((0..200).any(|x| {
+                (0..100).any(|y| vfx_patch_label_mask(label, x as f32 / 200.0, y as f32 / 100.0))
+            }));
+        }
+        let black = vfx_delivery_stress_sample(Vec2 { x: 0.01, y: 0.08 });
+        let peak = vfx_delivery_stress_sample(Vec2 { x: 0.99, y: 0.08 });
+        let fractional = vfx_delivery_stress_sample(Vec2 { x: 0.5, y: 0.43 });
+        let hidden_rgb = vfx_delivery_stress_sample(Vec2 { x: 0.25, y: 0.93 });
+        let hard_opaque = vfx_delivery_stress_sample(Vec2 { x: 0.75, y: 0.93 });
+        assert_eq!(black.rgb, DeviceRgb::new(0.0, 0.0, 0.0));
+        assert_eq!(peak.rgb, DeviceRgb::new(224.0, 224.0, 224.0));
+        assert!((fractional.alpha - 0.5).abs() <= f32::EPSILON);
+        assert_eq!(hidden_rgb.alpha, 0.0);
+        assert!(hidden_rgb.rgb.r > 0.0 && hidden_rgb.rgb.g > 0.0 && hidden_rgb.rgb.b > 0.0);
+        assert_eq!(hard_opaque.alpha, 1.0);
+        for y in 0..=100 {
+            for x in 0..=100 {
+                let sample = vfx_delivery_stress_sample(Vec2 {
+                    x: x as f32 / 100.0,
+                    y: y as f32 / 100.0,
+                });
+                assert!(
+                    [sample.rgb.r, sample.rgb.g, sample.rgb.b, sample.alpha]
+                        .into_iter()
+                        .all(f32::is_finite)
+                );
+                assert!((0.0..=1.0).contains(&sample.alpha));
+            }
         }
     }
 

@@ -22,6 +22,19 @@ import Testing
     #expect(source.contains("else { commit() }"))
 }
 
+@Test func globalErrorsExposeSelectableCopyableTechnicalDetail() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(source.contains("struct CopyableErrorDialog"))
+    #expect(source.contains("TextEditor(text: $selectableDetail)"))
+    #expect(source.contains(".focused($detailIsFocused)"))
+    #expect(source.contains("NSPasteboard.general.setString(detail, forType: .string)"))
+}
+
 @Test func globalLibraryPersistsOnlyUserEntitiesInCurrentSchema() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-global-library-\(UUID().uuidString)")
@@ -50,8 +63,8 @@ import Testing
     let document = try GlobalLibraryStore(
         documentURL: URL(fileURLWithPath: path)
     ).load()
-    #expect(document.schemaVersion == 15)
-    #expect(document.wipReviewPresets.count == 4)
+    #expect(document.schemaVersion == 16)
+    #expect(document.wipReviewPresets.filter(\.isLocked).count == 4)
     let expectedUserDeviceIDs = Set(
         ProcessInfo.processInfo.environment["SCREEN_EXPECTED_USER_DEVICE_IDS"]?
             .split(separator: ",").map(String.init) ?? []
@@ -174,25 +187,25 @@ import Testing
         documentURL: root.appendingPathComponent("library.json")
     )
     let controller = GlobalLibraryController(store: store)
-    #expect(controller.document.renderPresets.count == 9)
+    #expect(controller.document.renderPresets.count == 10)
     controller.selectedPresetID = controller.document.renderPresets.first?.id
     let originalName = controller.selectedPresetItem?.name
     #expect(controller.selectedPresetItem?.isLocked == true)
     controller.updateSelectedPreset { $0.name = "No debe cambiar" }
     #expect(controller.selectedPresetItem?.name == originalName)
     controller.duplicateSelectedPreset()
-    #expect(controller.document.renderPresets.count == 10)
+    #expect(controller.document.renderPresets.count == 11)
     #expect(controller.selectedPresetItem?.isLocked == false)
     controller.updateSelectedPreset { $0.name = "ACES SDR personalizado" }
     #expect(controller.selectedPresetItem?.name == "ACES SDR personalizado")
     controller.removeSelectedPreset()
-    #expect(controller.document.renderPresets.count == 9)
+    #expect(controller.document.renderPresets.count == 10)
 
     controller.selectedPresetID = controller.document.renderPresets.first?.id
     controller.unlockSelectedPreset()
     #expect(controller.selectedPresetItem?.isLocked == false)
     controller.removeSelectedPreset()
-    #expect(try store.load().renderPresets.count == 8)
+    #expect(try store.load().renderPresets.count == 9)
 }
 
 @Test @MainActor func storedRenderProfilesRemainTheOnlyRuntimeAuthority() throws {
@@ -205,7 +218,7 @@ import Testing
     stored.renderPresets.removeLast(2)
     try store.save(stored)
     let controller = GlobalLibraryController(store: store)
-    #expect(controller.document.renderPresets.count == 7)
+    #expect(controller.document.renderPresets.count == 8)
     #expect(controller.allRenderPresets == stored.renderPresets.map(\.value))
 }
 
@@ -251,16 +264,16 @@ import Testing
             documentURL: root.appendingPathComponent("library.json")
         )
     )
-    #expect(controller.document.patterns.count == 7)
+    #expect(controller.document.patterns.count == 8)
     #expect(controller.document.patterns.allSatisfy { $0.isLocked })
     controller.selectedPatternID = controller.document.patterns.first?.id
     controller.duplicateSelectedPattern()
-    #expect(controller.document.patterns.count == 8)
+    #expect(controller.document.patterns.count == 9)
     #expect(controller.selectedPatternItem?.isLocked == false)
     controller.updateSelectedPattern { $0.name = "Patrón usuario" }
     #expect(controller.selectedPatternItem?.name == "Patrón usuario")
     controller.removeSelectedPattern()
-    #expect(controller.document.patterns.count == 7)
+    #expect(controller.document.patterns.count == 8)
 }
 
 @Test @MainActor func invalidDeviceEditIsRejectedWithoutMutatingTheResolvedEntry() throws {

@@ -2,7 +2,7 @@ import Foundation
 
 public enum StudioPixelEncoding: String, Codable, CaseIterable, Identifiable, Sendable {
     case yuv4208, yuv42010, yuv44412
-    case rgb10, rgb16, rgba16Float
+    case rgb10, rgb44412, rgb16, rgba16Float
 
     public var id: String { rawValue }
     public var label: String {
@@ -11,6 +11,7 @@ public enum StudioPixelEncoding: String, Codable, CaseIterable, Identifiable, Se
         case .yuv42010: "Y′CbCr 4:2:0 · 10 bit"
         case .yuv44412: "Y′CbCr 4:4:4 · 12 bit"
         case .rgb10: "RGB 4:4:4 · 10 bit"
+        case .rgb44412: "RGB 4:4:4 · 12 bit"
         case .rgb16: "RGB 4:4:4 · 16 bit"
         case .rgba16Float: "RGBA 4:4:4:4 · float16"
         }
@@ -18,7 +19,7 @@ public enum StudioPixelEncoding: String, Codable, CaseIterable, Identifiable, Se
     public var isYUV: Bool {
         switch self {
         case .yuv4208, .yuv42010, .yuv44412: true
-        case .rgb10, .rgb16, .rgba16Float: false
+        case .rgb10, .rgb44412, .rgb16, .rgba16Float: false
         }
     }
 }
@@ -91,7 +92,7 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
             case .h264Low, .h264Medium, .h264High: [.yuv4208]
             default: [.yuv42010]
             }
-        case .proRes4444, .proRes4444XQ: [.yuv44412]
+        case .proRes4444, .proRes4444XQ: [.yuv44412, .rgb44412]
         case .openEXR: [.rgba16Float]
         case .dpx10RGB: [.rgb10]
         case .tiff16: [.rgb16]
@@ -123,8 +124,8 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         guard supportedPixelEncodings.contains(encoding) else { return [] }
         switch encoding {
         case .yuv4208, .yuv42010: return [.video, .full]
-        case .yuv44412: return [.video]
-        case .rgb10, .rgb16, .rgba16Float: return [.full]
+        case .yuv44412: return [.video, .full]
+        case .rgb10, .rgb44412, .rgb16, .rgba16Float: return [.full]
         }
     }
 }
@@ -136,6 +137,13 @@ public enum StudioRenderTarget: String, Codable, Sendable {
 public enum StudioRenderPipeline: String, Codable, Sendable {
     case aces
     case davinciColorManaged
+}
+
+public enum StudioVFXEditorialDeliveryContract {
+    public static let presetID = UUID(
+        uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C0A"
+    )!
+    public static let colorEncodingID = "acescct-ap1"
 }
 
 public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -330,6 +338,15 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         }
     }
 
+    public var fixedVFXInterchangeEncodingID: String? {
+        id == StudioVFXEditorialDeliveryContract.presetID
+            ? StudioVFXEditorialDeliveryContract.colorEncodingID : nil
+    }
+
+    public var supportsFusionScenePackage: Bool {
+        id != StudioVFXEditorialDeliveryContract.presetID
+    }
+
     public static let builtIns: [Self] = [
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C01")!, name: "ACES · SDR", pipeline: .aces, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "ACES 2.0 - SDR 100 nits (Rec.709)", notes: "Roundtrip ACES SDR Rec.709 BT.1886."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C02")!, name: "ACES · HDR", pipeline: .aces, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "ACES 2.0 - HDR 1000 nits (Rec.2020)", notes: "Roundtrip ACES HDR Rec.2100 ST2084 1000 nit."),
@@ -340,6 +357,7 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C07")!, name: "DCM · EXR (ACEScg)", pipeline: .davinciColorManaged, target: .acescg, peakNits: 0, display: nil, view: nil, format: .openEXR, pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight, notes: "Intercambio scene-linear ACEScg para DCM."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C08")!, name: "VFX · ProRes 4444", pipeline: .aces, target: .vfxLog, peakNits: 0, display: nil, view: nil, format: .proRes4444, pixelEncoding: .yuv44412, signalRange: .video, alpha: .straight, notes: "Log/Gamut VFX elegido explícitamente; sin ODT de display."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C09")!, name: "VFX · ProRes 4444 XQ", pipeline: .aces, target: .vfxLog, peakNits: 0, display: nil, view: nil, format: .proRes4444XQ, pixelEncoding: .yuv44412, signalRange: .video, alpha: .straight, notes: "Máxima calidad ProRes con Log/Gamut VFX elegido explícitamente; sin ODT de display."),
+        .init(id: StudioVFXEditorialDeliveryContract.presetID, name: "VFX Editorial · ACEScct · ProRes 4444 XQ", pipeline: .aces, target: .vfxLog, peakNits: 0, display: nil, view: nil, format: .proRes4444XQ, pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight, includeAudio: false, notes: "Contrato editorial estándar: ACEScct/AP1, RGB Full Range, alfa straight lineal y sin ODT de display."),
     ]
 }
 
