@@ -4915,17 +4915,18 @@ final class WorkspaceModel: ObservableObject {
             / Double(shutter.openOffsetDenominator)
         let close = Double(shutter.closeOffsetNumerator)
             / Double(shutter.closeOffsetDenominator)
-        let durationFrames = (close - open) * rate.framesPerSecond
-        guard durationFrames.isFinite, durationFrames >= 0 else {
+        let openFrames = open * rate.framesPerSecond
+        let closeFrames = close * rate.framesPerSecond
+        guard openFrames.isFinite, closeFrames.isFinite, closeFrames >= openFrames else {
             throw SetupFramingError.invalidContract
         }
-        let dx = (next.x - previous.x) * 0.5 * durationFrames
-        let dy = (next.y - previous.y) * 0.5 * durationFrames
+        let velocityX = (next.x - previous.x) * 0.5
+        let velocityY = (next.y - previous.y) * 0.5
         let values = try metalDisplay.readLinearRGBA(carrier)
         let blurred = try Approximate2DMotionBlur.apply(
             to: values, width: width, height: height,
-            shutterStart: CGPoint(x: -dx * 0.5, y: -dy * 0.5),
-            shutterEnd: CGPoint(x: dx * 0.5, y: dy * 0.5),
+            shutterStart: CGPoint(x: velocityX * openFrames, y: velocityY * openFrames),
+            shutterEnd: CGPoint(x: velocityX * closeFrames, y: velocityY * closeFrames),
             samples: configuration.motionSamples
         )
         guard let acescg = StudioColorInputTransform.catalog.first(where: { $0.id == "acescg" })

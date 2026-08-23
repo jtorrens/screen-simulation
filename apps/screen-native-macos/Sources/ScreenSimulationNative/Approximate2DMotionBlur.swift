@@ -22,12 +22,15 @@ enum Approximate2DMotionBlur {
               shutterEnd.y.isFinite, (2 ... 64).contains(samples)
         else { throw Approximate2DMotionBlurError.invalidInput }
 
-        let dx = Float(shutterEnd.x - shutterStart.x)
-        let dy = Float(shutterEnd.y - shutterStart.y)
-        guard dx.isFinite, dy.isFinite else {
+        let startX = Float(shutterStart.x)
+        let startY = Float(shutterStart.y)
+        let endX = Float(shutterEnd.x)
+        let endY = Float(shutterEnd.y)
+        guard startX.isFinite, startY.isFinite, endX.isFinite, endY.isFinite else {
             throw Approximate2DMotionBlurError.invalidInput
         }
-        if abs(dx) < 1e-6, abs(dy) < 1e-6 { return rgba }
+        if abs(startX) < 1e-6, abs(startY) < 1e-6,
+           abs(endX) < 1e-6, abs(endY) < 1e-6 { return rgba }
 
         var output = [Float](repeating: 0, count: rgba.count)
         let count = Int(samples)
@@ -36,11 +39,13 @@ enum Approximate2DMotionBlur {
             for x in 0 ..< width {
                 let outputOffset = (y * width + x) * 4
                 for sample in 0 ..< count {
-                    let phase = (Float(sample) + 0.5) / Float(count) - 0.5
+                    let phase = (Float(sample) + 0.5) / Float(count)
+                    let displacementX = startX + (endX - startX) * phase
+                    let displacementY = startY + (endY - startY) * phase
                     let value = bilinear(
                         rgba, width: width, height: height,
-                        x: Float(x) - dx * phase,
-                        y: Float(y) - dy * phase
+                        x: Float(x) - displacementX,
+                        y: Float(y) - displacementY
                     )
                     output[outputOffset] += value.x * weight
                     output[outputOffset + 1] += value.y * weight

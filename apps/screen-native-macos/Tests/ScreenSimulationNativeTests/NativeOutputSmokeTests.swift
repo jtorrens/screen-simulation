@@ -153,6 +153,13 @@ import Testing
         shutterStart: .zero, shutterEnd: .zero, samples: 8
     )
     #expect(identity == source)
+    let phased = try Approximate2DMotionBlur.apply(
+        to: source, width: 5, height: 1,
+        shutterStart: CGPoint(x: 1, y: 0),
+        shutterEnd: CGPoint(x: 1, y: 0), samples: 2
+    )
+    #expect(phased != source)
+    #expect(phased[8] == source[4])
 
     let blurred = try Approximate2DMotionBlur.apply(
         to: source, width: 5, height: 1,
