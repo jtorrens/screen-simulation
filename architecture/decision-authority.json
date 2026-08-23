@@ -307,6 +307,26 @@
       ]
     },
     {
+      "id": "output.standard-motion-blur",
+      "scope": "standard Render disabled, physical and approximate-2D Motion Blur modes",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/Approximate2DMotionBlur.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "color.aces-output-parity",
       "scope": "named Viewer and output transforms shared with Fusion and Resolve",
       "owner": {
