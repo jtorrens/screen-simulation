@@ -148,13 +148,29 @@ public enum StudioVFXEditorialDeliveryContract {
 
 public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
     case standard
+    case editorial
     case fusionScenePackage
+
+    public var id: String { rawValue }
+    public var usesStandardMediaRenderer: Bool { self != .fusionScenePackage }
+    public var label: String {
+        switch self {
+        case .standard: "Render estándar"
+        case .editorial: "Editorial"
+        case .fusionScenePackage: "Fusion Scene Package"
+        }
+    }
+}
+
+public enum StudioSpillDeliveryMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case physicalLinear = "physical-linear"
+    case editorialACEScctAdd = "editorial-acescct-add"
 
     public var id: String { rawValue }
     public var label: String {
         switch self {
-        case .standard: "Render estándar"
-        case .fusionScenePackage: "Fusion Scene Package"
+        case .physicalLinear: "Físico lineal"
+        case .editorialACEScctAdd: "Editorial ACEScct Add"
         }
     }
 }
@@ -246,6 +262,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case fusionConfigurationForbidden
     case fusionDeliveryConfigurationInvalid
     case separatedDeviceSpillDeliveryInvalid
+    case editorialSpillDeliveryInvalid
     case wipReviewDeliveryInvalid
 
     public var errorDescription: String? {
@@ -267,6 +284,8 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
             "Fusion Scene Package requiere un formato implementado con alpha straight, preset compatible, Device + Spill y sin audio."
         case .separatedDeviceSpillDeliveryInvalid:
             "Device y Spill separados requiere un formato con alpha, Device straight y sin audio."
+        case .editorialSpillDeliveryInvalid:
+            "Editorial ACEScct Add requiere Device/Spill separado, ACEScct/AP1, ProRes 4444 RGB Full Range, alpha straight y sin audio."
         case .wipReviewDeliveryInvalid:
             "WIP Review solo puede aplicarse a una composición estándar única y display/output encoded."
         }
@@ -371,6 +390,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let overwritePolicy: StudioOverwritePolicy
     public let fusionScene: StudioFusionSceneConfiguration?
     public let composition: StudioRenderComposition
+    public let spillDeliveryMode: StudioSpillDeliveryMode
     public let motionBlurMode: StudioRenderMotionBlurMode
     public let motionSamples: UInt16
     public let format: StudioOutputFormat
@@ -396,6 +416,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         overwritePolicy: StudioOverwritePolicy,
         fusionScene: StudioFusionSceneConfiguration?,
         composition: StudioRenderComposition,
+        spillDeliveryMode: StudioSpillDeliveryMode,
         motionBlurMode: StudioRenderMotionBlurMode,
         motionSamples: UInt16,
         format: StudioOutputFormat,
@@ -419,6 +440,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.overwritePolicy = overwritePolicy
         self.fusionScene = fusionScene
         self.composition = composition
+        self.spillDeliveryMode = spillDeliveryMode
         self.motionBlurMode = motionBlurMode
         self.motionSamples = motionSamples
         self.format = format
@@ -450,13 +472,25 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             throw StudioOutputContractError.invalidMotionSamples
         }
         switch outputType {
-        case .standard:
+        case .standard, .editorial:
             guard fusionScene == nil else {
                 throw StudioOutputContractError.fusionConfigurationForbidden
             }
             if composition == .deviceAndSpillSeparate {
                 guard format.supportsAlpha, alpha == .straight, !includeAudio else {
                     throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
+                }
+            }
+            if spillDeliveryMode == .editorialACEScctAdd {
+                guard composition == .deviceAndSpillSeparate,
+                      format == .proRes4444 || format == .proRes4444XQ,
+                      pipeline == .aces, target == .vfxLog,
+                      display == nil, view == nil,
+                      vfxInterchangeEncodingID
+                        == StudioVFXEditorialDeliveryContract.colorEncodingID,
+                      pixelEncoding == .rgb44412, signalRange == .full,
+                      alpha == .straight, !includeAudio, wipReview == nil else {
+                    throw StudioOutputContractError.editorialSpillDeliveryInvalid
                 }
             }
             if let wipReview {
@@ -508,6 +542,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                   format.supportedSignalRanges(for: pixelEncoding).contains(signalRange),
                   alpha == .straight, !includeAudio,
                   composition == .deviceAndSpillTogether,
+                  spillDeliveryMode == .physicalLinear,
                   motionBlurMode == .disabled else {
                 throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
             }
@@ -524,7 +559,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         StudioResolvedRenderConfiguration(
             outputType: outputType, jobName: jobName,
             overwritePolicy: policy, fusionScene: fusionScene,
-            composition: composition, motionBlurMode: motionBlurMode,
+            composition: composition, spillDeliveryMode: spillDeliveryMode,
+            motionBlurMode: motionBlurMode,
             motionSamples: motionSamples, format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
@@ -539,7 +575,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         StudioResolvedRenderConfiguration(
             outputType: outputType, jobName: name,
             overwritePolicy: overwritePolicy, fusionScene: fusionScene,
-            composition: composition, motionBlurMode: motionBlurMode,
+            composition: composition, spillDeliveryMode: spillDeliveryMode,
+            motionBlurMode: motionBlurMode,
             motionSamples: motionSamples, format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,

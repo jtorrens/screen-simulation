@@ -195,6 +195,7 @@ import Testing
     let straight = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "WIP", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
@@ -229,6 +230,7 @@ import Testing
     let valid = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "HLG", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: .h265High,
         pipeline: .aces, target: .hdr, peakNits: preset.hlgPeakNits,
         display: "Rec.2100-HLG - Display",
@@ -243,6 +245,7 @@ import Testing
     let mismatched = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "HLG", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: .h265High,
         pipeline: .aces, target: .hdr, peakNits: preset.hlgPeakNits,
         display: "Rec.2100-PQ - Display",

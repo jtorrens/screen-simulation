@@ -12,6 +12,27 @@ import Testing
     #expect(!WorkspaceModel.isHistoricalRerenderEligible(State.rendering))
 }
 
+@MainActor @Test func editorialOutputSeedsEditableResolveFriendlySettings() {
+    let model = WorkspaceModel()
+    model.changeRenderOutputType(.editorial)
+    #expect(model.renderOutputType == .editorial)
+    #expect(model.renderComposition == .deviceAndSpillSeparate)
+    #expect(model.renderSpillDeliveryMode == .editorialACEScctAdd)
+    #expect(model.renderMotionBlurMode == .approximate2D)
+    #expect(model.outputFormat == .proRes4444XQ)
+    #expect(model.outputPixelEncoding == .rgb44412)
+    #expect(model.outputSignalRange == .full)
+    #expect(model.vfxInterchangeEncodingID
+        == StudioVFXEditorialDeliveryContract.colorEncodingID)
+    #expect(!model.includeAudio)
+    #expect(model.renderWIPReviewPreset == nil)
+
+    model.applyRenderPreset(StudioRenderPreset.builtIns[0])
+    #expect(model.renderOutputType == .editorial)
+    #expect(model.renderPreset.target == .sdr)
+    #expect(model.renderSpillDeliveryMode == .physicalLinear)
+}
+
 @Test func wholeDeliverableVersioningStartsAtV002AndSkipsCollisions() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-versioning-\(UUID().uuidString)")
@@ -59,6 +80,7 @@ import Testing
     let separated = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
@@ -82,6 +104,7 @@ import Testing
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 0
         ), composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",
@@ -104,6 +127,7 @@ private func derivationConfiguration(
     StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, format: format,
         pipeline: .aces, target: .sdr, peakNits: 100,
         display: "Rec.1886 Rec.709 - Display",

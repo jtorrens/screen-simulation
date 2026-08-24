@@ -321,6 +321,7 @@
       "enforcement": [
         "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
         "packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "packages/StudioColor/Sources/StudioColor/StudioColorMetal.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/Approximate2DMotionBlur.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
@@ -328,6 +329,27 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "output.editorial-delivery",
+      "scope": "editable Editorial output defaults and ACEScct additive Spill delivery",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Reference plate composition"
+      },
+      "enforcement": [
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "packages/StudioColor/Sources/StudioColor/StudioColorMetal.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputRenderer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/RenderDerivationTests.swift",
         "scripts/check_architecture.py"
       ]
     },

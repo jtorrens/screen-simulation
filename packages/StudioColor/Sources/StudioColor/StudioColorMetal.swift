@@ -247,6 +247,34 @@ public final class StudioColorMetalDisplay: NSObject, MTKViewDelegate, @unchecke
         )
     }
 
+    /// Publishes already-linear ACEScg with RGB independent from the transported matte.
+    /// This is a typed additive-carrier boundary, not an input-transform shortcut.
+    public func makeIndependentLinearACEScgFrame(
+        width: Int,
+        height: Int,
+        rgba: [Float]
+    ) throws -> StudioColorMetalFrame {
+        guard width > 0, height > 0, rgba.count == width * height * 4,
+              rgba.allSatisfy(\.isFinite) else {
+            throw StudioColorError.invalidPixelBuffer
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba32Float, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw StudioColorMetalError.textureCreation
+        }
+        rgba.withUnsafeBytes {
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                withBytes: $0.baseAddress!, bytesPerRow: width * 4 * MemoryLayout<Float>.size
+            )
+        }
+        return StudioColorMetalFrame(texture: texture)
+    }
+
     /// Converts an IOSurface-backed Apple decoder buffer to encoded RGB and runs
     /// the same IDT used by stills and synthetic sources without CPU readback.
     public func makeACEScgFrame(

@@ -59,7 +59,7 @@ enum NativeOutputRenderer {
         progress: Progress
     ) async throws -> URL {
         let format = configuration.format
-        guard configuration.outputType == .standard else {
+        guard configuration.outputType.usesStandardMediaRenderer else {
             throw NativeOutputError.unsupported("Fusion Scene Package requiere su escritor físico dedicado")
         }
         try configuration.validate()
@@ -314,6 +314,7 @@ enum NativeOutputRenderer {
         }
         var deviceMovie: MovieWriter?
         var spillMovie: MovieWriter?
+        var editorialEncodedBlack: SIMD3<Float>?
         for (position, index) in frames.enumerated() {
             try Task.checkCancellation()
             let frame = try await frameProvider(index)
@@ -341,21 +342,30 @@ enum NativeOutputRenderer {
                 guard let output else {
                     throw NativeOutputError.unsupported("las películas requieren encoding de entrega")
                 }
-                let deviceFrame = try makeACEScgFrame(
-                    passes.device, width: frame.width, height: frame.height,
-                    alpha: .straight, display: display
-                )
-                let spillFrame = try makeACEScgFrame(
-                    passes.spill, width: frame.width, height: frame.height,
-                    alpha: .ignore, display: display
-                )
+                let preservesIndependentDeviceRGB = configuration.motionBlurMode == .approximate2D
+                    || configuration.spillDeliveryMode == .editorialACEScctAdd
+                let deviceFrame = preservesIndependentDeviceRGB
+                    ? try display.makeIndependentLinearACEScgFrame(
+                        width: frame.width, height: frame.height, rgba: passes.device
+                    )
+                    : try makeACEScgFrame(
+                        passes.device, width: frame.width, height: frame.height,
+                        alpha: .straight, display: display
+                    )
+                let spillFrame = configuration.spillDeliveryMode == .physicalLinear
+                    ? try makeACEScgFrame(
+                        passes.spill, width: frame.width, height: frame.height,
+                        alpha: .ignore, display: display
+                    )
+                    : nil
                 if deviceMovie == nil {
                     deviceMovie = try MovieWriter(
                         url: deviceURL, width: frame.width, height: frame.height,
                         frameRate: configuration.frameRate, format: configuration.format,
                         pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
-                        alpha: .straight, output: output
+                        alpha: .straight, output: output,
+                        preservesIndependentRGB: preservesIndependentDeviceRGB
                     )
                     spillMovie = try MovieWriter(
                         url: spillURL, width: frame.width, height: frame.height,
@@ -369,10 +379,35 @@ enum NativeOutputRenderer {
                     frame: deviceFrame, presentationFrame: position,
                     display: display, output: output
                 )
-                try await spillMovie!.append(
-                    frame: spillFrame, presentationFrame: position,
-                    display: display, output: output
-                )
+                switch configuration.spillDeliveryMode {
+                case .physicalLinear:
+                    try await spillMovie!.append(
+                        frame: spillFrame!, presentationFrame: position,
+                        display: display, output: output
+                    )
+                case .editorialACEScctAdd:
+                    if editorialEncodedBlack == nil {
+                        let blackFrame = try display.makeIndependentLinearACEScgFrame(
+                            width: 1, height: 1, rgba: [0, 0, 0, 1]
+                        )
+                        let encodedBlack = try display.renderIndependentRGBAFloat(
+                            blackFrame, output: output, alpha: .ignore
+                        )
+                        editorialEncodedBlack = SIMD3(
+                            encodedBlack[0], encodedBlack[1], encodedBlack[2]
+                        )
+                    }
+                    let encodedCarrier = try display.renderIndependentRGBAFloat(
+                        deviceFrame, output: output, alpha: .straight
+                    )
+                    let encodedSpill = try editorialACEScctAddSpill(
+                        encodedCarrier: encodedCarrier,
+                        encodedBlack: editorialEncodedBlack!
+                    )
+                    try await spillMovie!.appendEncodedRGBA(
+                        encodedSpill, presentationFrame: position
+                    )
+                }
             } else {
                 try writeDeviceSpillStill(
                     passes.device, to: deviceURL, width: frame.width, height: frame.height,
@@ -421,6 +456,29 @@ enum NativeOutputRenderer {
             )
         }
         return (device, spill)
+    }
+
+    static func editorialACEScctAddSpill(
+        encodedCarrier: [Float],
+        encodedBlack: SIMD3<Float>
+    ) throws -> [Float] {
+        guard encodedCarrier.count.isMultiple(of: 4),
+              encodedCarrier.allSatisfy(\.isFinite),
+              encodedBlack.x.isFinite,
+              encodedBlack.y.isFinite,
+              encodedBlack.z.isFinite
+        else { throw NativeOutputError.invalidFrame }
+        var spill = encodedCarrier
+        for offset in stride(from: 0, to: spill.count, by: 4) {
+            let matte = min(1, max(0, encodedCarrier[offset + 3]))
+            let exterior = 1 - matte
+            spill[offset] = exterior * (encodedCarrier[offset] - encodedBlack.x)
+            spill[offset + 1] = exterior * (encodedCarrier[offset + 1] - encodedBlack.y)
+            spill[offset + 2] = exterior * (encodedCarrier[offset + 2] - encodedBlack.z)
+            spill[offset + 3] = 1
+        }
+        guard spill.allSatisfy(\.isFinite) else { throw NativeOutputError.invalidFrame }
+        return spill
     }
 
     private static func makeACEScgFrame(

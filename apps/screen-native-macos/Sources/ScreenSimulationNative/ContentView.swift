@@ -162,8 +162,18 @@ struct ContentView: View {
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
     @State private var pendingSceneOpen: SavedScene?
-    @State private var pendingRenderScene: SavedScene?
+    @State private var renderDraft: RenderDraft?
+    @State private var pendingRenderDraftAfterUpdate: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
+
+    private struct RenderDraft: Identifiable {
+        let scene: SavedScene
+        let sourceJob: NativeOutputQueueController.RenderJob?
+        let historicalSnapshot: Bool
+        var id: String {
+            "\(scene.id.uuidString)-\(sourceJob?.id.uuidString ?? "new")-\(historicalSnapshot)"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -233,9 +243,6 @@ struct ContentView: View {
             CopyableErrorDialog(detail: model.errorMessage ?? "Error sin detalle.") {
                 model.errorMessage = nil
             }
-        }
-        .sheet(item: $pendingRenderScene) { scene in
-            renderOptionsSheet(scene)
         }
         .sheet(item: $autosaveHistoryTarget) { target in
             SceneAutosaveHistoryView(
@@ -337,8 +344,23 @@ struct ContentView: View {
     private var renderWorkspace: some View {
         HSplitView {
             if sidebarIsVisible {
-                sceneLibraryPanel
-                .frame(minWidth: 360, idealWidth: 400, maxWidth: 560)
+                VSplitView {
+                    sceneLibraryPanel
+                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                    Group {
+                        if let renderDraft {
+                            renderOptionsPanel(renderDraft)
+                        } else {
+                            ContentUnavailableView(
+                                "Selecciona una escena",
+                                systemImage: "film.stack",
+                                description: Text("Usa Render en el menú de una escena guardada para preparar sus ajustes.")
+                            )
+                        }
+                    }
+                    .frame(minHeight: 300)
+                }
+                .frame(minWidth: 400, idealWidth: 470, maxWidth: 620)
             }
             queuePanel
                 .frame(minWidth: 640, minHeight: 480)
@@ -420,7 +442,6 @@ struct ContentView: View {
                 LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
                 LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
             }
-            outputSettingsSections
             outputInspectorSections
         }
         .formStyle(.grouped)
@@ -2007,16 +2028,11 @@ struct ContentView: View {
 
     private func requestSceneRender(_ scene: SavedScene) {
         model.renderJobName = scene.name
-        do {
-            if try model.savedSceneNeedsUpdate(scene) {
-                requestSceneAction(.renderAfterUpdate, scene: scene)
-            } else {
-                model.ensureRenderOptionsCompatible()
-                pendingRenderScene = scene
-            }
-        } catch {
-            model.errorMessage = error.localizedDescription
-        }
+        model.ensureRenderOptionsCompatible()
+        renderDraft = RenderDraft(
+            scene: scene, sourceJob: nil, historicalSnapshot: false
+        )
+        page = .render
     }
 
     private func saveNewScene() {
@@ -2046,7 +2062,15 @@ struct ContentView: View {
                     throw SceneLibraryError.inaccessible("La escena actualizada no existe.")
                 }
                 model.ensureRenderOptionsCompatible()
-                pendingRenderScene = updated
+                let prior = pendingRenderDraftAfterUpdate
+                pendingRenderDraftAfterUpdate = nil
+                let updatedDraft = RenderDraft(
+                    scene: updated,
+                    sourceJob: prior?.sourceJob,
+                    historicalSnapshot: false
+                )
+                renderDraft = updatedDraft
+                enqueueRenderDraft(updatedDraft)
             } catch { model.errorMessage = error.localizedDescription }
         case .delete:
             do { try scenes.delete(scene) }
@@ -2054,8 +2078,9 @@ struct ContentView: View {
         }
     }
 
-    private func renderOptionsSheet(_ scene: SavedScene) -> some View {
-        VStack(spacing: 0) {
+    private func renderOptionsPanel(_ draft: RenderDraft) -> some View {
+        let scene = draft.scene
+        return VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Opciones de render")
@@ -2129,10 +2154,20 @@ struct ContentView: View {
                             )
                         }
                     }
-                    if model.renderOutputType == .standard {
-                    Picker("Composición", selection: $model.renderComposition) {
+                    if model.renderOutputType.usesStandardMediaRenderer {
+                    Picker("Composición", selection: Binding(
+                        get: { model.renderComposition },
+                        set: { model.changeRenderComposition($0) }
+                    )) {
                         ForEach(StudioRenderComposition.allCases) { composition in
                             Text(composition.label).tag(composition)
+                        }
+                    }
+                    if model.renderComposition == .deviceAndSpillSeparate {
+                        Picker("Spill", selection: $model.renderSpillDeliveryMode) {
+                            ForEach(StudioSpillDeliveryMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
                         }
                     }
                     if model.renderComposition != .deviceAndSpillSeparate
@@ -2193,7 +2228,7 @@ struct ContentView: View {
                     }
                 }
                 Section("Movimiento") {
-                    if model.renderOutputType == .standard {
+                    if model.renderOutputType.usesStandardMediaRenderer {
                     Picker("Motion Blur", selection: $model.renderMotionBlurMode) {
                         ForEach(StudioRenderMotionBlurMode.allCases) { mode in
                             Text(mode.label).tag(mode)
@@ -2223,7 +2258,7 @@ struct ContentView: View {
                     }
                 }
                 Section("Codificación") {
-                    if model.renderOutputType == .standard {
+                    if model.renderOutputType.usesStandardMediaRenderer {
                     LabeledContent("Píxel", value: model.outputPixelEncoding.label)
                     Picker("Rango de señal", selection: $model.outputSignalRange) {
                         ForEach(StudioSignalRange.allCases) { range in
@@ -2251,19 +2286,37 @@ struct ContentView: View {
             .formStyle(.grouped)
             Divider()
             HStack {
-                Button("Cancelar") { pendingRenderScene = nil }
                 Spacer()
-                Button("Elegir destino y añadir") {
-                    pendingRenderScene = nil
-                    DispatchQueue.main.async {
-                        model.enqueueSavedScene(scene)
-                    }
+                Button("Añadir a Render Queue") {
+                    addRenderDraft(draft)
                 }
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
         }
-        .frame(width: 520, height: 610)
+    }
+
+    private func addRenderDraft(_ draft: RenderDraft) {
+        if draft.historicalSnapshot {
+            enqueueRenderDraft(draft)
+            return
+        }
+        do {
+            if try model.savedSceneNeedsUpdate(draft.scene) {
+                pendingRenderDraftAfterUpdate = draft
+                requestSceneAction(.renderAfterUpdate, scene: draft.scene)
+            } else {
+                enqueueRenderDraft(draft)
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func enqueueRenderDraft(_ draft: RenderDraft) {
+        model.enqueueSavedScene(
+            draft.historicalSnapshot ? draft.sourceJob!.scene : draft.scene,
+            derivedFrom: draft.sourceJob,
+            historicalSnapshot: draft.historicalSnapshot
+        )
     }
 
     private var testSetupPanel: some View {
@@ -2716,106 +2769,6 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var outputSettingsSections: some View {
-            Section("Output · Preset / ODT") {
-                Picker("Preset", selection: Binding(
-                    get: { model.renderPreset },
-                    set: { model.applyRenderPreset($0) }
-                )) {
-                    ForEach(library.allRenderPresets.filter {
-                        model.renderOutputType != .fusionScenePackage
-                            || $0.supportsFusionScenePackage
-                    }) { Text($0.name).tag($0) }
-                }
-                LabeledContent(
-                    "ODT del preset",
-                    value: model.renderPreset.target == .vfxLog
-                        ? "Sin ODT de display"
-                        : (model.renderPreset.view ?? model.renderPreset.target.rawValue)
-                )
-                LabeledContent(
-                    "Transformación efectiva",
-                    value: model.renderPreset.target == .vfxLog
-                        ? (model.selectedVFXInterchangeEncoding?.label ?? "Selección inválida")
-                        : (model.renderPreset.view ?? model.renderPreset.target.rawValue)
-                )
-                if model.renderPreset.target != .vfxLog {
-                    LabeledContent("Peak nits") {
-                        TextField("nits", value: $model.peakNits, format: .number).frame(width: 90)
-                    }
-                }
-                Picker("Formato", selection: Binding(
-                    get: { model.outputFormat },
-                    set: { model.changeOutputFormat($0) }
-                )) {
-                    ForEach(StudioOutputFormat.allCases.filter {
-                        $0.supports(target: model.renderPreset.target)
-                    }) { Text($0.displayName).tag($0) }
-                }
-                .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
-                if model.renderPreset.target == .vfxLog {
-                    if model.renderPreset.fixedVFXInterchangeEncodingID == nil {
-                        Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
-                            ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
-                                Text(encoding.label).tag(encoding.id)
-                            }
-                        }
-                        if let recommendation = model.recommendedVFXInterchangeEncoding {
-                            Button("Usar sugerido · \(recommendation.label)") {
-                                model.vfxInterchangeEncodingID = recommendation.id
-                            }
-                        }
-                    } else {
-                        LabeledContent(
-                            "Log / Gamut VFX",
-                            value: model.selectedVFXInterchangeEncoding?.label
-                                ?? StudioVFXEditorialDeliveryContract.colorEncodingID
-                        )
-                    }
-                }
-                LabeledContent("Codificación", value: model.outputPixelEncoding.label)
-                Picker("Rango de señal", selection: $model.outputSignalRange) {
-                    ForEach(StudioSignalRange.allCases) { range in
-                        Text(range.label).tag(range)
-                            .disabled(!model.outputFormat.supportedSignalRanges(
-                                for: model.outputPixelEncoding
-                            ).contains(range))
-                    }
-                }
-                .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
-                Picker("Rango", selection: $model.renderRange) {
-                    Text("Todo").tag(StudioRenderRange.all)
-                    Text("IN / OUT").tag(StudioRenderRange.inOut)
-                }
-                Picker("Composición", selection: $model.renderComposition) {
-                    ForEach(StudioRenderComposition.allCases) { composition in
-                        Text(composition.label).tag(composition)
-                    }
-                }
-                Picker("Motion Blur", selection: $model.renderMotionBlurMode) {
-                    ForEach(StudioRenderMotionBlurMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                Stepper(
-                    "Muestras temporales · \(model.renderMotionSamples)",
-                    value: $model.renderMotionSamples,
-                    in: 2...64
-                )
-                .disabled(model.renderMotionBlurMode == .disabled)
-                Picker("Alpha", selection: $model.outputAlphaMode) {
-                    ForEach(StudioAlphaMode.allCases) { Text($0.label).tag($0) }
-                }
-                    .disabled(!model.outputFormat.supportsAlpha || model.renderWIPReviewPreset != nil)
-                Toggle("Audio", isOn: $model.includeAudio)
-                    .disabled(!model.outputFormat.isMovie)
-            }
-            Section("Exportación") {
-                Text("Añade el render desde el menú contextual de una escena guardada. La cola conservará exactamente ese snapshot.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-    }
 
     private var queuePanel: some View {
         VStack(spacing: 0) {
@@ -2855,7 +2808,13 @@ struct ContentView: View {
                     }
                     if job.state.isTerminal {
                         Button("Volver a renderizar esta versión") {
-                            model.rerenderHistoricalJob(job)
+                            model.configureRerender(from: job.configuration)
+                            renderDraft = RenderDraft(
+                                scene: job.scene,
+                                sourceJob: job,
+                                historicalSnapshot: true
+                            )
+                            page = .render
                         }
                         Button("Renderizar la escena actual…") {
                             renderCurrentSavedScene(derivedFrom: job)
@@ -2919,8 +2878,12 @@ struct ContentView: View {
         } else {
             model.configureRerender(from: job.configuration)
         }
-        model.renderDerivedFromJobID = job.id
-        pendingRenderScene = current
+        renderDraft = RenderDraft(
+            scene: current,
+            sourceJob: job,
+            historicalSnapshot: false
+        )
+        page = .render
     }
 
     @ViewBuilder

@@ -336,22 +336,22 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV6StrictlyRequiresTheExplicitMotionBlurMode() throws {
+@Test @MainActor func renderQueueV7StrictlyRequiresExplicitRenderModes() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("render-queue-v6-strict-\(UUID().uuidString)")
+        .appendingPathComponent("render-queue-v7-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try RenderQueueStore(directoryURL: root)
     let controller = try NativeOutputQueueController(store: store)
     controller.enqueue(
-        scene: outputQueueTestScene(name: "Contrato v6"), generatedEnvironmentEXR: nil,
-        outputPlan: queueTestPlan("/tmp/v6.mov"),
+        scene: outputQueueTestScene(name: "Contrato v7"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/v7.mov"),
         configuration: outputQueueTestConfiguration()
     )
     let encoded = try Data(contentsOf: store.documentURL)
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v6")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v7")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -361,6 +361,17 @@ import Testing
     jobs[0]["configuration"] = configuration
     legacy["jobs"] = jobs
     try JSONSerialization.data(withJSONObject: legacy).write(
+        to: store.documentURL, options: .atomic
+    )
+    #expect(throws: (any Error).self) { try store.load() }
+
+    var missingSpill = rootObject
+    var spillJobs = try #require(missingSpill["jobs"] as? [[String: Any]])
+    var spillConfiguration = try #require(spillJobs[0]["configuration"] as? [String: Any])
+    spillConfiguration.removeValue(forKey: "spillDeliveryMode")
+    spillJobs[0]["configuration"] = spillConfiguration
+    missingSpill["jobs"] = spillJobs
+    try JSONSerialization.data(withJSONObject: missingSpill).write(
         to: store.documentURL, options: .atomic
     )
     #expect(throws: (any Error).self) { try store.load() }
@@ -536,6 +547,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .physical,
         motionSamples: 8,
         format: .proRes4444,

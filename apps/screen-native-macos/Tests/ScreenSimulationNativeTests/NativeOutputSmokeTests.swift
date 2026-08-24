@@ -140,6 +140,86 @@ import Testing
     #expect(edge.spill[0] > 0.199)
 }
 
+@Test @MainActor func editorialACEScctSpillSubtractsBlackAndReconstructsOverBlack() throws {
+    let black = SIMD3<Float>(0.08, 0.08, 0.08)
+    let carrier: [Float] = [
+        0.20, 0.40, 0.90, 0,
+        0.30, 0.50, 0.70, 0.5,
+        0.60, 0.80, 1.00, 1,
+    ]
+    let spill = try NativeOutputRenderer.editorialACEScctAddSpill(
+        encodedCarrier: carrier, encodedBlack: black
+    )
+    #expect(spill.allSatisfy { $0.isFinite })
+    for pixel in 0 ..< 3 {
+        let offset = pixel * 4
+        let matte = carrier[offset + 3]
+        for channel in 0 ..< 3 {
+            let expected = (1 - matte) * (carrier[offset + channel] - black[channel])
+            #expect(abs(spill[offset + channel] - expected) < 0.000_001)
+            let overBlack = carrier[offset + channel] * matte + black[channel] * (1 - matte)
+            #expect(abs(overBlack + spill[offset + channel] - carrier[offset + channel]) < 0.000_001)
+        }
+        #expect(spill[offset + 3] == 1)
+    }
+    #expect(spill[0] > 0) // encoded RGB survives where matte is zero
+    #expect(spill[8] == 0)
+    #expect(spill[9] == 0)
+    #expect(spill[10] == 0)
+}
+
+@Test @MainActor func editorialDeviceSpillMoviePreservesExteriorRGBAndUsesOneFrameRequest() async throws {
+    let display = try StudioColorMetalDisplay()
+    let width = 8, height = 2
+    var rgba = [Float](repeating: 0, count: width * height * 4)
+    for pixel in 0 ..< width * height {
+        let offset = pixel * 4
+        rgba[offset] = 0.18 + Float(pixel) * 0.01
+        rgba[offset + 1] = 0.36
+        rgba[offset + 2] = 0.72
+        rgba[offset + 3] = [Float(0), 0.5, 1][pixel % 3]
+    }
+    let frame = try independentLinearFrame(width: width, height: height, rgba: rgba)
+    let preset = StudioRenderPreset.builtIns[9]
+    let configuration = renderConfiguration(
+        format: .proRes4444XQ, preset: preset, alpha: .straight,
+        signalRange: .full, frameRange: 0 ... 0,
+        composition: .deviceAndSpillSeparate,
+        outputType: .editorial,
+        spillDeliveryMode: .editorialACEScctAdd,
+        motionBlurMode: .approximate2D
+    )
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("editorial-spill-movie-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    var requestedFrames: [Int] = []
+    _ = try await NativeOutputRenderer.render(
+        configuration: configuration, outputPlan: plan, audioSource: nil,
+        display: display,
+        frameProvider: { index in
+            requestedFrames.append(index)
+            return frame
+        },
+        progress: { _, _ in }
+    )
+    #expect(requestedFrames == [0])
+    let device = try await decodeFirstProResARGB16(
+        plan.destination.appendingPathComponent("ScreenSimulation_Device.mov")
+    )
+    let spill = try await decodeFirstProResARGB16(
+        plan.destination.appendingPathComponent("ScreenSimulation_Spill.mov")
+    )
+    #expect(device[3] < 0.002)
+    #expect(device[0] > 0.1)
+    #expect(spill[0] > 0.01)
+    for offset in stride(from: 3, to: spill.count, by: 4) {
+        #expect(spill[offset] > 0.998)
+    }
+}
+
 @Test @MainActor func approximate2DMotionBlurFiltersCarrierAndMatteBeforeSeparation() throws {
     let source: [Float] = [
         0.8, -0.2, 1.4, 0,
@@ -922,7 +1002,10 @@ private func renderConfiguration(
     signalRange: StudioSignalRange,
     frameRate: StudioFrameRate = .fps24,
     frameRange: ClosedRange<Int>,
-    composition: StudioRenderComposition = .deviceAndSpillTogether
+    composition: StudioRenderComposition = .deviceAndSpillTogether,
+    outputType: StudioOutputType = .standard,
+    spillDeliveryMode: StudioSpillDeliveryMode = .physicalLinear,
+    motionBlurMode: StudioRenderMotionBlurMode = .disabled
 ) -> StudioResolvedRenderConfiguration {
     let alphaMode: StudioAlphaMode = switch alpha {
     case .straight: .straight
@@ -930,12 +1013,13 @@ private func renderConfiguration(
     case .ignore: .ignore
     }
     return StudioResolvedRenderConfiguration(
-        outputType: .standard,
+        outputType: outputType,
         jobName: "ScreenSimulation",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: composition,
-        motionBlurMode: .disabled,
+        spillDeliveryMode: spillDeliveryMode,
+        motionBlurMode: motionBlurMode,
         motionSamples: 8,
         format: format,
         pipeline: preset.pipeline,

@@ -26,6 +26,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: motionBlurMode,
         motionSamples: 8,
         format: .openEXR,
@@ -60,6 +61,7 @@ private func standardSequenceConfiguration(
         overwritePolicy: policy,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8,
         format: .openEXR,
@@ -98,6 +100,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8,
         format: format,
@@ -876,6 +879,7 @@ private func temporaryDirectory() throws -> URL {
             spillThresholdSceneLinear: 0.1, spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 8,
         format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
@@ -959,6 +963,7 @@ private func temporaryDirectory() throws -> URL {
             spillFadeWidthPixels: 4
         ),
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8,
         format: .openEXR,

@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v6"
+    static let schema = "ScreenSimulation.RenderQueue.v7"
 
     let schema: String
     let isPaused: Bool
@@ -78,7 +78,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v6.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v7.json")
     }
 
     func load() throws -> RenderQueueDocument {
@@ -123,7 +123,7 @@ struct RenderQueueStore: Sendable {
         }
         let requiredConfigurationKeys: Set<String> = [
             "outputType", "jobName", "overwritePolicy", "composition",
-            "motionBlurMode", "motionSamples", "format", "pipeline", "target",
+            "spillDeliveryMode", "motionBlurMode", "motionSamples", "format", "pipeline", "target",
             "peakNits", "pixelEncoding", "signalRange", "alpha", "includeAudio",
             "frameRate", "firstFrame", "lastFrame",
         ]

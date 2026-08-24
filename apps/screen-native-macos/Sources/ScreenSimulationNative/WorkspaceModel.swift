@@ -415,6 +415,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderOutputType = StudioOutputType.standard
     @Published var renderJobName = "ScreenSimulation"
     @Published var renderComposition = StudioRenderComposition.deviceAndSpillTogether
+    @Published var renderSpillDeliveryMode = StudioSpillDeliveryMode.physicalLinear
     @Published var renderMotionBlurMode = StudioRenderMotionBlurMode.physical
     @Published var renderMotionSamples: UInt16 = 8
     @Published var fusionDOFMode = StudioFusionDOFMode.fusion
@@ -428,7 +429,6 @@ final class WorkspaceModel: ObservableObject {
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
     @Published var renderPreset: StudioRenderPreset
     @Published var renderWIPReviewPreset: StudioWIPReviewPreset?
-    var renderDerivedFromJobID: UUID?
     @Published var vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.colorEncodingID
     @Published var peakNits = 100.0
     @Published var includeAudio = true
@@ -4300,8 +4300,13 @@ final class WorkspaceModel: ObservableObject {
         if !format.isMovie { includeAudio = false }
     }
 
+    func changeRenderComposition(_ composition: StudioRenderComposition) {
+        renderComposition = composition
+        ensureRenderOptionsCompatible()
+    }
+
     var effectiveRenderTarget: StudioRenderTarget {
-        guard renderOutputType == .standard,
+        guard renderOutputType.usesStandardMediaRenderer,
               renderComposition != .deviceAndSpillSeparate,
               let preset = renderWIPReviewPreset else { return renderPreset.target }
         return preset.outputColorSpace == .rec709Gamma24 ? .sdr : .hdr
@@ -4320,6 +4325,21 @@ final class WorkspaceModel: ObservableObject {
 
     func changeRenderOutputType(_ type: StudioOutputType) {
         renderOutputType = type
+        if type == .editorial {
+            if let preset = globalLibraryDocument.renderPresets.first(where: {
+                $0.value.id == StudioVFXEditorialDeliveryContract.presetID
+            })?.value {
+                applyRenderPreset(preset)
+            }
+            renderComposition = .deviceAndSpillSeparate
+            renderSpillDeliveryMode = .editorialACEScctAdd
+            renderMotionBlurMode = .approximate2D
+            renderWIPReviewPreset = nil
+            outputAlphaMode = .straight
+            includeAudio = false
+            ensureRenderOptionsCompatible()
+            return
+        }
         guard type == .fusionScenePackage else {
             ensureRenderOptionsCompatible()
             return
@@ -4340,7 +4360,7 @@ final class WorkspaceModel: ObservableObject {
             renderWIPReviewPreset = nil
         }
         peakNits = preset.peakNits
-        if renderOutputType == .standard {
+        if renderOutputType.usesStandardMediaRenderer {
             changeOutputFormat(preset.format)
             outputPixelEncoding = preset.pixelEncoding
             outputSignalRange = preset.signalRange
@@ -4380,6 +4400,14 @@ final class WorkspaceModel: ObservableObject {
             outputAlphaMode = .straight
             includeAudio = false
             return
+        }
+        if renderSpillDeliveryMode == .editorialACEScctAdd,
+           (renderComposition != .deviceAndSpillSeparate
+            || renderPreset.target != .vfxLog
+            || vfxInterchangeEncodingID
+                != StudioVFXEditorialDeliveryContract.colorEncodingID
+            || (outputFormat != .proRes4444 && outputFormat != .proRes4444XQ)) {
+            renderSpillDeliveryMode = .physicalLinear
         }
         if renderPreset.fixedVFXInterchangeEncodingID != nil {
             vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.colorEncodingID
@@ -4422,10 +4450,17 @@ final class WorkspaceModel: ObservableObject {
         return normalized != scene.snapshot || !generatedMatches
     }
 
-    func enqueueSavedScene(_ scene: SavedScene) {
+    func enqueueSavedScene(
+        _ scene: SavedScene,
+        derivedFrom sourceJob: NativeOutputQueueController.RenderJob? = nil,
+        historicalSnapshot: Bool = false
+    ) {
+        ensureRenderOptionsCompatible()
         let generatedEnvironmentEXR: Data?
         do {
-            generatedEnvironmentEXR = try scene.snapshot.generatedEnvironment.flatMap { identity in
+            generatedEnvironmentEXR = historicalSnapshot
+                ? sourceJob?.generatedEnvironmentEXR
+                : try scene.snapshot.generatedEnvironment.flatMap { identity in
                 guard let asset = try EnvironmentAssetLibrary.asset(
                     sha256: identity.sha256,
                     originalFileName: identity.fileName
@@ -4440,9 +4475,22 @@ final class WorkspaceModel: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
+        let isSingleFile = renderOutputType.usesStandardMediaRenderer
+            && outputFormat.isMovie && renderComposition != .deviceAndSpillSeparate
         let url: URL?
-        if renderOutputType == .standard && outputFormat.isMovie
-            && renderComposition != .deviceAndSpillSeparate {
+        if let sourceJob {
+            if isSingleFile {
+                url = sourceJob.outputPlan.kind == .singleFile
+                    ? sourceJob.outputPlan.destination
+                    : sourceJob.outputPlan.destination.deletingLastPathComponent()
+                        .appendingPathComponent(renderJobName)
+                        .appendingPathExtension(outputFormat.fileExtension)
+            } else {
+                url = sourceJob.outputPlan.kind == .singleFile
+                    ? sourceJob.outputPlan.destination.deletingLastPathComponent()
+                    : sourceJob.outputPlan.destination.deletingLastPathComponent()
+            }
+        } else if isSingleFile {
             let panel = NSSavePanel()
             panel.canCreateDirectories = true
             panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
@@ -4459,14 +4507,15 @@ final class WorkspaceModel: ObservableObject {
             url = panel.runModal() == .OK ? panel.url : nil
         }
         guard let url else { return }
-        FileDialogDirectory.renderOutput.remember(url)
+        if sourceJob == nil { FileDialogDirectory.renderOutput.remember(url) }
         let range = activeFrameRange
-        let exactFrameRate = ReferenceTimelineAuthority.resolve(
-            source: sourceTimelineInfo,
-            reference: referenceTimelineInfo,
-            referenceVisible: referenceControlsTimeline,
-            tracking: trackingTimelineInfo
-        ).exactFrameRate
+        let exactFrameRate = sourceJob?.configuration.frameRate
+            ?? ReferenceTimelineAuthority.resolve(
+                source: sourceTimelineInfo,
+                reference: referenceTimelineInfo,
+                referenceVisible: referenceControlsTimeline,
+                tracking: trackingTimelineInfo
+            ).exactFrameRate
         let fusion = renderOutputType == .fusionScenePackage
             ? StudioFusionSceneConfiguration(
                 dofMode: fusionDOFMode,
@@ -4499,6 +4548,8 @@ final class WorkspaceModel: ObservableObject {
             fusionScene: fusion,
             composition: renderOutputType == .fusionScenePackage
                 ? .deviceAndSpillTogether : renderComposition,
+            spillDeliveryMode: renderOutputType == .fusionScenePackage
+                ? .physicalLinear : renderSpillDeliveryMode,
             motionBlurMode: renderOutputType == .fusionScenePackage ? .disabled : renderMotionBlurMode,
             motionSamples: renderMotionSamples,
             format: outputFormat,
@@ -4507,7 +4558,7 @@ final class WorkspaceModel: ObservableObject {
             peakNits: wipOutput?.1 ?? peakNits,
             display: wipOutput?.2 ?? renderPreset.display,
             view: wipOutput?.3 ?? renderPreset.view,
-            vfxInterchangeEncodingID: renderOutputType == .standard && renderPreset.target == .vfxLog
+            vfxInterchangeEncodingID: renderOutputType.usesStandardMediaRenderer && renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
             signalRange: outputSignalRange,
@@ -4516,12 +4567,12 @@ final class WorkspaceModel: ObservableObject {
                 : ([.deviceAndSpillTogether, .deviceAndSpillSeparate]
                     .contains(renderComposition) && outputFormat.supportsAlpha
                     ? .straight : .ignore),
-            includeAudio: renderOutputType == .standard && outputFormat.isMovie
+            includeAudio: renderOutputType.usesStandardMediaRenderer && outputFormat.isMovie
                 && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound,
-            wipReview: renderOutputType == .standard
+            wipReview: renderOutputType.usesStandardMediaRenderer
                 && renderComposition != .deviceAndSpillSeparate
                 ? renderWIPReviewPreset : nil
         )
@@ -4570,15 +4621,15 @@ final class WorkspaceModel: ObservableObject {
             generatedEnvironmentEXR: generatedEnvironmentEXR,
             outputPlan: outputPlan,
             configuration: configuration,
-            derivedFromJobID: renderDerivedFromJobID
+            derivedFromJobID: sourceJob?.id
         )
-        renderDerivedFromJobID = nil
     }
 
     func configureRerender(from configuration: StudioResolvedRenderConfiguration) {
         renderOutputType = configuration.outputType
         renderJobName = configuration.jobName
         renderComposition = configuration.composition
+        renderSpillDeliveryMode = configuration.spillDeliveryMode
         renderMotionBlurMode = configuration.motionBlurMode
         renderMotionSamples = configuration.motionSamples
         outputFormat = configuration.format
@@ -4658,7 +4709,7 @@ final class WorkspaceModel: ObservableObject {
                 defer { materialized.cleanup() }
                 try await executor.prepareQueuedScene(materialized.scene)
                 switch job.configuration.outputType {
-                case .standard:
+                case .standard, .editorial:
                     return try await NativeOutputRenderer.render(
                         configuration: job.configuration,
                         outputPlan: job.outputPlan,
@@ -4933,11 +4984,8 @@ final class WorkspaceModel: ObservableObject {
             shutterEnd: CGPoint(x: velocityX * closeFrames, y: velocityY * closeFrames),
             samples: configuration.motionSamples
         )
-        guard let acescg = StudioColorInputTransform.catalog.first(where: { $0.id == "acescg" })
-        else { throw SetupFramingError.invalidContract }
-        return try metalDisplay.makeACEScgFrame(
-            width: width, height: height, encodedRGBA: blurred,
-            input: acescg, alpha: .straight
+        return try metalDisplay.makeIndependentLinearACEScgFrame(
+            width: width, height: height, rgba: blurred
         )
     }
 
@@ -5282,40 +5330,6 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         NSWorkspace.shared.open(directory)
-    }
-
-    func rerenderHistoricalJob(_ job: NativeOutputQueueController.RenderJob) {
-        guard Self.isHistoricalRerenderEligible(job.state) else { return }
-        do {
-            var configuration = job.configuration.replacingOverwritePolicy(.failIfExists)
-            var plan = job.outputPlan
-            if try plan.inspectCollision().requiresConfirmation {
-                let alert = NSAlert()
-                alert.alertStyle = .warning
-                alert.messageText = "El entregable ya existe"
-                alert.informativeText = "Elige si conservas el mismo destino o creas una versión atómica nueva."
-                alert.addButton(withTitle: "Cancelar")
-                alert.addButton(withTitle: "Sobrescribir archivos existentes")
-                alert.addButton(withTitle: "Crear nueva versión")
-                switch alert.runModal() {
-                case .alertSecondButtonReturn:
-                    configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
-                case .alertThirdButtonReturn:
-                    let versioned = try plan.nextAvailableVersion(configuration: configuration)
-                    configuration = versioned.configuration
-                    plan = versioned.plan
-                default: return
-                }
-            }
-            outputQueue.enqueue(
-                scene: job.scene,
-                generatedEnvironmentEXR: job.generatedEnvironmentEXR,
-                outputPlan: plan,
-                configuration: configuration,
-                derivedFromJobID: job.id
-            )
-            status = "Versión histórica añadida · \(job.scene.name)"
-        } catch { errorMessage = error.localizedDescription }
     }
 
     static func isHistoricalRerenderEligible(

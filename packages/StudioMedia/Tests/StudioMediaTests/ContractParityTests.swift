@@ -115,6 +115,7 @@ import Testing
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .physical,
         motionSamples: 8,
         format: .proRes4444,
@@ -151,7 +152,8 @@ import Testing
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .standard, jobName: "motion-mode",
         overwritePolicy: .failIfExists, fusionScene: nil,
-        composition: .deviceAndSpillTogether, motionBlurMode: .approximate2D,
+        composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
+        motionBlurMode: .approximate2D,
         motionSamples: 8, format: .openEXR, pipeline: .aces, target: .acescg,
         peakNits: 0, display: nil, view: nil, vfxInterchangeEncodingID: nil,
         pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight,
@@ -180,6 +182,52 @@ import Testing
     }
 }
 
+@Test func editorialRenderFreezesExplicitAdditiveSpillContract() throws {
+    let configuration = StudioResolvedRenderConfiguration(
+        outputType: .editorial, jobName: "editorial",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialACEScctAdd,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
+        peakNits: 0, display: nil, view: nil,
+        vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.colorEncodingID,
+        pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
+    )
+    try configuration.validate()
+    let encoded = try JSONEncoder().encode(configuration)
+    #expect(try JSONDecoder().decode(
+        StudioResolvedRenderConfiguration.self, from: encoded
+    ) == configuration)
+
+    var object = try #require(
+        try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    object.removeValue(forKey: "spillDeliveryMode")
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(
+            StudioResolvedRenderConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+    }
+    let incompatible = StudioResolvedRenderConfiguration(
+        outputType: .editorial, jobName: "invalid",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialACEScctAdd,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
+        peakNits: 0, display: nil, view: nil,
+        vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.colorEncodingID,
+        pixelEncoding: .rgb44412, signalRange: .video, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
+    )
+    #expect(throws: StudioOutputContractError.editorialSpillDeliveryInvalid) {
+        try incompatible.validate()
+    }
+}
+
 @Test func vfxRenderJobFreezesCodecAndLogGamutIndependentlyOfCamera() throws {
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .standard,
@@ -187,6 +235,7 @@ import Testing
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .fullComposite,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8,
         format: .proRes4444XQ,

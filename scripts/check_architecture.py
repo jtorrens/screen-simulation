@@ -1090,7 +1090,8 @@ def validate_native_workspace_navigation() -> None:
         "case .render: renderWorkspace",
         "case .settings: settingsWorkspace",
         "model.setTestPageActive(destination == .scene)",
-        "outputSettingsSections",
+        "renderOptionsPanel",
+        'Button("Añadir a Render Queue")',
         "outputInspectorSections",
     ):
         if required not in content:
@@ -1099,6 +1100,10 @@ def validate_native_workspace_navigation() -> None:
         'case main = "Principal"',
         "enum SidebarTab",
         "mainWorkspace",
+        "renderOptionsSheet",
+        ".sheet(item: $pendingRenderScene)",
+        "rerenderHistoricalJob",
+        "outputSettingsSections",
     ):
         if forbidden in content:
             raise ValidationError("retired native workspace navigation remains: " + forbidden)
