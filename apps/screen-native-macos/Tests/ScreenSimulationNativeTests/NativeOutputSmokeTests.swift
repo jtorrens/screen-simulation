@@ -182,6 +182,31 @@ import Testing
     }
 }
 
+@Test func approximate2DMotionVelocitySamplingNeverRequestsANegativeFrame() throws {
+    let first = try Approximate2DMotionVelocitySampling.resolve(frame: 0)
+    #expect(first.earlierTimeFrame == -1)
+    #expect(first.earlierIdentityFrame == 0)
+    #expect(first.laterTimeFrame == 1)
+    #expect(first.laterIdentityFrame == 1)
+    let beforeFirst = try PhysicalFrameSelection(
+        frameIndex: Int64(first.earlierIdentityFrame),
+        timeNumerator: Int64(first.earlierTimeFrame), timeDenominator: 24,
+        frameRateNumerator: 24, frameRateDenominator: 1
+    )
+    #expect(beforeFirst.frameIndex == 0)
+    #expect(beforeFirst.timeNumerator == -1)
+
+    let interior = try Approximate2DMotionVelocitySampling.resolve(frame: 12)
+    #expect(interior.earlierTimeFrame == 11)
+    #expect(interior.earlierIdentityFrame == 11)
+    #expect(interior.laterTimeFrame == 13)
+    #expect(interior.laterIdentityFrame == 13)
+
+    #expect(throws: PhysicalContractError.invalidFrameIndex) {
+        try Approximate2DMotionVelocitySampling.resolve(frame: -1)
+    }
+}
+
 @Test @MainActor func separatedVfxProResRetainsDeviceAlphaAndNonBlackSpill() async throws {
     let display = try StudioColorMetalDisplay()
     let width = 32, height = 18

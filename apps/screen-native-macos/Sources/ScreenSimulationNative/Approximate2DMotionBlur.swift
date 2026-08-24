@@ -5,6 +5,26 @@ enum Approximate2DMotionBlurError: Error {
     case invalidInput
 }
 
+struct Approximate2DMotionVelocitySampling: Equatable {
+    let earlierTimeFrame: Int
+    let earlierIdentityFrame: Int
+    let laterTimeFrame: Int
+    let laterIdentityFrame: Int
+
+    static func resolve(frame: Int) throws -> Self {
+        guard frame >= 0 else { throw PhysicalContractError.invalidFrameIndex }
+        let (earlierTimeFrame, underflow) = frame.subtractingReportingOverflow(1)
+        let (laterFrame, overflow) = frame.addingReportingOverflow(1)
+        guard !underflow, !overflow else { throw PhysicalContractError.invalidFrameTime }
+        return Self(
+            earlierTimeFrame: earlierTimeFrame,
+            earlierIdentityFrame: max(earlierTimeFrame, 0),
+            laterTimeFrame: laterFrame,
+            laterIdentityFrame: laterFrame
+        )
+    }
+}
+
 /// Deterministic post-Delivery approximation. RGB and matte are filtered as four
 /// independent linear channels; RGB is never associated with alpha.
 enum Approximate2DMotionBlur {

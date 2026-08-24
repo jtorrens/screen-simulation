@@ -4877,13 +4877,13 @@ final class WorkspaceModel: ObservableObject {
         let height = carrier.height
         let frame = Int(scene.selection.frameIndex)
         let rate = configuration.frameRate
-        func frameSelection(_ index: Int) throws -> PhysicalFrameSelection {
-            let (timeNumerator, overflow) = Int64(index).multipliedReportingOverflow(
+        func frameSelection(timeFrame: Int, identityFrame: Int) throws -> PhysicalFrameSelection {
+            let (timeNumerator, overflow) = Int64(timeFrame).multipliedReportingOverflow(
                 by: Int64(rate.denominator)
             )
             guard !overflow else { throw PhysicalContractError.invalidFrameTime }
             return try PhysicalFrameSelection(
-                frameIndex: Int64(index), timeNumerator: timeNumerator,
+                frameIndex: Int64(identityFrame), timeNumerator: timeNumerator,
                 timeDenominator: rate.numerator,
                 frameRateNumerator: rate.numerator,
                 frameRateDenominator: rate.denominator
@@ -4905,11 +4905,15 @@ final class WorkspaceModel: ObservableObject {
             ) else { throw SetupFramingError.invalidContract }
             return point
         }
-        let (previousFrame, underflow) = frame.subtractingReportingOverflow(1)
-        let (nextFrame, overflow) = frame.addingReportingOverflow(1)
-        guard !underflow, !overflow else { throw PhysicalContractError.invalidFrameTime }
-        let previous = try projectedCenter(frameSelection(previousFrame))
-        let next = try projectedCenter(frameSelection(nextFrame))
+        let velocitySampling = try Approximate2DMotionVelocitySampling.resolve(frame: frame)
+        let previous = try projectedCenter(frameSelection(
+            timeFrame: velocitySampling.earlierTimeFrame,
+            identityFrame: velocitySampling.earlierIdentityFrame
+        ))
+        let next = try projectedCenter(frameSelection(
+            timeFrame: velocitySampling.laterTimeFrame,
+            identityFrame: velocitySampling.laterIdentityFrame
+        ))
         let shutter = scene.authored.shutterMotion
         let open = Double(shutter.openOffsetNumerator)
             / Double(shutter.openOffsetDenominator)

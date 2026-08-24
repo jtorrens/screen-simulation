@@ -115,7 +115,10 @@
         "anchor": "Time"
       },
       "enforcement": [
-        "crates/screen-geometry/src/lib.rs"
+        "crates/screen-geometry/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/Approximate2DMotionBlur.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift"
       ]
     },
     {

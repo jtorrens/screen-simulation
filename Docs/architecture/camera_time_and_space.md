@@ -5,6 +5,8 @@ Status: normative.
 ## Time
 <!-- decision-owner: time.terminal-extrapolation -->
 
+Physical and approximate-2D shutter motion evaluate exact rational times before the first frame and after the last frame through the same terminal track extrapolation; they never clamp continuous scene motion merely to keep a frame identity nonnegative.
+
 Geometry first resolves camera and screen transforms, their physical separation and the ideal camera rays required to determine optical-cover incidence and reflection direction. Cover and environment consume that typed geometry checkpoint in linear radiance. Lens character then applies focus, physical aperture integration, distortion, chromatic behavior, vignetting, transmission, softness and wide-field veiling glare to the covered signal. All three stages belong to the same Draft and Native optical request; none is a post-process route.
 
 The canonical scene is right-handed. `+X` is right, `+Y` is up and `+Z` points from the screen toward a frontal viewer. A screen's local active area lies on XY, its center is the local origin and its front normal is `+Z`. A camera looks along local `-Z`.
