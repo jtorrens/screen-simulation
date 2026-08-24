@@ -441,6 +441,11 @@ public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
             ocioColorSpace: "ACEScct"
         ),
         .init(
+            id: "rec709-gamma24",
+            label: "Rec.709 / Gamma 2.4",
+            ocioColorSpace: "Rec.1886 Rec.709 - Display"
+        ),
+        .init(
             id: "arri-logc4-awg4",
             label: "ARRI LogC4 / ARRI Wide Gamut 4",
             ocioColorSpace: "ARRI LogC4"
@@ -491,7 +496,9 @@ public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
         )
     }
 
-    public var supportsFusionScenePackage: Bool { id != "acescct-ap1" }
+    public var supportsFusionScenePackage: Bool {
+        id != "acescct-ap1" && id != "rec709-gamma24"
+    }
 }
 
 public enum StudioColorAlphaAssociation: String, CaseIterable, Identifiable, Sendable {

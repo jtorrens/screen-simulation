@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v7"
+    static let schema = "ScreenSimulation.RenderQueue.v8"
 
     let schema: String
     let isPaused: Bool
@@ -78,7 +78,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v7.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v8.json")
     }
 
     func load() throws -> RenderQueueDocument {
@@ -124,7 +124,7 @@ struct RenderQueueStore: Sendable {
         let requiredConfigurationKeys: Set<String> = [
             "outputType", "jobName", "overwritePolicy", "composition",
             "spillDeliveryMode", "motionBlurMode", "motionSamples", "format", "pipeline", "target",
-            "peakNits", "pixelEncoding", "signalRange", "alpha", "includeAudio",
+            "raster", "peakNits", "pixelEncoding", "signalRange", "alpha", "includeAudio",
             "frameRate", "firstFrame", "lastFrame",
         ]
         let optionalConfigurationKeys: Set<String> = [
@@ -135,8 +135,10 @@ struct RenderQueueStore: Sendable {
                 return false
             }
             let keys = Set(configuration.keys)
-            return requiredConfigurationKeys.isSubset(of: keys)
-                && keys.isSubset(of: requiredConfigurationKeys.union(optionalConfigurationKeys))
+            guard requiredConfigurationKeys.isSubset(of: keys),
+                  let raster = configuration["raster"] as? [String: Any],
+                  Set(raster.keys) == ["width", "height", "placementID"] else { return false }
+            return keys.isSubset(of: requiredConfigurationKeys.union(optionalConfigurationKeys))
         }) else {
             throw RenderQueueStoreError.invalidDocument(
                 "La configuración persistida de Render Queue no pertenece al contrato vigente."

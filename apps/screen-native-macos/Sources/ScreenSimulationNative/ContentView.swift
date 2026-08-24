@@ -347,6 +347,7 @@ struct ContentView: View {
                 VSplitView {
                     sceneLibraryPanel
                         .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     Group {
                         if let renderDraft {
                             renderOptionsPanel(renderDraft)
@@ -359,6 +360,7 @@ struct ContentView: View {
                         }
                     }
                     .frame(minHeight: 300)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(minWidth: 400, idealWidth: 470, maxWidth: 620)
             }
@@ -1953,6 +1955,7 @@ struct ContentView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -2027,12 +2030,15 @@ struct ContentView: View {
     }
 
     private func requestSceneRender(_ scene: SavedScene) {
-        model.renderJobName = scene.name
-        model.ensureRenderOptionsCompatible()
-        renderDraft = RenderDraft(
-            scene: scene, sourceJob: nil, historicalSnapshot: false
-        )
-        page = .render
+        do {
+            try model.configureRenderRaster(for: scene)
+            model.renderJobName = scene.name
+            model.ensureRenderOptionsCompatible()
+            renderDraft = RenderDraft(
+                scene: scene, sourceJob: nil, historicalSnapshot: false
+            )
+            page = .render
+        } catch { model.errorMessage = error.localizedDescription }
     }
 
     private func saveNewScene() {
@@ -2129,9 +2135,14 @@ struct ContentView: View {
                     }
                     .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
                     if model.renderPreset.target == .vfxLog {
-                        if model.renderPreset.fixedVFXInterchangeEncodingID == nil {
+                        if model.renderOutputType == .editorial
+                            || model.renderPreset.fixedVFXInterchangeEncodingID == nil {
                             Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
-                                ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
+                                ForEach(StudioVFXInterchangeEncoding.catalog.filter { encoding in
+                                    model.renderOutputType != .editorial
+                                        || StudioVFXEditorialDeliveryContract
+                                            .supportedColorEncodingIDs.contains(encoding.id)
+                                }) { encoding in
                                     Text(encoding.label).tag(encoding.id)
                                 }
                             }
@@ -2152,6 +2163,26 @@ struct ContentView: View {
                                 value: model.selectedVFXInterchangeEncoding?.label
                                     ?? StudioVFXEditorialDeliveryContract.colorEncodingID
                             )
+                        }
+                    }
+                    GroupBox("Raster de la escena") {
+                        VStack(alignment: .leading, spacing: 8) {
+                        LabeledContent("Ancho") {
+                            TextField("px", value: $model.renderRasterWidth, format: .number)
+                                .frame(width: 90)
+                        }
+                        LabeledContent("Alto") {
+                            TextField("px", value: $model.renderRasterHeight, format: .number)
+                                .frame(width: 90)
+                        }
+                        Picker("Placement", selection: $model.renderRasterPlacementID) {
+                            Text("Fit").tag("fit")
+                            Text("Fill / Crop").tag("fill-crop")
+                            Text("1:1").tag("one-to-one")
+                        }
+                        Text("Parte de los valores guardados en la escena; los cambios sólo se congelan en este render.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                     if model.renderOutputType.usesStandardMediaRenderer {

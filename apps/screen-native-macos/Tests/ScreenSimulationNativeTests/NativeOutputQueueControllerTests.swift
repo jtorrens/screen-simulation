@@ -336,22 +336,22 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV7StrictlyRequiresExplicitRenderModes() throws {
+@Test @MainActor func renderQueueV8StrictlyRequiresExplicitRenderModesAndRaster() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("render-queue-v7-strict-\(UUID().uuidString)")
+        .appendingPathComponent("render-queue-v8-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try RenderQueueStore(directoryURL: root)
     let controller = try NativeOutputQueueController(store: store)
     controller.enqueue(
-        scene: outputQueueTestScene(name: "Contrato v7"), generatedEnvironmentEXR: nil,
-        outputPlan: queueTestPlan("/tmp/v7.mov"),
+        scene: outputQueueTestScene(name: "Contrato v8"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/v8.mov"),
         configuration: outputQueueTestConfiguration()
     )
     let encoded = try Data(contentsOf: store.documentURL)
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v7")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v8")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -361,6 +361,17 @@ import Testing
     jobs[0]["configuration"] = configuration
     legacy["jobs"] = jobs
     try JSONSerialization.data(withJSONObject: legacy).write(
+        to: store.documentURL, options: .atomic
+    )
+    #expect(throws: (any Error).self) { try store.load() }
+
+    var missingRaster = rootObject
+    var rasterJobs = try #require(missingRaster["jobs"] as? [[String: Any]])
+    var rasterConfiguration = try #require(rasterJobs[0]["configuration"] as? [String: Any])
+    rasterConfiguration.removeValue(forKey: "raster")
+    rasterJobs[0]["configuration"] = rasterConfiguration
+    missingRaster["jobs"] = rasterJobs
+    try JSONSerialization.data(withJSONObject: missingRaster).write(
         to: store.documentURL, options: .atomic
     )
     #expect(throws: (any Error).self) { try store.load() }
@@ -549,7 +560,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
         composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .physical,
-        motionSamples: 8,
+        motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444,
         pipeline: .aces,
         target: .sdr,

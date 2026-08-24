@@ -1020,7 +1020,7 @@ private func renderConfiguration(
         composition: composition,
         spillDeliveryMode: spillDeliveryMode,
         motionBlurMode: motionBlurMode,
-        motionSamples: 8,
+        motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: format,
         pipeline: preset.pipeline,
         target: preset.target,

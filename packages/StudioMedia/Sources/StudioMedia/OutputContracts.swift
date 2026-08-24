@@ -144,6 +144,7 @@ public enum StudioVFXEditorialDeliveryContract {
         uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C0A"
     )!
     public static let colorEncodingID = "acescct-ap1"
+    public static let supportedColorEncodingIDs = ["acescct-ap1", "rec709-gamma24"]
 }
 
 public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -170,7 +171,26 @@ public enum StudioSpillDeliveryMode: String, Codable, CaseIterable, Identifiable
     public var label: String {
         switch self {
         case .physicalLinear: "Físico lineal"
-        case .editorialACEScctAdd: "Editorial ACEScct Add"
+        case .editorialACEScctAdd: "Editorial Add (codificado)"
+        }
+    }
+}
+
+public struct StudioResolvedRenderRaster: Codable, Equatable, Sendable {
+    public let width: UInt32
+    public let height: UInt32
+    public let placementID: String
+
+    public init(width: UInt32, height: UInt32, placementID: String) {
+        self.width = width
+        self.height = height
+        self.placementID = placementID
+    }
+
+    public func validate() throws {
+        guard width > 0, height > 0,
+              ["fit", "fill-crop", "one-to-one"].contains(placementID) else {
+            throw StudioOutputContractError.invalidRenderRaster
         }
     }
 }
@@ -255,6 +275,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case invalidJobName
     case invalidFrameRange
     case invalidMotionSamples
+    case invalidRenderRaster
     case invalidFusionSpillSupport
     case invalidFusionCustomResolution
     case unexpectedFusionCustomResolution
@@ -270,6 +291,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         case .invalidJobName: "El nombre del trabajo no puede estar vacío."
         case .invalidFrameRange: "El rango del trabajo no es válido."
         case .invalidMotionSamples: "Las muestras de Motion Blur deben estar entre 2 y 64."
+        case .invalidRenderRaster: "El raster de render requiere dimensiones y placement explícitos válidos."
         case .invalidFusionSpillSupport:
             "El threshold ACEScg scene-linear debe ser positivo y el fade no puede ser negativo."
         case .invalidFusionCustomResolution:
@@ -285,7 +307,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         case .separatedDeviceSpillDeliveryInvalid:
             "Device y Spill separados requiere un formato con alpha, Device straight y sin audio."
         case .editorialSpillDeliveryInvalid:
-            "Editorial ACEScct Add requiere Device/Spill separado, ACEScct/AP1, ProRes 4444 RGB Full Range, alpha straight y sin audio."
+            "Editorial Add requiere Device/Spill separado, ACEScct/AP1 o Rec.709 Gamma 2.4, ProRes 4444 RGB Full Range, alpha straight y sin audio."
         case .wipReviewDeliveryInvalid:
             "WIP Review solo puede aplicarse a una composición estándar única y display/output encoded."
         }
@@ -393,6 +415,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let spillDeliveryMode: StudioSpillDeliveryMode
     public let motionBlurMode: StudioRenderMotionBlurMode
     public let motionSamples: UInt16
+    public let raster: StudioResolvedRenderRaster
     public let format: StudioOutputFormat
     public let pipeline: StudioRenderPipeline
     public let target: StudioRenderTarget
@@ -419,6 +442,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         spillDeliveryMode: StudioSpillDeliveryMode,
         motionBlurMode: StudioRenderMotionBlurMode,
         motionSamples: UInt16,
+        raster: StudioResolvedRenderRaster,
         format: StudioOutputFormat,
         pipeline: StudioRenderPipeline,
         target: StudioRenderTarget,
@@ -443,6 +467,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         self.spillDeliveryMode = spillDeliveryMode
         self.motionBlurMode = motionBlurMode
         self.motionSamples = motionSamples
+        self.raster = raster
         self.format = format
         self.pipeline = pipeline
         self.target = target
@@ -471,6 +496,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         guard (2 ... 64).contains(motionSamples) else {
             throw StudioOutputContractError.invalidMotionSamples
         }
+        try raster.validate()
         switch outputType {
         case .standard, .editorial:
             guard fusionScene == nil else {
@@ -486,8 +512,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                       format == .proRes4444 || format == .proRes4444XQ,
                       pipeline == .aces, target == .vfxLog,
                       display == nil, view == nil,
-                      vfxInterchangeEncodingID
-                        == StudioVFXEditorialDeliveryContract.colorEncodingID,
+                      StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
+                        .contains(vfxInterchangeEncodingID ?? ""),
                       pixelEncoding == .rgb44412, signalRange == .full,
                       alpha == .straight, !includeAudio, wipReview == nil else {
                     throw StudioOutputContractError.editorialSpillDeliveryInvalid
@@ -561,7 +587,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             overwritePolicy: policy, fusionScene: fusionScene,
             composition: composition, spillDeliveryMode: spillDeliveryMode,
             motionBlurMode: motionBlurMode,
-            motionSamples: motionSamples, format: format, pipeline: pipeline,
+            motionSamples: motionSamples, raster: raster,
+            format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
             pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,
@@ -577,7 +604,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             overwritePolicy: overwritePolicy, fusionScene: fusionScene,
             composition: composition, spillDeliveryMode: spillDeliveryMode,
             motionBlurMode: motionBlurMode,
-            motionSamples: motionSamples, format: format, pipeline: pipeline,
+            motionSamples: motionSamples, raster: raster,
+            format: format, pipeline: pipeline,
             target: target, peakNits: peakNits, display: display, view: view,
             vfxInterchangeEncodingID: vfxInterchangeEncodingID,
             pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,

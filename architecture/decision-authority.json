@@ -203,7 +203,7 @@
     },
     {
       "id": "output.vfx-editorial-delivery",
-      "scope": "standard-only ACEScct ProRes 4444 XQ editorial delivery contract",
+      "scope": "standard-only ACEScct or Rec.709 RGB editorial delivery contract",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Product boundary"
@@ -220,6 +220,23 @@
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputSmokeTests.swift",
         "scripts/migrate_global_library_v15_to_v16.py",
         "scripts/test_migrate_global_library_v15_to_v16.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "output.render-raster-overrides",
+      "scope": "render-only resolved Delivery Raster overrides frozen per Queue job",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "packages/StudioMedia/Sources/StudioMedia/OutputContracts.swift",
+        "packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/RenderDerivationTests.swift",
         "scripts/check_architecture.py"
       ]
     },

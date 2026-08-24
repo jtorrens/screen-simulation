@@ -418,6 +418,9 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderSpillDeliveryMode = StudioSpillDeliveryMode.physicalLinear
     @Published var renderMotionBlurMode = StudioRenderMotionBlurMode.physical
     @Published var renderMotionSamples: UInt16 = 8
+    @Published var renderRasterWidth: UInt32 = 1920
+    @Published var renderRasterHeight: UInt32 = 1080
+    @Published var renderRasterPlacementID = "fit"
     @Published var fusionDOFMode = StudioFusionDOFMode.fusion
     @Published var fusionResolutionMode = StudioFusionResolutionMode.maximumProjectedDensity
     @Published var fusionCustomWidth = 3840
@@ -4354,6 +4357,15 @@ final class WorkspaceModel: ObservableObject {
         includeAudio = false
     }
 
+    func configureRenderRaster(for scene: SavedScene) throws {
+        let selection = try materializeSceneSelection(
+            scene.snapshot.authoring, profileContext: testAuthoringProfileContext
+        )
+        renderRasterWidth = selection.deliveryWidth
+        renderRasterHeight = selection.deliveryHeight
+        renderRasterPlacementID = selection.deliveryPlacementID
+    }
+
     func applyRenderPreset(_ preset: StudioRenderPreset) {
         renderPreset = preset
         if preset.target != .sdr && preset.target != .hdr {
@@ -4404,13 +4416,12 @@ final class WorkspaceModel: ObservableObject {
         if renderSpillDeliveryMode == .editorialACEScctAdd,
            (renderComposition != .deviceAndSpillSeparate
             || renderPreset.target != .vfxLog
-            || vfxInterchangeEncodingID
-                != StudioVFXEditorialDeliveryContract.colorEncodingID
+            || !StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
+                .contains(vfxInterchangeEncodingID)
             || (outputFormat != .proRes4444 && outputFormat != .proRes4444XQ)) {
             renderSpillDeliveryMode = .physicalLinear
         }
         if renderPreset.fixedVFXInterchangeEncodingID != nil {
-            vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.colorEncodingID
             outputFormat = .proRes4444XQ
             outputPixelEncoding = .rgb44412
             outputSignalRange = .full
@@ -4552,6 +4563,10 @@ final class WorkspaceModel: ObservableObject {
                 ? .physicalLinear : renderSpillDeliveryMode,
             motionBlurMode: renderOutputType == .fusionScenePackage ? .disabled : renderMotionBlurMode,
             motionSamples: renderMotionSamples,
+            raster: .init(
+                width: renderRasterWidth, height: renderRasterHeight,
+                placementID: renderRasterPlacementID
+            ),
             format: outputFormat,
             pipeline: renderWIPReviewPreset == nil ? renderPreset.pipeline : .aces,
             target: wipOutput?.0 ?? renderPreset.target,
@@ -4632,6 +4647,9 @@ final class WorkspaceModel: ObservableObject {
         renderSpillDeliveryMode = configuration.spillDeliveryMode
         renderMotionBlurMode = configuration.motionBlurMode
         renderMotionSamples = configuration.motionSamples
+        renderRasterWidth = configuration.raster.width
+        renderRasterHeight = configuration.raster.height
+        renderRasterPlacementID = configuration.raster.placementID
         outputFormat = configuration.format
         outputPixelEncoding = configuration.pixelEncoding
         outputSignalRange = configuration.signalRange
@@ -4860,9 +4878,9 @@ final class WorkspaceModel: ObservableObject {
                     || configuration.motionBlurMode == .approximate2D {
                     let delivery = try RecordingPhaseExecutor.delivery(
                         cameraRendered: camera,
-                        width: Int(selection.deliveryWidth),
-                        height: Int(selection.deliveryHeight),
-                        placementID: selection.deliveryPlacementID,
+                        width: Int(configuration.raster.width),
+                        height: Int(configuration.raster.height),
+                        placementID: configuration.raster.placementID,
                         backgroundID: "transparent",
                         display: metalDisplay
                     ).compositionFrame
@@ -4870,7 +4888,7 @@ final class WorkspaceModel: ObservableObject {
                         ? try approximate2DMotionBlur(
                             delivery, scene: resolvedSceneFrame,
                             configuration: configuration,
-                            deliveryPlacementID: selection.deliveryPlacementID
+                            deliveryPlacementID: configuration.raster.placementID
                         )
                         : delivery
                 } else {
@@ -4883,7 +4901,8 @@ final class WorkspaceModel: ObservableObject {
                 if configuration.composition == .fullComposite {
                     if referencePlate == .videoReference { try await rebuildReferenceFrame() }
                     reference = try referencePlateFrame(
-                        width: Int(selection.deliveryWidth), height: Int(selection.deliveryHeight)
+                        width: Int(configuration.raster.width),
+                        height: Int(configuration.raster.height)
                     )
                     guard reference != nil else {
                         throw SceneLibraryError.invalidDocument(
@@ -4900,11 +4919,11 @@ final class WorkspaceModel: ObservableObject {
                 }
                 let plan = try setupDiagnosticPlan(
                     scene: resolvedSceneFrame,
-                    deliveryWidth: Int(selection.deliveryWidth),
-                    deliveryHeight: Int(selection.deliveryHeight),
-                    previewWidth: Int(selection.deliveryWidth),
-                    previewHeight: Int(selection.deliveryHeight),
-                    deliveryPlacementID: selection.deliveryPlacementID,
+                    deliveryWidth: Int(configuration.raster.width),
+                    deliveryHeight: Int(configuration.raster.height),
+                    previewWidth: Int(configuration.raster.width),
+                    previewHeight: Int(configuration.raster.height),
+                    deliveryPlacementID: configuration.raster.placementID,
                     deliveryBackgroundID: selection.deliveryBackgroundID
                 )
                 return try setupFramingRenderer!.renderCameraComposite(

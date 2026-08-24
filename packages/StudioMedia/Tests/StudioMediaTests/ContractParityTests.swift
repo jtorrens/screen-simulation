@@ -117,7 +117,7 @@ import Testing
         composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .physical,
-        motionSamples: 8,
+        motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444,
         pipeline: preset.pipeline,
         target: preset.target,
@@ -154,7 +154,7 @@ import Testing
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
         motionBlurMode: .approximate2D,
-        motionSamples: 8, format: .openEXR, pipeline: .aces, target: .acescg,
+        motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .openEXR, pipeline: .aces, target: .acescg,
         peakNits: 0, display: nil, view: nil, vfxInterchangeEncodingID: nil,
         pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight,
         includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 0
@@ -188,7 +188,7 @@ import Testing
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialACEScctAdd,
-        motionBlurMode: .approximate2D, motionSamples: 8,
+        motionBlurMode: .approximate2D, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
         peakNits: 0, display: nil, view: nil,
         vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.colorEncodingID,
@@ -196,6 +196,22 @@ import Testing
         includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
     )
     try configuration.validate()
+    #expect(StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
+        == ["acescct-ap1", "rec709-gamma24"])
+    let rec709 = StudioResolvedRenderConfiguration(
+        outputType: .editorial, jobName: "editorial-rec709",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialACEScctAdd,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        raster: .init(width: 3840, height: 2160, placementID: "fill-crop"),
+        format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
+        peakNits: 0, display: nil, view: nil,
+        vfxInterchangeEncodingID: "rec709-gamma24",
+        pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
+    )
+    try rec709.validate()
     let encoded = try JSONEncoder().encode(configuration)
     #expect(try JSONDecoder().decode(
         StudioResolvedRenderConfiguration.self, from: encoded
@@ -216,7 +232,7 @@ import Testing
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialACEScctAdd,
-        motionBlurMode: .approximate2D, motionSamples: 8,
+        motionBlurMode: .approximate2D, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
         peakNits: 0, display: nil, view: nil,
         vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.colorEncodingID,
@@ -237,7 +253,7 @@ import Testing
         composition: .fullComposite,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
-        motionSamples: 8,
+        motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444XQ,
         pipeline: .aces,
         target: .vfxLog,
