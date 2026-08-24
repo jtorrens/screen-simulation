@@ -294,6 +294,24 @@ enum NativeOutputRenderer {
         let frames = Array(configuration.frameRange)
         guard !frames.isEmpty else { throw NativeOutputError.invalidFrame }
         let output = try outputTransform(for: configuration)
+        let movieDeviceURL = outputPlan.destination.appendingPathComponent(
+            "\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
+        )
+        let movieSpillURL = outputPlan.destination.appendingPathComponent(
+            "\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+        )
+        if configuration.format.isMovie {
+            try outputPlan.authorizeWrite(
+                to: movieDeviceURL, policy: configuration.overwritePolicy
+            )
+            try outputPlan.authorizeWrite(
+                to: movieSpillURL, policy: configuration.overwritePolicy
+            )
+            for url in [movieDeviceURL, movieSpillURL]
+            where FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
         var deviceMovie: MovieWriter?
         var spillMovie: MovieWriter?
         for (position, index) in frames.enumerated() {
@@ -303,16 +321,22 @@ enum NativeOutputRenderer {
             let passes = try editorialDeviceSpillPasses(source)
             let deviceURL = outputPlan.destination.appendingPathComponent(
                 configuration.format.isMovie
-                    ? "\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
+                    ? movieDeviceURL.lastPathComponent
                     : String(format: "%@_Device.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
             )
             let spillURL = outputPlan.destination.appendingPathComponent(
                 configuration.format.isMovie
-                    ? "\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+                    ? movieSpillURL.lastPathComponent
                     : String(format: "%@_Spill.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
             )
-            try outputPlan.authorizeWrite(to: deviceURL, policy: configuration.overwritePolicy)
-            try outputPlan.authorizeWrite(to: spillURL, policy: configuration.overwritePolicy)
+            if !configuration.format.isMovie {
+                try outputPlan.authorizeWrite(
+                    to: deviceURL, policy: configuration.overwritePolicy
+                )
+                try outputPlan.authorizeWrite(
+                    to: spillURL, policy: configuration.overwritePolicy
+                )
+            }
             if configuration.format.isMovie {
                 guard let output else {
                     throw NativeOutputError.unsupported("las películas requieren encoding de entrega")
@@ -326,9 +350,6 @@ enum NativeOutputRenderer {
                     alpha: .ignore, display: display
                 )
                 if deviceMovie == nil {
-                    for url in [deviceURL, spillURL] where FileManager.default.fileExists(atPath: url.path) {
-                        try FileManager.default.removeItem(at: url)
-                    }
                     deviceMovie = try MovieWriter(
                         url: deviceURL, width: frame.width, height: frame.height,
                         frameRate: configuration.frameRate, format: configuration.format,

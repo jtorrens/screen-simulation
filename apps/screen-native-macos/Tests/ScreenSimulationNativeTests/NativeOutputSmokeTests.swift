@@ -239,7 +239,7 @@ import Testing
     let preset = StudioRenderPreset.builtIns[9]
     let configuration = renderConfiguration(
         format: preset.format, preset: preset, alpha: .straight,
-        signalRange: .full, frameRange: 0 ... 0,
+        signalRange: .full, frameRange: 0 ... 1,
         composition: .deviceAndSpillSeparate
     )
     let root = FileManager.default.temporaryDirectory
@@ -248,11 +248,16 @@ import Testing
     let plan = try RenderOutputPlan.prepare(
         configuration: configuration, selectedDestination: root
     )
+    var requestedFrames: [Int] = []
     _ = try await NativeOutputRenderer.render(
         configuration: configuration, outputPlan: plan,
         audioSource: nil, display: display,
-        frameProvider: { _ in frame }, progress: { _, _ in }
+        frameProvider: { index in
+            requestedFrames.append(index)
+            return frame
+        }, progress: { _, _ in }
     )
+    #expect(requestedFrames == [0, 1])
 
     let device = try await decodeFirstProResARGB16(
         plan.destination.appendingPathComponent("ScreenSimulation_Device.mov")
