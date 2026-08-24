@@ -187,7 +187,7 @@ import Testing
         outputType: .editorial, jobName: "editorial",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: .editorialACEScctAdd,
+        spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
         peakNits: 0, display: nil, view: nil,
@@ -198,11 +198,12 @@ import Testing
     try configuration.validate()
     #expect(StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
         == ["acescct-ap1", "rec709-gamma24"])
+    #expect(StudioVFXEditorialDeliveryContract.spillGain == 0.125)
     let rec709 = StudioResolvedRenderConfiguration(
         outputType: .editorial, jobName: "editorial-rec709",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: .editorialACEScctAdd,
+        spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D, motionSamples: 8,
         raster: .init(width: 3840, height: 2160, placementID: "fill-crop"),
         format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
@@ -231,7 +232,7 @@ import Testing
         outputType: .editorial, jobName: "invalid",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: .editorialACEScctAdd,
+        spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
         peakNits: 0, display: nil, view: nil,

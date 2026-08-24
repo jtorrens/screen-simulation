@@ -203,7 +203,7 @@
     },
     {
       "id": "output.vfx-editorial-delivery",
-      "scope": "standard-only ACEScct or Rec.709 RGB editorial delivery contract",
+      "scope": "standard-only ACEScct or Rec.709 RGB editorial delivery with fixed 12.5% encoded Spill gain",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Product boundary"

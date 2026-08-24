@@ -343,7 +343,7 @@ enum NativeOutputRenderer {
                     throw NativeOutputError.unsupported("las películas requieren encoding de entrega")
                 }
                 let preservesIndependentDeviceRGB = configuration.motionBlurMode == .approximate2D
-                    || configuration.spillDeliveryMode == .editorialACEScctAdd
+                    || configuration.spillDeliveryMode == .editorialEncodedAdd
                 let deviceFrame = preservesIndependentDeviceRGB
                     ? try display.makeIndependentLinearACEScgFrame(
                         width: frame.width, height: frame.height, rgba: passes.device
@@ -385,7 +385,7 @@ enum NativeOutputRenderer {
                         frame: spillFrame!, presentationFrame: position,
                         display: display, output: output
                     )
-                case .editorialACEScctAdd:
+                case .editorialEncodedAdd:
                     if editorialEncodedBlack == nil {
                         let blackFrame = try display.makeIndependentLinearACEScgFrame(
                             width: 1, height: 1, rgba: [0, 0, 0, 1]
@@ -400,7 +400,7 @@ enum NativeOutputRenderer {
                     let encodedCarrier = try display.renderIndependentRGBAFloat(
                         deviceFrame, output: output, alpha: .straight
                     )
-                    let encodedSpill = try editorialACEScctAddSpill(
+                    let encodedSpill = try editorialEncodedAddSpill(
                         encodedCarrier: encodedCarrier,
                         encodedBlack: editorialEncodedBlack!
                     )
@@ -458,7 +458,7 @@ enum NativeOutputRenderer {
         return (device, spill)
     }
 
-    static func editorialACEScctAddSpill(
+    static func editorialEncodedAddSpill(
         encodedCarrier: [Float],
         encodedBlack: SIMD3<Float>
     ) throws -> [Float] {
@@ -469,12 +469,13 @@ enum NativeOutputRenderer {
               encodedBlack.z.isFinite
         else { throw NativeOutputError.invalidFrame }
         var spill = encodedCarrier
+        let gain = Float(StudioVFXEditorialDeliveryContract.spillGain)
         for offset in stride(from: 0, to: spill.count, by: 4) {
             let matte = min(1, max(0, encodedCarrier[offset + 3]))
             let exterior = 1 - matte
-            spill[offset] = exterior * (encodedCarrier[offset] - encodedBlack.x)
-            spill[offset + 1] = exterior * (encodedCarrier[offset + 1] - encodedBlack.y)
-            spill[offset + 2] = exterior * (encodedCarrier[offset + 2] - encodedBlack.z)
+            spill[offset] = gain * exterior * (encodedCarrier[offset] - encodedBlack.x)
+            spill[offset + 1] = gain * exterior * (encodedCarrier[offset + 1] - encodedBlack.y)
+            spill[offset + 2] = gain * exterior * (encodedCarrier[offset + 2] - encodedBlack.z)
             spill[offset + 3] = 1
         }
         guard spill.allSatisfy(\.isFinite) else { throw NativeOutputError.invalidFrame }

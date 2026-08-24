@@ -17,7 +17,7 @@ import Testing
     model.changeRenderOutputType(.editorial)
     #expect(model.renderOutputType == .editorial)
     #expect(model.renderComposition == .deviceAndSpillSeparate)
-    #expect(model.renderSpillDeliveryMode == .editorialACEScctAdd)
+    #expect(model.renderSpillDeliveryMode == .editorialEncodedAdd)
     #expect(model.renderMotionBlurMode == .approximate2D)
     #expect(model.outputFormat == .proRes4444XQ)
     #expect(model.outputPixelEncoding == .rgb44412)

@@ -4335,7 +4335,7 @@ final class WorkspaceModel: ObservableObject {
                 applyRenderPreset(preset)
             }
             renderComposition = .deviceAndSpillSeparate
-            renderSpillDeliveryMode = .editorialACEScctAdd
+            renderSpillDeliveryMode = .editorialEncodedAdd
             renderMotionBlurMode = .approximate2D
             renderWIPReviewPreset = nil
             outputAlphaMode = .straight
@@ -4413,7 +4413,7 @@ final class WorkspaceModel: ObservableObject {
             includeAudio = false
             return
         }
-        if renderSpillDeliveryMode == .editorialACEScctAdd,
+        if renderSpillDeliveryMode == .editorialEncodedAdd,
            (renderComposition != .deviceAndSpillSeparate
             || renderPreset.target != .vfxLog
             || !StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs

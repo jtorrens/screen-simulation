@@ -145,6 +145,7 @@ public enum StudioVFXEditorialDeliveryContract {
     )!
     public static let colorEncodingID = "acescct-ap1"
     public static let supportedColorEncodingIDs = ["acescct-ap1", "rec709-gamma24"]
+    public static let spillGain = 0.125
 }
 
 public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -165,13 +166,13 @@ public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Senda
 
 public enum StudioSpillDeliveryMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case physicalLinear = "physical-linear"
-    case editorialACEScctAdd = "editorial-acescct-add"
+    case editorialEncodedAdd = "editorial-encoded-add"
 
     public var id: String { rawValue }
     public var label: String {
         switch self {
         case .physicalLinear: "Físico lineal"
-        case .editorialACEScctAdd: "Editorial Add (codificado)"
+        case .editorialEncodedAdd: "Editorial Add · 12,5%"
         }
     }
 }
@@ -507,7 +508,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                     throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
                 }
             }
-            if spillDeliveryMode == .editorialACEScctAdd {
+            if spillDeliveryMode == .editorialEncodedAdd {
                 guard composition == .deviceAndSpillSeparate,
                       format == .proRes4444 || format == .proRes4444XQ,
                       pipeline == .aces, target == .vfxLog,

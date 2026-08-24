@@ -140,14 +140,14 @@ import Testing
     #expect(edge.spill[0] > 0.199)
 }
 
-@Test @MainActor func editorialACEScctSpillSubtractsBlackAndReconstructsOverBlack() throws {
+@Test @MainActor func editorialEncodedSpillUsesTheDeclaredTwelvePointFivePercentGain() throws {
     let black = SIMD3<Float>(0.08, 0.08, 0.08)
     let carrier: [Float] = [
         0.20, 0.40, 0.90, 0,
         0.30, 0.50, 0.70, 0.5,
         0.60, 0.80, 1.00, 1,
     ]
-    let spill = try NativeOutputRenderer.editorialACEScctAddSpill(
+    let spill = try NativeOutputRenderer.editorialEncodedAddSpill(
         encodedCarrier: carrier, encodedBlack: black
     )
     #expect(spill.allSatisfy { $0.isFinite })
@@ -155,10 +155,9 @@ import Testing
         let offset = pixel * 4
         let matte = carrier[offset + 3]
         for channel in 0 ..< 3 {
-            let expected = (1 - matte) * (carrier[offset + channel] - black[channel])
+            let expected = Float(StudioVFXEditorialDeliveryContract.spillGain)
+                * (1 - matte) * (carrier[offset + channel] - black[channel])
             #expect(abs(spill[offset + channel] - expected) < 0.000_001)
-            let overBlack = carrier[offset + channel] * matte + black[channel] * (1 - matte)
-            #expect(abs(overBlack + spill[offset + channel] - carrier[offset + channel]) < 0.000_001)
         }
         #expect(spill[offset + 3] == 1)
     }
@@ -186,7 +185,7 @@ import Testing
         signalRange: .full, frameRange: 0 ... 0,
         composition: .deviceAndSpillSeparate,
         outputType: .editorial,
-        spillDeliveryMode: .editorialACEScctAdd,
+        spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D
     )
     let root = FileManager.default.temporaryDirectory
