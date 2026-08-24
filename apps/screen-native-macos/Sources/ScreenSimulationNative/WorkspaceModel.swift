@@ -3984,6 +3984,52 @@ final class WorkspaceModel: ObservableObject {
         return NativeVideoTimelineInfo(exactFrameRate: rate, frameCount: camera.samples.count)
     }
 
+    static func savedRenderTimeline(
+        source: SavedSceneSource,
+        tracking: SavedTrackingScene?
+    ) throws -> NativeVideoTimelineInfo {
+        let sourceTimeline: NativeVideoTimelineInfo
+        switch source.kind {
+        case .syntheticPattern:
+            sourceTimeline = .init(exactFrameRate: .fps24, frameCount: 1)
+        case .externalMedia:
+            guard let media = source.missingMedia else {
+                throw SceneLibraryError.invalidDocument(
+                    "La escena no contiene la cadencia persistida de su Source."
+                )
+            }
+            sourceTimeline = .init(
+                exactFrameRate: try media.exactFrameRate,
+                frameCount: media.frameCount
+            )
+        }
+        let trackingTimeline: NativeVideoTimelineInfo?
+        if let tracking, tracking.cameraEnabled {
+            guard let camera = tracking.scene.cameras.first(where: {
+                $0.id == tracking.cameraID
+            }) else {
+                throw SceneLibraryError.invalidDocument(
+                    "La cámara de tracking seleccionada no existe."
+                )
+            }
+            trackingTimeline = .init(
+                exactFrameRate: try .init(
+                    numerator: camera.frameRateNumerator,
+                    denominator: camera.frameRateDenominator
+                ),
+                frameCount: camera.samples.count
+            )
+        } else {
+            trackingTimeline = nil
+        }
+        return ReferenceTimelineAuthority.resolve(
+            source: sourceTimeline,
+            reference: nil,
+            referenceVisible: false,
+            tracking: trackingTimeline
+        )
+    }
+
     private func applyTrackingCameraAtCurrentFrame() {
         guard trackingCameraEnabled, selectedTrackingCamera != nil else { return }
         // Tracking is an Application-owned track. Timeline changes invalidate presentation but
@@ -4468,14 +4514,28 @@ final class WorkspaceModel: ObservableObject {
             errorMessage = "La ruta de render debe ser un directorio existente."
             return
         }
-        let range = activeFrameRange
+        let savedTimeline: NativeVideoTimelineInfo
+        do {
+            savedTimeline = try Self.savedRenderTimeline(
+                source: scene.snapshot.source,
+                tracking: scene.snapshot.tracking
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        let timeline = if activeSceneID == scene.id,
+                          referenceControlsTimeline,
+                          let referenceTimelineInfo {
+            referenceTimelineInfo
+        } else {
+            savedTimeline
+        }
+        let range = renderRange == .inOut
+            ? min(inFrame, outFrame) ... max(inFrame, outFrame)
+            : 0 ... max(0, timeline.frameCount - 1)
         let exactFrameRate = sourceJob?.configuration.frameRate
-            ?? ReferenceTimelineAuthority.resolve(
-                source: sourceTimelineInfo,
-                reference: referenceTimelineInfo,
-                referenceVisible: referenceControlsTimeline,
-                tracking: trackingTimelineInfo
-            ).exactFrameRate
+            ?? timeline.exactFrameRate
         let fusion = includeFusionComposition
             ? StudioFusionSceneConfiguration(
                 dofMode: fusionDOFMode,

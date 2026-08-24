@@ -12,6 +12,45 @@ import Testing
     #expect(!WorkspaceModel.isHistoricalRerenderEligible(State.rendering))
 }
 
+@MainActor @Test func savedSyntheticSceneUsesItsTrackingTimelineForRenderAll() throws {
+    let camera = TrackingCamera(
+        id: "Cam1", label: "Cam1",
+        frameRateNumerator: 25, frameRateDenominator: 1,
+        focalLengthMillimeters: 40,
+        gateWidthMillimeters: 24, gateHeightMillimeters: 13.5,
+        plateWidth: 1920, plateHeight: 1080,
+        distortion: .pinhole,
+        samples: (0 ..< 100).map { frame in
+            .init(
+                frame: frame,
+                sourcePosition: .init(Double(frame), 0, 0),
+                orientation: .init(0, 0, 0, 1)
+            )
+        }
+    )
+    let tracking = SavedTrackingScene(
+        scene: .init(
+            cameras: [camera],
+            pointGroups: [.init(id: "cloud", label: "Cloud", points: [])],
+            meshes: []
+        ),
+        cameraID: camera.id, pointGroupID: "cloud", visibleMeshIDs: [],
+        pointsVisible: true, geometryVisible: true, cameraEnabled: true,
+        calibration: .init(unitValue: 1, unit: "m", metersPerSourceUnit: 1)
+    )
+    let timeline = try WorkspaceModel.savedRenderTimeline(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        tracking: tracking
+    )
+    let expectedRate = try StudioFrameRate(numerator: 25, denominator: 1)
+    #expect(timeline.exactFrameRate == expectedRate)
+    #expect(timeline.frameCount == 100)
+}
+
 @MainActor @Test func rerenderRestoresAuthoredDirectoryNameAndVersion() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-rerender-output-identity-\(UUID().uuidString)")
