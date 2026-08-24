@@ -336,22 +336,22 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV8StrictlyRequiresExplicitRenderModesAndRaster() throws {
+@Test @MainActor func renderQueueV9StrictlyRequiresExplicitRenderModesRasterAndOutputIdentity() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("render-queue-v8-strict-\(UUID().uuidString)")
+        .appendingPathComponent("render-queue-v9-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try RenderQueueStore(directoryURL: root)
     let controller = try NativeOutputQueueController(store: store)
     controller.enqueue(
-        scene: outputQueueTestScene(name: "Contrato v8"), generatedEnvironmentEXR: nil,
-        outputPlan: queueTestPlan("/tmp/v8.mov"),
+        scene: outputQueueTestScene(name: "Contrato v9"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/v9.mov"),
         configuration: outputQueueTestConfiguration()
     )
     let encoded = try Data(contentsOf: store.documentURL)
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v8")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v9")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -361,6 +361,17 @@ import Testing
     jobs[0]["configuration"] = configuration
     legacy["jobs"] = jobs
     try JSONSerialization.data(withJSONObject: legacy).write(
+        to: store.documentURL, options: .atomic
+    )
+    #expect(throws: (any Error).self) { try store.load() }
+
+    var missingVersionSuffix = rootObject
+    var identityJobs = try #require(missingVersionSuffix["jobs"] as? [[String: Any]])
+    var identityConfiguration = try #require(identityJobs[0]["configuration"] as? [String: Any])
+    identityConfiguration.removeValue(forKey: "versionSuffix")
+    identityJobs[0]["configuration"] = identityConfiguration
+    missingVersionSuffix["jobs"] = identityJobs
+    try JSONSerialization.data(withJSONObject: missingVersionSuffix).write(
         to: store.documentURL, options: .atomic
     )
     #expect(throws: (any Error).self) { try store.load() }
@@ -555,6 +566,7 @@ private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration
     StudioResolvedRenderConfiguration(
         outputType: .standard,
         jobName: "QueueTest",
+        versionSuffix: "_v07",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,

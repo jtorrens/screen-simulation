@@ -414,6 +414,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var renderRange = StudioRenderRange.all
     @Published var renderOutputType = StudioOutputType.standard
     @Published var renderJobName = "ScreenSimulation"
+    @Published var renderVersionSuffix = ""
+    @Published var renderOutputDirectoryPath = ""
     @Published var renderComposition = StudioRenderComposition.deviceAndSpillTogether
     @Published var renderSpillDeliveryMode = StudioSpillDeliveryMode.physicalLinear
     @Published var renderMotionBlurMode = StudioRenderMotionBlurMode.physical
@@ -4309,6 +4311,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var effectiveRenderTarget: StudioRenderTarget {
+        if renderOutputType == .editorial,
+           vfxInterchangeEncodingID
+            == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID {
+            return .sdr
+        }
         guard renderOutputType.usesStandardMediaRenderer,
               renderComposition != .deviceAndSpillSeparate,
               let preset = renderWIPReviewPreset else { return renderPreset.target }
@@ -4486,39 +4493,14 @@ final class WorkspaceModel: ObservableObject {
             errorMessage = error.localizedDescription
             return
         }
-        let isSingleFile = renderOutputType.usesStandardMediaRenderer
-            && outputFormat.isMovie && renderComposition != .deviceAndSpillSeparate
-        let url: URL?
-        if let sourceJob {
-            if isSingleFile {
-                url = sourceJob.outputPlan.kind == .singleFile
-                    ? sourceJob.outputPlan.destination
-                    : sourceJob.outputPlan.destination.deletingLastPathComponent()
-                        .appendingPathComponent(renderJobName)
-                        .appendingPathExtension(outputFormat.fileExtension)
-            } else {
-                url = sourceJob.outputPlan.kind == .singleFile
-                    ? sourceJob.outputPlan.destination.deletingLastPathComponent()
-                    : sourceJob.outputPlan.destination.deletingLastPathComponent()
-            }
-        } else if isSingleFile {
-            let panel = NSSavePanel()
-            panel.canCreateDirectories = true
-            panel.nameFieldStringValue = sourceName.replacingOccurrences(of: ".", with: "-")
-            panel.allowedContentTypes = [.movie]
-            FileDialogDirectory.renderOutput.apply(to: panel)
-            url = panel.runModal() == .OK ? panel.url : nil
-        } else {
-            let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.canCreateDirectories = true
-            panel.allowsMultipleSelection = false
-            FileDialogDirectory.renderOutput.apply(to: panel)
-            url = panel.runModal() == .OK ? panel.url : nil
+        let url = URL(fileURLWithPath: renderOutputDirectoryPath, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard url.path.hasPrefix("/"),
+              FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            errorMessage = "La ruta de render debe ser un directorio existente."
+            return
         }
-        guard let url else { return }
-        if sourceJob == nil { FileDialogDirectory.renderOutput.remember(url) }
         let range = activeFrameRange
         let exactFrameRate = sourceJob?.configuration.frameRate
             ?? ReferenceTimelineAuthority.resolve(
@@ -4552,9 +4534,22 @@ final class WorkspaceModel: ObservableObject {
                         "ACES 2.0 - HDR 1000 nits (P3 D65)")
             }
         }
+        let editorialOutput: (
+            StudioRenderTarget, Double, String, String
+        )? = renderOutputType == .editorial
+            && vfxInterchangeEncodingID
+                == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID
+            ? (
+                .sdr,
+                StudioVFXEditorialDeliveryContract.rec709PeakNits,
+                StudioVFXEditorialDeliveryContract.rec709Display,
+                StudioVFXEditorialDeliveryContract.rec709View
+            ) : nil
+        let resolvedOutput = wipOutput ?? editorialOutput
         var configuration = StudioResolvedRenderConfiguration(
             outputType: renderOutputType,
             jobName: renderJobName,
+            versionSuffix: renderVersionSuffix,
             overwritePolicy: .failIfExists,
             fusionScene: fusion,
             composition: renderOutputType == .fusionScenePackage
@@ -4569,10 +4564,10 @@ final class WorkspaceModel: ObservableObject {
             ),
             format: outputFormat,
             pipeline: renderWIPReviewPreset == nil ? renderPreset.pipeline : .aces,
-            target: wipOutput?.0 ?? renderPreset.target,
-            peakNits: wipOutput?.1 ?? peakNits,
-            display: wipOutput?.2 ?? renderPreset.display,
-            view: wipOutput?.3 ?? renderPreset.view,
+            target: resolvedOutput?.0 ?? renderPreset.target,
+            peakNits: resolvedOutput?.1 ?? peakNits,
+            display: resolvedOutput?.2 ?? renderPreset.display,
+            view: resolvedOutput?.3 ?? renderPreset.view,
             vfxInterchangeEncodingID: renderOutputType.usesStandardMediaRenderer && renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
@@ -4613,16 +4608,9 @@ final class WorkspaceModel: ObservableObject {
                 }
                 alert.addButton(withTitle: "Cancelar")
                 alert.addButton(withTitle: "Sobrescribir archivos existentes")
-                alert.addButton(withTitle: "Crear nueva versión")
                 switch alert.runModal() {
                 case .alertSecondButtonReturn:
                     configuration = configuration.replacingOverwritePolicy(.replaceGeneratedFiles)
-                case .alertThirdButtonReturn:
-                    let versioned = try outputPlan.nextAvailableVersion(
-                        configuration: configuration
-                    )
-                    configuration = versioned.configuration
-                    outputPlan = versioned.plan
                 default:
                     return
                 }
@@ -4640,9 +4628,19 @@ final class WorkspaceModel: ObservableObject {
         )
     }
 
-    func configureRerender(from configuration: StudioResolvedRenderConfiguration) {
+    func configureRerender(
+        from configuration: StudioResolvedRenderConfiguration,
+        outputPlan: RenderOutputPlan
+    ) {
         renderOutputType = configuration.outputType
         renderJobName = configuration.jobName
+        renderVersionSuffix = configuration.versionSuffix
+        renderOutputDirectoryPath = switch outputPlan.kind {
+        case .singleFile, .fusionScenePackage:
+            outputPlan.destination.deletingLastPathComponent().path
+        case .imageSequence, .deviceSpillDelivery:
+            outputPlan.destination.path
+        }
         renderComposition = configuration.composition
         renderSpillDeliveryMode = configuration.spillDeliveryMode
         renderMotionBlurMode = configuration.motionBlurMode
@@ -4660,11 +4658,15 @@ final class WorkspaceModel: ObservableObject {
         inFrame = configuration.firstFrame
         outFrame = configuration.lastFrame
         renderRange = .inOut
+        let inspectorTarget: StudioRenderTarget = configuration.outputType == .editorial
+            ? .vfxLog : configuration.target
         renderPreset = StudioRenderPreset(
             id: UUID(), name: "Ajustes del render anterior",
-            pipeline: configuration.pipeline, target: configuration.target,
-            peakNits: configuration.peakNits, display: configuration.display,
-            view: configuration.view, format: configuration.format,
+            pipeline: configuration.pipeline, target: inspectorTarget,
+            peakNits: configuration.outputType == .editorial ? 0 : configuration.peakNits,
+            display: configuration.outputType == .editorial ? nil : configuration.display,
+            view: configuration.outputType == .editorial ? nil : configuration.view,
+            format: configuration.format,
             pixelEncoding: configuration.pixelEncoding,
             signalRange: configuration.signalRange, alpha: configuration.alpha,
             includeAudio: configuration.includeAudio

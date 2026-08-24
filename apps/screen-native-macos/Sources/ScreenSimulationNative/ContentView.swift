@@ -2033,6 +2033,10 @@ struct ContentView: View {
         do {
             try model.configureRenderRaster(for: scene)
             model.renderJobName = scene.name
+            model.renderVersionSuffix = ""
+            if model.renderOutputDirectoryPath.isEmpty {
+                model.renderOutputDirectoryPath = FileDialogDirectory.renderOutput.url?.path ?? ""
+            }
             model.ensureRenderOptionsCompatible()
             renderDraft = RenderDraft(
                 scene: scene, sourceJob: nil, historicalSnapshot: false
@@ -2100,6 +2104,17 @@ struct ContentView: View {
             .padding()
             Divider()
             Form {
+                Section("Destino") {
+                    LabeledContent("Ruta") {
+                        HStack {
+                            TextField("Directorio", text: $model.renderOutputDirectoryPath)
+                            Button("Browse…", action: browseRenderOutputDirectory)
+                        }
+                    }
+                    TextField("Nombre", text: $model.renderJobName)
+                    TextField("Versión", text: $model.renderVersionSuffix)
+                    LabeledContent("Resultado", value: renderOutputNamePreview)
+                }
                 Section("Salida") {
                     Picker("Tipo de salida", selection: Binding(
                         get: { model.renderOutputType },
@@ -2109,7 +2124,6 @@ struct ContentView: View {
                             Text(type.label).tag(type)
                         }
                     }
-                    TextField("Nombre del trabajo", text: $model.renderJobName)
                     Picker("Preset", selection: Binding(
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
@@ -2325,6 +2339,39 @@ struct ContentView: View {
             }
             .padding()
         }
+    }
+
+    private var renderOutputNamePreview: String {
+        let stem = model.renderJobName + model.renderVersionSuffix
+        let ext = model.outputFormat.fileExtension
+        if model.renderOutputType == .fusionScenePackage {
+            return "\(stem)_FusionScene/"
+        }
+        if model.renderComposition == .deviceAndSpillSeparate {
+            return model.outputFormat.isMovie
+                ? "\(stem)_Device.\(ext) · \(stem)_Spill.\(ext)"
+                : "\(stem)_Device########.\(ext) · \(stem)_Spill########.\(ext)"
+        }
+        return model.outputFormat.isMovie
+            ? "\(stem).\(ext)" : "\(stem)########.\(ext)"
+    }
+
+    private func browseRenderOutputDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if model.renderOutputDirectoryPath.hasPrefix("/") {
+            panel.directoryURL = URL(
+                fileURLWithPath: model.renderOutputDirectoryPath, isDirectory: true
+            )
+        } else {
+            FileDialogDirectory.renderOutput.apply(to: panel)
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.renderOutputDirectoryPath = url.path
+        FileDialogDirectory.renderOutput.remember(url)
     }
 
     private func addRenderDraft(_ draft: RenderDraft) {
@@ -2839,7 +2886,9 @@ struct ContentView: View {
                     }
                     if job.state.isTerminal {
                         Button("Volver a renderizar esta versión") {
-                            model.configureRerender(from: job.configuration)
+                            model.configureRerender(
+                                from: job.configuration, outputPlan: job.outputPlan
+                            )
                             renderDraft = RenderDraft(
                                 scene: job.scene,
                                 sourceJob: job,
@@ -2904,10 +2953,10 @@ struct ContentView: View {
                 model.errorMessage = "El preset WIP Review del render histórico ya no existe en la Biblioteca Global."
                 return
             }
-            model.configureRerender(from: job.configuration)
+            model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
             model.renderWIPReviewPreset = currentWIP
         } else {
-            model.configureRerender(from: job.configuration)
+            model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
         }
         renderDraft = RenderDraft(
             scene: current,

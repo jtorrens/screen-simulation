@@ -33,7 +33,7 @@ enum NativeOutputRenderer {
 
     static func render(
         configuration: StudioResolvedRenderConfiguration,
-        destination: URL,
+        selectedDirectory: URL,
         audioSource: URL?,
         display: StudioColorMetalDisplay,
         frameProvider: FrameProvider,
@@ -41,7 +41,7 @@ enum NativeOutputRenderer {
     ) async throws -> URL {
         let plan = try RenderOutputPlan.prepare(
             configuration: configuration,
-            selectedDestination: destination
+            selectedDestination: selectedDirectory
         )
         return try await render(
             configuration: configuration, outputPlan: plan,
@@ -176,8 +176,12 @@ enum NativeOutputRenderer {
         for (position, index) in frames.enumerated() {
             try Task.checkCancellation()
             let frame = index == firstIndex ? first : try await frameProvider(index)
-            let name = String(format: "%@-%08d", configuration.jobName, index)
-            let url = directory.appendingPathComponent(name).appendingPathExtension(format.fileExtension)
+            guard outputPlan.generatedRelativePaths.indices.contains(position) else {
+                throw NativeOutputError.invalidFrame
+            }
+            let url = directory.appendingPathComponent(
+                outputPlan.generatedRelativePaths[position]
+            )
             try outputPlan.authorizeWrite(
                 to: url, policy: configuration.overwritePolicy
             )
@@ -294,11 +298,15 @@ enum NativeOutputRenderer {
         let frames = Array(configuration.frameRange)
         guard !frames.isEmpty else { throw NativeOutputError.invalidFrame }
         let output = try outputTransform(for: configuration)
+        let expectedManifestCount = configuration.format.isMovie ? 2 : frames.count * 2
+        guard outputPlan.generatedRelativePaths.count == expectedManifestCount else {
+            throw NativeOutputError.invalidFrame
+        }
         let movieDeviceURL = outputPlan.destination.appendingPathComponent(
-            "\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
+            outputPlan.generatedRelativePaths[0]
         )
         let movieSpillURL = outputPlan.destination.appendingPathComponent(
-            "\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+            outputPlan.generatedRelativePaths[1]
         )
         if configuration.format.isMovie {
             try outputPlan.authorizeWrite(
@@ -320,15 +328,12 @@ enum NativeOutputRenderer {
             let frame = try await frameProvider(index)
             let source = try display.readLinearRGBA(frame)
             let passes = try editorialDeviceSpillPasses(source)
+            let manifestOffset = configuration.format.isMovie ? 0 : position * 2
             let deviceURL = outputPlan.destination.appendingPathComponent(
-                configuration.format.isMovie
-                    ? movieDeviceURL.lastPathComponent
-                    : String(format: "%@_Device.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
+                outputPlan.generatedRelativePaths[manifestOffset]
             )
             let spillURL = outputPlan.destination.appendingPathComponent(
-                configuration.format.isMovie
-                    ? movieSpillURL.lastPathComponent
-                    : String(format: "%@_Spill.%08d.%@", configuration.jobName, index, configuration.format.fileExtension)
+                outputPlan.generatedRelativePaths[manifestOffset + 1]
             )
             if !configuration.format.isMovie {
                 try outputPlan.authorizeWrite(
@@ -632,7 +637,11 @@ enum NativeOutputRenderer {
                     "el intercambio ProRes VFX exige un Log/Gamut conocido"
                 )
             }
-        } else if configuration.vfxInterchangeEncodingID != nil {
+        } else if configuration.vfxInterchangeEncodingID != nil,
+                  !(configuration.outputType == .editorial
+                    && configuration.spillDeliveryMode == .editorialEncodedAdd
+                    && configuration.vfxInterchangeEncodingID
+                        == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID) {
             throw NativeOutputError.unsupported(
                 "un render que no es VFX Log no puede declarar un Log/Gamut VFX"
             )

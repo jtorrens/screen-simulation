@@ -290,7 +290,7 @@
     },
     {
       "id": "output.render-rerender-and-versioning",
-      "scope": "historical/current render derivation and whole-deliverable collision versioning",
+      "scope": "historical/current render derivation, authored output identity and manifest collision handling",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "WIP Review and render derivation"

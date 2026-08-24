@@ -47,7 +47,7 @@ import Testing
             format: .h264High, preset: StudioRenderPreset.builtIns[0],
             alpha: .ignore, signalRange: .video, frameRange: 0 ... 2
         ),
-        destination: root.appendingPathComponent("smoke.mp4"),
+        selectedDirectory: root,
         audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
@@ -57,17 +57,17 @@ import Testing
     _ = try await NativeOutputRenderer.render(
         configuration: renderConfiguration(
             format: .openEXR, preset: StudioRenderPreset.builtIns[5],
-            alpha: .premultiplied, signalRange: .full, frameRange: 7 ... 8
+            alpha: .premultiplied, signalRange: .full, frameRange: 7 ... 8,
+            jobName: "Scene", versionSuffix: "_v03"
         ),
-        destination: exrDirectory, audioSource: nil,
+        selectedDirectory: exrDirectory, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
-    let ownedEXRDirectory = exrDirectory.appendingPathComponent("ScreenSimulation")
     #expect(FileManager.default.fileExists(
-        atPath: ownedEXRDirectory.appendingPathComponent("ScreenSimulation-00000007.exr").path
+        atPath: exrDirectory.appendingPathComponent("Scene_v0300000007.exr").path
     ))
     #expect(FileManager.default.fileExists(
-        atPath: ownedEXRDirectory.appendingPathComponent("ScreenSimulation-00000008.exr").path
+        atPath: exrDirectory.appendingPathComponent("Scene_v0300000008.exr").path
     ))
 
     let png = root.appendingPathComponent("current.png")
@@ -381,8 +381,8 @@ import Testing
         configuration: sequence, selectedDestination: root
     )
     #expect(sequencePlan.generatedRelativePaths == [
-        "ScreenSimulation_Device.00000007.exr", "ScreenSimulation_Spill.00000007.exr",
-        "ScreenSimulation_Device.00000008.exr", "ScreenSimulation_Spill.00000008.exr",
+        "ScreenSimulation_Device00000007.exr", "ScreenSimulation_Spill00000007.exr",
+        "ScreenSimulation_Device00000008.exr", "ScreenSimulation_Spill00000008.exr",
     ])
 }
 
@@ -461,7 +461,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
             format: .proRes4444, preset: StudioRenderPreset.builtIns[1],
             alpha: .straight, signalRange: .video, frameRange: 0 ... 2
         ),
-        destination: destination, audioSource: nil,
+        selectedDirectory: destination, audioSource: nil,
         display: display, frameProvider: { _ in frame }, progress: { _, _ in }
     )
     let timeline = try NativeFFmpegMedia.probe(url: url)
@@ -488,7 +488,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
             signalRange: .video,
             frameRange: 0 ... 0
         ),
-        destination: destination,
+        selectedDirectory: destination,
         audioSource: nil,
         display: display,
         frameProvider: { _ in frame },
@@ -523,15 +523,15 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
     let destination = FileManager.default.temporaryDirectory
         .appendingPathComponent("vfx-editorial-\(UUID().uuidString).mov")
     defer { try? FileManager.default.removeItem(at: destination) }
-    _ = try await NativeOutputRenderer.render(
+    let renderedURL = try await NativeOutputRenderer.render(
         configuration: renderConfiguration(
             format: preset.format, preset: preset, alpha: .straight,
             signalRange: .full, frameRange: 0 ... 0
         ),
-        destination: destination, audioSource: nil,
+        selectedDirectory: destination, audioSource: nil,
         display: display, frameProvider: { _ in expectedFrame }, progress: { _, _ in }
     )
-    let detection = await StudioMediaMetadataDetector.detect(url: destination, isVideo: true)
+    let detection = await StudioMediaMetadataDetector.detect(url: renderedURL, isVideo: true)
     #expect(detection.proposedInputTransformID == nil)
     #expect(detection.hasAlpha)
     #expect(detection.alpha == .straight)
@@ -540,7 +540,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
     #expect(detection.range == nil)
 
     let acescct = try #require(StudioColorInputTransform.catalog.first { $0.id == "acescct" })
-    let decodedEncoded = try await decodeFirstProResARGB16(destination)
+    let decodedEncoded = try await decodeFirstProResARGB16(renderedURL)
     let decodedAlpha = stride(from: 3, to: decodedEncoded.count, by: 4).map {
         decodedEncoded[$0]
     }
@@ -616,6 +616,44 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
     // the separate stress pattern deliberately retains harder primaries for inspection.
     #expect(maximumDisplayDifference <= 16)
     #expect(displayRMSE <= 3)
+}
+
+@Test @MainActor func editorialRec709UsesTheCompleteACES2D65Rec709BT1886OutputTransform() throws {
+    let configuration = StudioResolvedRenderConfiguration(
+        outputType: .editorial, jobName: "Editorial", versionSuffix: "_rec709",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialEncodedAdd,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        raster: .init(width: 1920, height: 1080, placementID: "fit"),
+        format: .proRes4444XQ, pipeline: .aces, target: .sdr,
+        peakNits: StudioVFXEditorialDeliveryContract.rec709PeakNits,
+        display: StudioVFXEditorialDeliveryContract.rec709Display,
+        view: StudioVFXEditorialDeliveryContract.rec709View,
+        vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.rec709ColorEncodingID,
+        pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 0
+    )
+    try configuration.validate()
+    let resolvedOutput = try NativeOutputRenderer.outputTransform(for: configuration)
+    let resolved = try #require(resolvedOutput)
+    #expect(resolved.display == StudioVFXEditorialDeliveryContract.rec709Display)
+    #expect(resolved.view == StudioVFXEditorialDeliveryContract.rec709View)
+
+    let reference = try #require(StudioColorOutputTransform.catalog.first {
+        $0.id == "aces2-rec709-sdr-100"
+    })
+    let display = try StudioColorMetalDisplay()
+    let source = try independentLinearFrame(
+        width: 2, height: 1,
+        rgba: [0.18, 0.18, 0.18, 1, 8, 2, 0.5, 0.4]
+    )
+    let actual = try display.renderRGBAFloat(source, output: resolved, alpha: .straight)
+    let expected = try display.renderRGBAFloat(source, output: reference, alpha: .straight)
+    #expect(actual.count == expected.count)
+    #expect(zip(actual, expected).allSatisfy { pair in
+        abs(pair.0 - pair.1) < 0.000_001
+    })
 }
 
 private func decodeFirstProResARGB16(_ url: URL) async throws -> [Float] {
@@ -711,7 +749,7 @@ private func decodeFirstProResARGB16(_ url: URL) async throws -> [Float] {
                 format: .h265High, preset: StudioRenderPreset.builtIns[1],
                 alpha: .ignore, signalRange: range, frameRange: 0 ... 0
             ),
-            destination: root.appendingPathComponent("pq.mov"),
+            selectedDirectory: root,
             audioSource: nil,
             display: display,
             frameProvider: { _ in frame },
@@ -774,7 +812,7 @@ private func movieRoundtrip(
             frameRate: frameRate,
             frameRange: 0 ... 2
         ),
-        destination: destination, audioSource: nil,
+        selectedDirectory: destination, audioSource: nil,
         display: display, frameProvider: { frames[$0] }, progress: { _, _ in }
     )
     let detection = await StudioMediaMetadataDetector.detect(url: url, isVideo: true)
@@ -912,7 +950,7 @@ private func identityPattern(width: Int, height: Int) -> [Float] {
             frameRate: sourceInfo.exactFrameRate,
             frameRange: 0 ... max(0, sourceInfo.frameCount - 1)
         ),
-        destination: outputURL, audioSource: nil, display: display,
+        selectedDirectory: outputURL, audioSource: nil, display: display,
         frameProvider: { frameIndex in
             let time = CMTime(
                 value: CMTimeValue(frameIndex)
@@ -1004,7 +1042,9 @@ private func renderConfiguration(
     composition: StudioRenderComposition = .deviceAndSpillTogether,
     outputType: StudioOutputType = .standard,
     spillDeliveryMode: StudioSpillDeliveryMode = .physicalLinear,
-    motionBlurMode: StudioRenderMotionBlurMode = .disabled
+    motionBlurMode: StudioRenderMotionBlurMode = .disabled,
+    jobName: String = "ScreenSimulation",
+    versionSuffix: String = ""
 ) -> StudioResolvedRenderConfiguration {
     let alphaMode: StudioAlphaMode = switch alpha {
     case .straight: .straight
@@ -1013,7 +1053,8 @@ private func renderConfiguration(
     }
     return StudioResolvedRenderConfiguration(
         outputType: outputType,
-        jobName: "ScreenSimulation",
+        jobName: jobName,
+        versionSuffix: versionSuffix,
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: composition,

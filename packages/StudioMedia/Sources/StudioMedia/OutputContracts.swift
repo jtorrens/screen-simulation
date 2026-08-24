@@ -144,7 +144,11 @@ public enum StudioVFXEditorialDeliveryContract {
         uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C0A"
     )!
     public static let colorEncodingID = "acescct-ap1"
+    public static let rec709ColorEncodingID = "rec709-gamma24"
     public static let supportedColorEncodingIDs = ["acescct-ap1", "rec709-gamma24"]
+    public static let rec709PeakNits = 100.0
+    public static let rec709Display = "Rec.1886 Rec.709 - Display"
+    public static let rec709View = "ACES 2.0 - SDR 100 nits (Rec.709)"
     public static let spillAlpha = 0.125
 }
 
@@ -410,6 +414,7 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
 public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let outputType: StudioOutputType
     public let jobName: String
+    public let versionSuffix: String
     public let overwritePolicy: StudioOverwritePolicy
     public let fusionScene: StudioFusionSceneConfiguration?
     public let composition: StudioRenderComposition
@@ -437,6 +442,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public init(
         outputType: StudioOutputType,
         jobName: String,
+        versionSuffix: String,
         overwritePolicy: StudioOverwritePolicy,
         fusionScene: StudioFusionSceneConfiguration?,
         composition: StudioRenderComposition,
@@ -462,6 +468,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     ) {
         self.outputType = outputType
         self.jobName = jobName
+        self.versionSuffix = versionSuffix
         self.overwritePolicy = overwritePolicy
         self.fusionScene = fusionScene
         self.composition = composition
@@ -493,6 +500,10 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
 
     public func validate() throws {
         guard !jobName.isEmpty else { throw StudioOutputContractError.invalidJobName }
+        guard !versionSuffix.contains("/"), !versionSuffix.contains("\\"),
+              !versionSuffix.contains(":"),
+              !versionSuffix.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        else { throw StudioOutputContractError.invalidJobName }
         guard firstFrame <= lastFrame else { throw StudioOutputContractError.invalidFrameRange }
         guard (2 ... 64).contains(motionSamples) else {
             throw StudioOutputContractError.invalidMotionSamples
@@ -509,12 +520,21 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                 }
             }
             if spillDeliveryMode == .editorialEncodedAdd {
+                let colorContractIsValid = switch vfxInterchangeEncodingID {
+                case StudioVFXEditorialDeliveryContract.colorEncodingID:
+                    target == .vfxLog && peakNits == 0
+                        && display == nil && view == nil
+                case StudioVFXEditorialDeliveryContract.rec709ColorEncodingID:
+                    target == .sdr
+                        && peakNits == StudioVFXEditorialDeliveryContract.rec709PeakNits
+                        && display == StudioVFXEditorialDeliveryContract.rec709Display
+                        && view == StudioVFXEditorialDeliveryContract.rec709View
+                default:
+                    false
+                }
                 guard composition == .deviceAndSpillSeparate,
                       format == .proRes4444 || format == .proRes4444XQ,
-                      pipeline == .aces, target == .vfxLog,
-                      display == nil, view == nil,
-                      StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
-                        .contains(vfxInterchangeEncodingID ?? ""),
+                      pipeline == .aces, colorContractIsValid,
                       pixelEncoding == .rgb44412, signalRange == .full,
                       alpha == .straight, !includeAudio, wipReview == nil else {
                     throw StudioOutputContractError.editorialSpillDeliveryInvalid
@@ -584,7 +604,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         _ policy: StudioOverwritePolicy
     ) -> StudioResolvedRenderConfiguration {
         StudioResolvedRenderConfiguration(
-            outputType: outputType, jobName: jobName,
+            outputType: outputType, jobName: jobName, versionSuffix: versionSuffix,
             overwritePolicy: policy, fusionScene: fusionScene,
             composition: composition, spillDeliveryMode: spillDeliveryMode,
             motionBlurMode: motionBlurMode,
@@ -599,21 +619,6 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         )
     }
 
-    public func replacingJobName(_ name: String) -> StudioResolvedRenderConfiguration {
-        StudioResolvedRenderConfiguration(
-            outputType: outputType, jobName: name,
-            overwritePolicy: overwritePolicy, fusionScene: fusionScene,
-            composition: composition, spillDeliveryMode: spillDeliveryMode,
-            motionBlurMode: motionBlurMode,
-            motionSamples: motionSamples, raster: raster,
-            format: format, pipeline: pipeline,
-            target: target, peakNits: peakNits, display: display, view: view,
-            vfxInterchangeEncodingID: vfxInterchangeEncodingID,
-            pixelEncoding: pixelEncoding, signalRange: signalRange, alpha: alpha,
-            includeAudio: includeAudio, frameRate: frameRate,
-            firstFrame: firstFrame, lastFrame: lastFrame, wipReview: wipReview
-        )
-    }
 }
 
 public enum StudioRenderMotionBlurMode: String, CaseIterable, Identifiable, Codable, Sendable {

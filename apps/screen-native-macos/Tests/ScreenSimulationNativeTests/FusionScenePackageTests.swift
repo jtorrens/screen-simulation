@@ -16,6 +16,7 @@ private func fusionConfiguration(
     StudioResolvedRenderConfiguration(
         outputType: .fusionScenePackage,
         jobName: "Shot010",
+        versionSuffix: "",
         overwritePolicy: policy,
         fusionScene: .init(
             dofMode: dof,
@@ -58,6 +59,7 @@ private func standardSequenceConfiguration(
     StudioResolvedRenderConfiguration(
         outputType: .standard,
         jobName: "Shot010",
+        versionSuffix: "",
         overwritePolicy: policy,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
@@ -90,6 +92,7 @@ private func fusionConfiguration(
     return StudioResolvedRenderConfiguration(
         outputType: .fusionScenePackage,
         jobName: "ColorContract",
+        versionSuffix: "",
         overwritePolicy: .failIfExists,
         fusionScene: .init(
             dofMode: .fusion,
@@ -399,16 +402,15 @@ private func temporaryDirectory() throws -> URL {
     #expect(disabled == 4)
 }
 
-@Test func multiFilePlansOwnDirectoriesAndRequirePreflightPolicy() throws {
+@Test func multiFilePlansUseTheAuthoredDirectoryAndRequirePreflightPolicy() throws {
     let root = try temporaryDirectory()
     let standard = try RenderOutputPlan.prepare(
         configuration: standardSequenceConfiguration(), selectedDestination: root
     )
-    #expect(standard.destination.deletingLastPathComponent().path == root.path)
-    #expect(standard.destination.lastPathComponent == "Shot010")
+    #expect(standard.destination == root)
     try standard.prepareDirectories()
     #expect(try standard.inspectCollision() == .none)
-    let generated = standard.destination.appendingPathComponent("Shot010-00000001.exr")
+    let generated = standard.destination.appendingPathComponent("Shot01000000001.exr")
     try Data([1]).write(to: generated)
     #expect(try standard.inspectCollision().requiresConfirmation)
     #expect(throws: RenderOutputPlanningError.self) {
@@ -472,8 +474,8 @@ private func temporaryDirectory() throws -> URL {
                 spillRGBA: [Float](repeating: 0, count: 12 * 8 * 4)
             )
         )
-        #expect(comp.contains("Comp:/../media/Shot010_Device.00000001.exr"))
-        #expect(comp.contains("Comp:/../media/Shot010_Spill.00000001.exr"))
+        #expect(comp.contains("Comp:/../media/Shot010_Device00000001.exr"))
+        #expect(comp.contains("Comp:/../media/Shot010_Spill00000001.exr"))
         #expect(comp.contains("FormatID = \"OpenEXRFormat\""))
         #expect(comp.contains("LengthSetManually = true"))
         #expect(!comp.contains("FormatID = \"OpenEXRFormat\",\n                StartFrame = 1,\n                Multiframe = true"))
@@ -704,7 +706,7 @@ private func temporaryDirectory() throws -> URL {
     #expect(result == plan.destination)
     #expect(calls == 2)
     #expect(FileManager.default.fileExists(
-        atPath: plan.destination.appendingPathComponent("media/Shot010_Device.00000001.exr").path
+        atPath: plan.destination.appendingPathComponent("media/Shot010_Device00000001.exr").path
     ))
     #expect(!FileManager.default.fileExists(
         atPath: plan.destination.appendingPathComponent("media/Shot010_STMap.00000002.exr").path
@@ -728,8 +730,8 @@ private func temporaryDirectory() throws -> URL {
     let comp = try String(contentsOf: plan.destination.appendingPathComponent(
         "fusion/Shot010.comp"
     ))
-    #expect(comp.contains("Comp:/../media/Shot010_Device.00000001.exr"))
-    #expect(comp.contains("Comp:/../media/Shot010_Spill.00000001.exr"))
+    #expect(comp.contains("Comp:/../media/Shot010_Device00000001.exr"))
+    #expect(comp.contains("Comp:/../media/Shot010_Spill00000001.exr"))
     #expect(comp.contains("DeviceLensDistortion = LensDistort"))
     #expect(!comp.contains("STMap"))
 }
@@ -853,7 +855,7 @@ private func temporaryDirectory() throws -> URL {
         progress: { _, _ in }
     )
 
-    let mediaURL = plan.destination.appendingPathComponent("media/Shot010_Device.00000001.exr")
+    let mediaURL = plan.destination.appendingPathComponent("media/Shot010_Device00000001.exr")
     let actual = try await NativeMediaDecoder.decode(url: mediaURL, time: .zero).rgba
 
     #expect(actual.count == expected.deviceRGBA.count)
@@ -872,6 +874,7 @@ private func temporaryDirectory() throws -> URL {
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .fusionScenePackage,
         jobName: "ShotTIFF",
+        versionSuffix: "",
         overwritePolicy: .failIfExists,
         fusionScene: .init(
             dofMode: .fusion, resolutionMode: .maximumProjectedDensity,
@@ -917,8 +920,8 @@ private func temporaryDirectory() throws -> URL {
             )
         }, progress: { _, _ in }
     )
-    let deviceURL = destination.appendingPathComponent("media/ShotTIFF_Device.00000001.tiff")
-    let spillURL = destination.appendingPathComponent("media/ShotTIFF_Spill.00000001.tiff")
+    let deviceURL = destination.appendingPathComponent("media/ShotTIFF_Device00000001.tiff")
+    let spillURL = destination.appendingPathComponent("media/ShotTIFF_Spill00000001.tiff")
     #expect(FileManager.default.fileExists(atPath: deviceURL.path))
     #expect(FileManager.default.fileExists(atPath: spillURL.path))
     let deviceSource = try #require(CGImageSourceCreateWithURL(deviceURL as CFURL, nil))
@@ -953,6 +956,7 @@ private func temporaryDirectory() throws -> URL {
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .fusionScenePackage,
         jobName: "AnimatedCameraIntegration",
+        versionSuffix: "",
         overwritePolicy: .failIfExists,
         fusionScene: .init(
             dofMode: .fusion,

@@ -112,6 +112,7 @@ import Testing
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .standard,
         jobName: "standard-snapshot",
+        versionSuffix: "_v03",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .deviceAndSpillTogether,
@@ -150,7 +151,7 @@ import Testing
 
 @Test func renderJobRequiresKnownExplicitMotionBlurMode() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "motion-mode",
+        outputType: .standard, jobName: "motion-mode", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
         motionBlurMode: .approximate2D,
@@ -184,7 +185,7 @@ import Testing
 
 @Test func editorialRenderFreezesExplicitAdditiveSpillContract() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "editorial",
+        outputType: .editorial, jobName: "editorial", versionSuffix: "_v01",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -200,19 +201,36 @@ import Testing
         == ["acescct-ap1", "rec709-gamma24"])
     #expect(StudioVFXEditorialDeliveryContract.spillAlpha == 0.125)
     let rec709 = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "editorial-rec709",
+        outputType: .editorial, jobName: "editorial-rec709", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D, motionSamples: 8,
         raster: .init(width: 3840, height: 2160, placementID: "fill-crop"),
-        format: .proRes4444XQ, pipeline: .aces, target: .vfxLog,
-        peakNits: 0, display: nil, view: nil,
-        vfxInterchangeEncodingID: "rec709-gamma24",
+        format: .proRes4444XQ, pipeline: .aces, target: .sdr,
+        peakNits: StudioVFXEditorialDeliveryContract.rec709PeakNits,
+        display: StudioVFXEditorialDeliveryContract.rec709Display,
+        view: StudioVFXEditorialDeliveryContract.rec709View,
+        vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.rec709ColorEncodingID,
         pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight,
         includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
     )
     try rec709.validate()
+    var rec709WithoutODT = try #require(
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(rec709))
+            as? [String: Any]
+    )
+    rec709WithoutODT["target"] = "vfxLog"
+    rec709WithoutODT["peakNits"] = 0
+    rec709WithoutODT.removeValue(forKey: "display")
+    rec709WithoutODT.removeValue(forKey: "view")
+    let invalidRec709 = try JSONDecoder().decode(
+        StudioResolvedRenderConfiguration.self,
+        from: JSONSerialization.data(withJSONObject: rec709WithoutODT)
+    )
+    #expect(throws: StudioOutputContractError.self) {
+        try invalidRec709.validate()
+    }
     let encoded = try JSONEncoder().encode(configuration)
     #expect(try JSONDecoder().decode(
         StudioResolvedRenderConfiguration.self, from: encoded
@@ -229,7 +247,7 @@ import Testing
         )
     }
     let incompatible = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "invalid",
+        outputType: .editorial, jobName: "invalid", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -249,6 +267,7 @@ import Testing
     let configuration = StudioResolvedRenderConfiguration(
         outputType: .standard,
         jobName: "vfx-master",
+        versionSuffix: "_client-final",
         overwritePolicy: .failIfExists,
         fusionScene: nil,
         composition: .fullComposite,

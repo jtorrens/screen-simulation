@@ -14,6 +14,7 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
     case nonFinitePixel
     case incompletePhysicalDeviceContribution
     case unsupportedMediaEncoding
+    case invalidOutputManifest
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +30,8 @@ enum FusionScenePackageError: Error, LocalizedError, Equatable {
             "Fusion Scene Package requiere Screen y Panel Emission al 100 % para exportar la contribución física completa sin consultar el RGB ideal."
         case .unsupportedMediaEncoding:
             "El preset de color no tiene una transformación nativa exacta hacia ACEScg en Fusion 21."
+        case .invalidOutputManifest:
+            "El manifiesto de salida Fusion no corresponde al rango configurado."
         }
     }
 }
@@ -809,12 +812,12 @@ enum FusionScenePackageWriter {
             } else {
                 firstPrepared = prepared
             }
-            let deviceRelative = configuration.format.isMovie
-                ? "media/\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
-                : String(format: "media/%@_Device.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension)
-            let spillRelative = configuration.format.isMovie
-                ? "media/\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
-                : String(format: "media/%@_Spill.%08d.%@", configuration.jobName, frame, configuration.format.fileExtension)
+            let manifestOffset = configuration.format.isMovie ? 0 : position * 2
+            guard request.outputPlan.generatedRelativePaths.indices.contains(manifestOffset + 1) else {
+                throw FusionScenePackageError.invalidOutputManifest
+            }
+            let deviceRelative = request.outputPlan.generatedRelativePaths[manifestOffset]
+            let spillRelative = request.outputPlan.generatedRelativePaths[manifestOffset + 1]
             let deviceURL = request.outputPlan.destination.appendingPathComponent(deviceRelative)
             let spillURL = request.outputPlan.destination.appendingPathComponent(spillRelative)
             try request.outputPlan.authorizeWrite(to: deviceURL, policy: configuration.overwritePolicy)
@@ -877,7 +880,12 @@ enum FusionScenePackageWriter {
         try await deviceMovie?.finish()
         try await spillMovie?.finish()
         guard let prepared = firstPrepared else { throw FusionScenePackageError.invalidRaster }
-        let compRelative = "fusion/\(configuration.jobName).comp"
+        guard request.outputPlan.generatedRelativePaths.count >= 2 else {
+            throw FusionScenePackageError.invalidOutputManifest
+        }
+        let compRelative = request.outputPlan.generatedRelativePaths[
+            request.outputPlan.generatedRelativePaths.count - 2
+        ]
         let compURL = request.outputPlan.destination.appendingPathComponent(compRelative)
         try request.outputPlan.authorizeWrite(
             to: compURL, policy: configuration.overwritePolicy
@@ -886,7 +894,9 @@ enum FusionScenePackageWriter {
             .write(to: compURL, atomically: true, encoding: .utf8)
 
         let metadata = try metadata(request: request, prepared: prepared)
-        let metadataRelative = "metadata/\(configuration.jobName)_FusionScene.json"
+        let metadataRelative = request.outputPlan.generatedRelativePaths[
+            request.outputPlan.generatedRelativePaths.count - 1
+        ]
         let metadataURL = request.outputPlan.destination.appendingPathComponent(metadataRelative)
         try request.outputPlan.authorizeWrite(
             to: metadataURL, policy: configuration.overwritePolicy
@@ -975,8 +985,9 @@ enum FusionScenePackageWriter {
     /// the package's existing raster metadata. Media frames are intentionally never opened,
     /// rewritten or re-rendered here.
     static func refreshComposition(request: FusionScenePackageRequest) throws {
+        let outputStem = request.configuration.jobName + request.configuration.versionSuffix
         let metadataURL = request.outputPlan.destination.appendingPathComponent(
-            "metadata/\(request.configuration.jobName)_FusionScene.json"
+            "metadata/\(outputStem)_FusionScene.json"
         )
         let metadata = try JSONDecoder().decode(
             FusionSceneMetadata.self, from: Data(contentsOf: metadataURL)
@@ -1033,7 +1044,7 @@ enum FusionScenePackageWriter {
             spillRGBA: []
         )
         let compURL = request.outputPlan.destination.appendingPathComponent(
-            "fusion/\(request.configuration.jobName).comp"
+            "fusion/\(outputStem).comp"
         )
         try FileManager.default.createDirectory(
             at: compURL.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -1047,6 +1058,7 @@ enum FusionScenePackageWriter {
         prepared: FusionPreparedPhysicalFrame
     ) throws -> FusionSceneMetadata {
         let configuration = request.configuration
+        let outputStem = configuration.jobName + configuration.versionSuffix
         let options = configuration.fusionScene!
         let color = try FusionMediaColorContract.resolve(configuration)
         return FusionSceneMetadata(
@@ -1101,12 +1113,12 @@ enum FusionScenePackageWriter {
             mediaEncoding: color.encodingDescription,
             mediaToACEScgTransform: color.transformDescription,
             deviceMediaPattern: configuration.format.isMovie
-                ? "../media/\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
-                : "../media/\(configuration.jobName)_Device.%08d.\(configuration.format.fileExtension)",
+                ? "../media/\(outputStem)_Device.\(configuration.format.fileExtension)"
+                : "../media/\(outputStem)_Device%08d.\(configuration.format.fileExtension)",
             spillMediaPattern: configuration.format.isMovie
-                ? "../media/\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
-                : "../media/\(configuration.jobName)_Spill.%08d.\(configuration.format.fileExtension)",
-            fusionComp: "../fusion/\(configuration.jobName).comp"
+                ? "../media/\(outputStem)_Spill.\(configuration.format.fileExtension)"
+                : "../media/\(outputStem)_Spill%08d.\(configuration.format.fileExtension)",
+            fusionComp: "../fusion/\(outputStem).comp"
         )
     }
 
@@ -1115,21 +1127,22 @@ enum FusionScenePackageWriter {
         prepared: FusionPreparedPhysicalFrame
     ) throws -> String {
         let configuration = request.configuration
+        let outputStem = configuration.jobName + configuration.versionSuffix
         let color = try FusionMediaColorContract.resolve(configuration)
         let firstCamera = request.camera[0]
         let dofEnabled = configuration.fusionScene!.dofMode == .fusion ? 1 : 0
         let deviceMedia = configuration.format.isMovie
-            ? "Comp:/../media/\(configuration.jobName)_Device.\(configuration.format.fileExtension)"
+            ? "Comp:/../media/\(outputStem)_Device.\(configuration.format.fileExtension)"
             : String(
-                format: "Comp:/../media/%@_Device.%08d.%@",
-                configuration.jobName, configuration.firstFrame,
+                format: "Comp:/../media/%@_Device%08d.%@",
+                outputStem, configuration.firstFrame,
                 configuration.format.fileExtension
             )
         let spillMedia = configuration.format.isMovie
-            ? "Comp:/../media/\(configuration.jobName)_Spill.\(configuration.format.fileExtension)"
+            ? "Comp:/../media/\(outputStem)_Spill.\(configuration.format.fileExtension)"
             : String(
-                format: "Comp:/../media/%@_Spill.%08d.%@",
-                configuration.jobName, configuration.firstFrame,
+                format: "Comp:/../media/%@_Spill%08d.%@",
+                outputStem, configuration.firstFrame,
                 configuration.format.fileExtension
             )
         let loaderFormatID = switch configuration.format {
@@ -1194,7 +1207,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Device.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(configuration.jobName)_Spill.\(configuration.format.isMovie ? configuration.format.fileExtension : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; opaque RGB already composed over black for Add.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(configuration.jobName)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; opaque RGB already composed over black for Add.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1301,7 +1314,7 @@ enum FusionScenePackageWriter {
                 PerspFarClip = Input { Value = \(firstCamera.farClipMeters) },
                 IDepth = Input { Value = \(firstCamera.focusDistanceMeters) }
               },
-              CustomData = { FStopCurve = "CameraFStop", ApertureRadiusCurve = "CameraApertureRadius", ExactQuaternionCurves = "Comp:/../metadata/\(configuration.jobName)_FusionScene.json" },
+              CustomData = { FStopCurve = "CameraFStop", ApertureRadiusCurve = "CameraApertureRadius", ExactQuaternionCurves = "Comp:/../metadata/\(outputStem)_FusionScene.json" },
               ViewInfo = OperatorInfo { Pos = { 440, 412.5 } }
             },
             CameraX = BezierSpline { KeyFrames = { \(cameraX) } },

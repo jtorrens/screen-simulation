@@ -12,6 +12,25 @@ import Testing
     #expect(!WorkspaceModel.isHistoricalRerenderEligible(State.rendering))
 }
 
+@MainActor @Test func rerenderRestoresAuthoredDirectoryNameAndVersion() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-rerender-output-identity-\(UUID().uuidString)")
+    let configuration = try derivationConfiguration(format: .h264High)
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    let model = WorkspaceModel()
+
+    model.renderOutputDirectoryPath = "/tmp/another-output"
+    model.renderJobName = "Other"
+    model.renderVersionSuffix = "_other"
+    model.configureRerender(from: configuration, outputPlan: plan)
+
+    #expect(model.renderOutputDirectoryPath == root.path)
+    #expect(model.renderJobName == "Shot")
+    #expect(model.renderVersionSuffix == "_v12")
+}
+
 @MainActor @Test func editorialOutputSeedsEditableResolveFriendlySettings() {
     let model = WorkspaceModel()
     model.changeRenderOutputType(.editorial)
@@ -27,58 +46,73 @@ import Testing
     #expect(!model.includeAudio)
     #expect(model.renderWIPReviewPreset == nil)
 
+    model.vfxInterchangeEncodingID = StudioVFXEditorialDeliveryContract.rec709ColorEncodingID
+    #expect(model.effectiveRenderTarget == .sdr)
+
     model.applyRenderPreset(StudioRenderPreset.builtIns[0])
     #expect(model.renderOutputType == .editorial)
     #expect(model.renderPreset.target == .sdr)
     #expect(model.renderSpillDeliveryMode == .physicalLinear)
 }
 
-@Test func wholeDeliverableVersioningStartsAtV002AndSkipsCollisions() throws {
+@MainActor @Test func rec709EditorialRerenderRestoresTheEditableODTChoice() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("screen-versioning-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    let configuration = try derivationConfiguration(format: .tiff16)
+        .appendingPathComponent("screen-editorial-rec709-rerender-\(UUID().uuidString)")
+    let configuration = StudioResolvedRenderConfiguration(
+        outputType: .editorial, jobName: "Editorial", versionSuffix: "_rec709",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialEncodedAdd,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        raster: .init(width: 1920, height: 1080, placementID: "fit"),
+        format: .proRes4444XQ, pipeline: .aces, target: .sdr,
+        peakNits: StudioVFXEditorialDeliveryContract.rec709PeakNits,
+        display: StudioVFXEditorialDeliveryContract.rec709Display,
+        view: StudioVFXEditorialDeliveryContract.rec709View,
+        vfxInterchangeEncodingID: StudioVFXEditorialDeliveryContract.rec709ColorEncodingID,
+        pixelEncoding: .rgb44412, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 0
+    )
     let plan = try RenderOutputPlan.prepare(
         configuration: configuration, selectedDestination: root
     )
-    let v2 = try plan.nextAvailableVersion(configuration: configuration)
-    #expect(v2.configuration.jobName == "Shot_v002")
-    #expect(v2.plan.destination.lastPathComponent == "Shot_v002")
-    #expect(v2.plan.generatedRelativePaths.allSatisfy { $0.contains("Shot_v002") })
-    try FileManager.default.createDirectory(
-        at: v2.plan.destination, withIntermediateDirectories: true
-    )
-    try Data([1]).write(to: v2.plan.destination.appendingPathComponent(
-        v2.plan.generatedRelativePaths[0]
-    ))
-    let v3 = try plan.nextAvailableVersion(configuration: configuration)
-    #expect(v3.configuration.jobName == "Shot_v003")
-    let nextFromV2 = try v2.plan.nextAvailableVersion(
-        configuration: v2.configuration
-    )
-    #expect(nextFromV2.configuration.jobName == "Shot_v003")
-    #expect(!nextFromV2.plan.destination.lastPathComponent.contains("v002_v"))
+    let model = WorkspaceModel()
+
+    model.configureRerender(from: configuration, outputPlan: plan)
+    model.ensureRenderOptionsCompatible()
+
+    #expect(model.renderPreset.target == .vfxLog)
+    #expect(model.vfxInterchangeEncodingID
+        == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID)
+    #expect(model.effectiveRenderTarget == .sdr)
+    #expect(model.renderSpillDeliveryMode == .editorialEncodedAdd)
 }
 
-@Test func movieVersioningUpdatesDestinationAndCalculatedFilenameTogether() throws {
+@Test func authoredNameAndVersionProduceTheExactMovieAndSequenceManifests() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("screen-movie-versioning-\(UUID().uuidString)")
-    let configuration = try derivationConfiguration(format: .h264High)
-    let plan = try RenderOutputPlan.prepare(
-        configuration: configuration,
-        selectedDestination: root.appendingPathComponent("Editorial.mov")
+        .appendingPathComponent("screen-authored-output-name-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let movie = try RenderOutputPlan.prepare(
+        configuration: derivationConfiguration(format: .h264High),
+        selectedDestination: root
     )
-    let versioned = try plan.nextAvailableVersion(configuration: configuration)
-    #expect(versioned.plan.destination.lastPathComponent == "Editorial_v002.mp4")
-    #expect(versioned.configuration.jobName == "Shot_v002")
+    #expect(movie.destination == root.appendingPathComponent("Shot_v12.mp4"))
+    let sequence = try RenderOutputPlan.prepare(
+        configuration: derivationConfiguration(format: .tiff16),
+        selectedDestination: root
+    )
+    #expect(sequence.destination == root)
+    #expect(sequence.generatedRelativePaths == [
+        "Shot_v1200000001.tiff", "Shot_v1200000002.tiff",
+    ])
 }
 
-@Test func versioningIsAtomicForSeparatedDeviceSpillAndFusionPackages() throws {
+@Test func authoredNameAndVersionKeepDeviceAndSpillRoleSuffixes() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("screen-package-versioning-\(UUID().uuidString)")
+        .appendingPathComponent("screen-authored-role-name-\(UUID().uuidString)")
     let rate = try StudioFrameRate(numerator: 24, denominator: 1)
     let separated = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
+        outputType: .standard, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .tiff16,
@@ -92,13 +126,14 @@ import Testing
     let separatedPlan = try RenderOutputPlan.prepare(
         configuration: separated, selectedDestination: root
     )
-    let separatedV2 = try separatedPlan.nextAvailableVersion(configuration: separated)
-    #expect(separatedV2.plan.destination.lastPathComponent == "Shot_v002_DeviceSpill")
-    #expect(separatedV2.plan.generatedRelativePaths.count == 4)
-    #expect(separatedV2.plan.generatedRelativePaths.allSatisfy { $0.contains("Shot_v002_") })
+    #expect(separatedPlan.destination == root)
+    #expect(separatedPlan.generatedRelativePaths == [
+        "Shot_v12_Device00000001.tiff", "Shot_v12_Spill00000001.tiff",
+        "Shot_v12_Device00000002.tiff", "Shot_v12_Spill00000002.tiff",
+    ])
 
     let fusion = StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage, jobName: "Shot", overwritePolicy: .failIfExists,
+        outputType: .fusionScenePackage, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: .init(
             dofMode: .disabled, resolutionMode: .nativeDevice,
             customActiveWidth: nil, customActiveHeight: nil,
@@ -116,16 +151,15 @@ import Testing
     let fusionPlan = try RenderOutputPlan.prepare(
         configuration: fusion, selectedDestination: root
     )
-    let fusionV2 = try fusionPlan.nextAvailableVersion(configuration: fusion)
-    #expect(fusionV2.plan.destination.lastPathComponent == "Shot_v002_FusionScene")
-    #expect(fusionV2.plan.generatedRelativePaths.allSatisfy { $0.contains("Shot_v002") })
+    #expect(fusionPlan.destination.lastPathComponent == "Shot_v12_FusionScene")
+    #expect(fusionPlan.generatedRelativePaths.allSatisfy { $0.contains("Shot_v12") })
 }
 
 private func derivationConfiguration(
     format: StudioOutputFormat
 ) throws -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "Shot", overwritePolicy: .failIfExists,
+        outputType: .standard, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: format,
