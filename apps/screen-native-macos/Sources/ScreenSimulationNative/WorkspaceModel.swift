@@ -412,7 +412,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var inFrame = 0
     @Published var outFrame = 0
     @Published var renderRange = StudioRenderRange.all
-    @Published var renderOutputType = StudioOutputType.standard
+    @Published var renderMode = StudioRenderMode.preview
     @Published var renderJobName = "ScreenSimulation"
     @Published var renderVersionSuffix = ""
     @Published var renderOutputDirectoryPath = ""
@@ -429,6 +429,7 @@ final class WorkspaceModel: ObservableObject {
     @Published var fusionCustomHeight = 2160
     @Published var fusionSpillThresholdSceneLinear = 0.0001
     @Published var fusionSpillFadeWidthPixels = 32
+    @Published var includeFusionComposition = false
     @Published var loopPlayback = false
     @Published var outputFormat = StudioOutputFormat.proRes4444
     @Published var outputPixelEncoding = StudioPixelEncoding.yuv44412
@@ -4311,13 +4312,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var effectiveRenderTarget: StudioRenderTarget {
-        if renderOutputType == .editorial,
-           vfxInterchangeEncodingID
+        if vfxInterchangeEncodingID
             == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID {
             return .sdr
         }
-        guard renderOutputType.usesStandardMediaRenderer,
-              renderComposition != .deviceAndSpillSeparate,
+        guard renderMode == .preview,
               let preset = renderWIPReviewPreset else { return renderPreset.target }
         return preset.outputColorSpace == .rec709Gamma24 ? .sdr : .hdr
     }
@@ -4325,43 +4324,21 @@ final class WorkspaceModel: ObservableObject {
     func changeWIPReviewPreset(_ preset: StudioWIPReviewPreset?) {
         renderWIPReviewPreset = preset
         if preset != nil { outputAlphaMode = .ignore }
-        guard !outputFormat.supports(target: effectiveRenderTarget) else { return }
-        if let replacement = StudioOutputFormat.allCases.first(where: {
-            $0.supports(target: effectiveRenderTarget) && $0 != .openEXR
-        }) {
-            changeOutputFormat(replacement)
-        }
     }
 
-    func changeRenderOutputType(_ type: StudioOutputType) {
-        renderOutputType = type
-        if type == .editorial {
-            if let preset = globalLibraryDocument.renderPresets.first(where: {
-                $0.value.id == StudioVFXEditorialDeliveryContract.presetID
-            })?.value {
-                applyRenderPreset(preset)
-            }
-            renderComposition = .deviceAndSpillSeparate
-            renderSpillDeliveryMode = .editorialEncodedAdd
-            renderMotionBlurMode = .approximate2D
+    func changeRenderMode(_ mode: StudioRenderMode) {
+        renderMode = mode
+        if mode == .preview {
+            renderComposition = .fullComposite
             renderWIPReviewPreset = nil
-            outputAlphaMode = .straight
-            includeAudio = false
-            ensureRenderOptionsCompatible()
-            return
+            includeFusionComposition = false
+        } else {
+            if renderComposition == .fullComposite {
+                renderComposition = .deviceAndSpillTogether
+            }
+            renderWIPReviewPreset = nil
         }
-        guard type == .fusionScenePackage else {
-            ensureRenderOptionsCompatible()
-            return
-        }
-        if !outputFormat.supportsFusionScenePackage,
-           let format = StudioOutputFormat.allCases.first(where: {
-               $0.supportsFusionScenePackage
-           }) {
-            changeOutputFormat(format)
-        }
-        outputAlphaMode = .straight
-        includeAudio = false
+        ensureRenderOptionsCompatible()
     }
 
     func configureRenderRaster(for scene: SavedScene) throws {
@@ -4379,20 +4356,26 @@ final class WorkspaceModel: ObservableObject {
             renderWIPReviewPreset = nil
         }
         peakNits = preset.peakNits
-        if renderOutputType.usesStandardMediaRenderer {
-            changeOutputFormat(preset.format)
-            outputPixelEncoding = preset.pixelEncoding
-            outputSignalRange = preset.signalRange
-            outputAlphaMode = preset.alpha
-            includeAudio = preset.includeAudio
+        changeOutputFormat(preset.format)
+        outputPixelEncoding = preset.pixelEncoding
+        outputSignalRange = preset.signalRange
+        outputAlphaMode = preset.alpha
+        includeAudio = preset.includeAudio
+        if preset.id == StudioVFXEditorialDeliveryContract.presetID {
+            renderMode = .final
+            renderComposition = .deviceAndSpillSeparate
+            renderSpillDeliveryMode = .editorialEncodedAdd
+            renderMotionBlurMode = .approximate2D
+            renderWIPReviewPreset = nil
+            includeFusionComposition = false
         }
-        ensureRenderOptionsCompatible()
         if let fixed = preset.fixedVFXInterchangeEncodingID {
             vfxInterchangeEncodingID = fixed
         } else if preset.target == .vfxLog,
                   let recommendation = selectedCapturePreset?.nativeVFXEncodingID {
             vfxInterchangeEncodingID = recommendation
         }
+        ensureRenderOptionsCompatible()
     }
 
     var selectedCapturePreset: CameraProfileDefinition? {
@@ -4409,45 +4392,29 @@ final class WorkspaceModel: ObservableObject {
     }
 
     func ensureRenderOptionsCompatible() {
-        if renderOutputType == .fusionScenePackage {
-            if !outputFormat.supportsFusionScenePackage,
-               let replacement = StudioOutputFormat.allCases.first(where: {
-                   $0.supportsFusionScenePackage
-               }) {
-                changeOutputFormat(replacement)
+        if renderMode == .preview {
+            renderComposition = .fullComposite
+            includeFusionComposition = false
+            renderSpillDeliveryMode = .physicalLinear
+            outputAlphaMode = .ignore
+        } else {
+            if renderComposition == .fullComposite {
+                renderComposition = .deviceAndSpillTogether
             }
+            renderWIPReviewPreset = nil
             outputAlphaMode = .straight
-            includeAudio = false
-            return
+            if renderComposition == .deviceAndSpillSeparate { includeAudio = false }
+            if includeFusionComposition {
+                renderComposition = .deviceAndSpillSeparate
+                includeAudio = false
+                renderMotionBlurMode = .disabled
+            }
         }
         if renderSpillDeliveryMode == .editorialEncodedAdd,
-           (renderComposition != .deviceAndSpillSeparate
-            || renderPreset.target != .vfxLog
-            || !StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
-                .contains(vfxInterchangeEncodingID)
-            || (outputFormat != .proRes4444 && outputFormat != .proRes4444XQ)) {
+           renderComposition != .deviceAndSpillSeparate {
             renderSpillDeliveryMode = .physicalLinear
         }
-        if renderPreset.fixedVFXInterchangeEncodingID != nil {
-            outputFormat = .proRes4444XQ
-            outputPixelEncoding = .rgb44412
-            outputSignalRange = .full
-            outputAlphaMode = .straight
-            includeAudio = false
-            renderWIPReviewPreset = nil
-            return
-        }
-        if renderWIPReviewPreset != nil { outputAlphaMode = .ignore }
-        let target = effectiveRenderTarget
-        guard !outputFormat.supports(target: target) else { return }
-        let replacement = renderPreset.format.supports(target: target)
-            ? renderPreset.format
-            : StudioOutputFormat.allCases.first {
-                $0.supports(target: target)
-            }
-        if let replacement {
-            changeOutputFormat(replacement)
-        }
+        if renderMode == .final, !outputFormat.supportsAlpha { return }
     }
 
     func savedSceneNeedsUpdate(_ scene: SavedScene) throws -> Bool {
@@ -4509,7 +4476,7 @@ final class WorkspaceModel: ObservableObject {
                 referenceVisible: referenceControlsTimeline,
                 tracking: trackingTimelineInfo
             ).exactFrameRate
-        let fusion = renderOutputType == .fusionScenePackage
+        let fusion = includeFusionComposition
             ? StudioFusionSceneConfiguration(
                 dofMode: fusionDOFMode,
                 resolutionMode: fusionResolutionMode,
@@ -4536,8 +4503,7 @@ final class WorkspaceModel: ObservableObject {
         }
         let editorialOutput: (
             StudioRenderTarget, Double, String, String
-        )? = renderOutputType == .editorial
-            && vfxInterchangeEncodingID
+        )? = vfxInterchangeEncodingID
                 == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID
             ? (
                 .sdr,
@@ -4547,16 +4513,14 @@ final class WorkspaceModel: ObservableObject {
             ) : nil
         let resolvedOutput = wipOutput ?? editorialOutput
         var configuration = StudioResolvedRenderConfiguration(
-            outputType: renderOutputType,
+            renderMode: renderMode,
             jobName: renderJobName,
             versionSuffix: renderVersionSuffix,
             overwritePolicy: .failIfExists,
             fusionScene: fusion,
-            composition: renderOutputType == .fusionScenePackage
-                ? .deviceAndSpillTogether : renderComposition,
-            spillDeliveryMode: renderOutputType == .fusionScenePackage
-                ? .physicalLinear : renderSpillDeliveryMode,
-            motionBlurMode: renderOutputType == .fusionScenePackage ? .disabled : renderMotionBlurMode,
+            composition: renderComposition,
+            spillDeliveryMode: renderSpillDeliveryMode,
+            motionBlurMode: renderMotionBlurMode,
             motionSamples: renderMotionSamples,
             raster: .init(
                 width: renderRasterWidth, height: renderRasterHeight,
@@ -4568,7 +4532,7 @@ final class WorkspaceModel: ObservableObject {
             peakNits: resolvedOutput?.1 ?? peakNits,
             display: resolvedOutput?.2 ?? renderPreset.display,
             view: resolvedOutput?.3 ?? renderPreset.view,
-            vfxInterchangeEncodingID: renderOutputType.usesStandardMediaRenderer && renderPreset.target == .vfxLog
+            vfxInterchangeEncodingID: renderPreset.target == .vfxLog
                 ? vfxInterchangeEncodingID : nil,
             pixelEncoding: outputPixelEncoding,
             signalRange: outputSignalRange,
@@ -4577,13 +4541,12 @@ final class WorkspaceModel: ObservableObject {
                 : ([.deviceAndSpillTogether, .deviceAndSpillSeparate]
                     .contains(renderComposition) && outputFormat.supportsAlpha
                     ? .straight : .ignore),
-            includeAudio: renderOutputType.usesStandardMediaRenderer && outputFormat.isMovie
+            includeAudio: outputFormat.isMovie
                 && renderComposition != .deviceAndSpillSeparate && includeAudio,
             frameRate: exactFrameRate,
             firstFrame: range.lowerBound,
             lastFrame: range.upperBound,
-            wipReview: renderOutputType.usesStandardMediaRenderer
-                && renderComposition != .deviceAndSpillSeparate
+            wipReview: renderMode == .preview
                 ? renderWIPReviewPreset : nil
         )
         var outputPlan: RenderOutputPlan
@@ -4632,7 +4595,7 @@ final class WorkspaceModel: ObservableObject {
         from configuration: StudioResolvedRenderConfiguration,
         outputPlan: RenderOutputPlan
     ) {
-        renderOutputType = configuration.outputType
+        renderMode = configuration.renderMode
         renderJobName = configuration.jobName
         renderVersionSuffix = configuration.versionSuffix
         renderOutputDirectoryPath = switch outputPlan.kind {
@@ -4658,20 +4621,20 @@ final class WorkspaceModel: ObservableObject {
         inFrame = configuration.firstFrame
         outFrame = configuration.lastFrame
         renderRange = .inOut
-        let inspectorTarget: StudioRenderTarget = configuration.outputType == .editorial
-            ? .vfxLog : configuration.target
+        let inspectorTarget: StudioRenderTarget = configuration.target
         renderPreset = StudioRenderPreset(
             id: UUID(), name: "Ajustes del render anterior",
             pipeline: configuration.pipeline, target: inspectorTarget,
-            peakNits: configuration.outputType == .editorial ? 0 : configuration.peakNits,
-            display: configuration.outputType == .editorial ? nil : configuration.display,
-            view: configuration.outputType == .editorial ? nil : configuration.view,
+            peakNits: configuration.peakNits,
+            display: configuration.display,
+            view: configuration.view,
             format: configuration.format,
             pixelEncoding: configuration.pixelEncoding,
             signalRange: configuration.signalRange, alpha: configuration.alpha,
             includeAudio: configuration.includeAudio
         )
         renderWIPReviewPreset = configuration.wipReview
+        includeFusionComposition = configuration.fusionScene != nil
         if let fusion = configuration.fusionScene {
             fusionDOFMode = fusion.dofMode
             fusionResolutionMode = fusion.resolutionMode
@@ -4728,8 +4691,7 @@ final class WorkspaceModel: ObservableObject {
                 )
                 defer { materialized.cleanup() }
                 try await executor.prepareQueuedScene(materialized.scene)
-                switch job.configuration.outputType {
-                case .standard, .editorial:
+                if job.configuration.fusionScene == nil {
                     return try await NativeOutputRenderer.render(
                         configuration: job.configuration,
                         outputPlan: job.outputPlan,
@@ -4742,7 +4704,7 @@ final class WorkspaceModel: ObservableObject {
                         },
                         progress: progress
                     )
-                case .fusionScenePackage:
+                } else {
                     let package = try executor.makeFusionPackageRequest(job: job)
                     return try await FusionScenePackageWriter.render(
                         request: package.request,
@@ -5363,7 +5325,7 @@ final class WorkspaceModel: ObservableObject {
     /// output configuration remain immutable; EXR media are neither evaluated nor rewritten.
     func refreshFusionComposition(_ job: NativeOutputQueueController.RenderJob) {
         guard job.state == .completed,
-              job.configuration.outputType == .fusionScenePackage else { return }
+              job.configuration.fusionScene != nil else { return }
         Task { [weak self] in
             guard let self else { return }
             do {

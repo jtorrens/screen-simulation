@@ -336,22 +336,22 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV9StrictlyRequiresExplicitRenderModesRasterAndOutputIdentity() throws {
+@Test @MainActor func renderQueueV10StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("render-queue-v9-strict-\(UUID().uuidString)")
+        .appendingPathComponent("render-queue-v10-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try RenderQueueStore(directoryURL: root)
     let controller = try NativeOutputQueueController(store: store)
     controller.enqueue(
-        scene: outputQueueTestScene(name: "Contrato v9"), generatedEnvironmentEXR: nil,
-        outputPlan: queueTestPlan("/tmp/v9.mov"),
+        scene: outputQueueTestScene(name: "Contrato v10"), generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/v10.mov"),
         configuration: outputQueueTestConfiguration()
     )
     let encoded = try Data(contentsOf: store.documentURL)
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v9")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v10")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -564,7 +564,7 @@ private func outputQueueTestScene(name: String) -> SavedScene {
 
 private func outputQueueTestConfiguration() -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
-        outputType: .standard,
+        renderMode: .final,
         jobName: "QueueTest",
         versionSuffix: "_v07",
         overwritePolicy: .failIfExists,

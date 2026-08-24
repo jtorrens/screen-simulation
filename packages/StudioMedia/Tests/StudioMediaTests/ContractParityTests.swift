@@ -26,10 +26,6 @@ import Testing
     #expect(editorial.signalRange == .full)
     #expect(editorial.alpha == .straight)
     #expect(editorial.includeAudio == false)
-    #expect(editorial.supportsFusionScenePackage == false)
-    #expect(StudioOutputFormat.proRes4444.supports(target: .vfxLog))
-    #expect(StudioOutputFormat.proRes4444XQ.supports(target: .vfxLog))
-    #expect(!StudioOutputFormat.openEXR.supports(target: .vfxLog))
 }
 
 @Test func metadataProposalMatchesCreditsRulesAndAddsMatrix() {
@@ -110,7 +106,7 @@ import Testing
     var preset = StudioRenderPreset.builtIns[0]
     let exactFrameRate = try StudioFrameRate(numerator: 24_000, denominator: 1_001)
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .standard,
+        renderMode: .final,
         jobName: "standard-snapshot",
         versionSuffix: "_v03",
         overwritePolicy: .failIfExists,
@@ -151,7 +147,7 @@ import Testing
 
 @Test func renderJobRequiresKnownExplicitMotionBlurMode() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "motion-mode", versionSuffix: "",
+        renderMode: .final, jobName: "motion-mode", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
         motionBlurMode: .approximate2D,
@@ -185,7 +181,7 @@ import Testing
 
 @Test func editorialRenderFreezesExplicitAdditiveSpillContract() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "editorial", versionSuffix: "_v01",
+        renderMode: .final, jobName: "editorial", versionSuffix: "_v01",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -201,7 +197,7 @@ import Testing
         == ["acescct-ap1", "rec709-gamma24"])
     #expect(StudioVFXEditorialDeliveryContract.spillAlpha == 0.125)
     let rec709 = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "editorial-rec709", versionSuffix: "",
+        renderMode: .final, jobName: "editorial-rec709", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -247,7 +243,7 @@ import Testing
         )
     }
     let incompatible = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "invalid", versionSuffix: "",
+        renderMode: .final, jobName: "invalid", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -258,14 +254,14 @@ import Testing
         pixelEncoding: .rgb44412, signalRange: .video, alpha: .straight,
         includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 10
     )
-    #expect(throws: StudioOutputContractError.editorialSpillDeliveryInvalid) {
+    #expect(throws: StudioOutputContractError.self) {
         try incompatible.validate()
     }
 }
 
 @Test func vfxRenderJobFreezesCodecAndLogGamutIndependentlyOfCamera() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .standard,
+        renderMode: .preview,
         jobName: "vfx-master",
         versionSuffix: "_client-final",
         overwritePolicy: .failIfExists,
@@ -283,7 +279,7 @@ import Testing
         vfxInterchangeEncodingID: "davinci-intermediate-wide-gamut",
         pixelEncoding: .yuv44412,
         signalRange: .video,
-        alpha: .straight,
+        alpha: .ignore,
         includeAudio: true,
         frameRate: .fps24,
         firstFrame: 0,
@@ -319,14 +315,90 @@ import Testing
     #expect(StudioOutputFormat.openEXR.supportedSignalRanges(for: .rgba16Float) == [.full])
 }
 
-@Test func outputFormatsDeclareTheirRenderTargetCompatibility() {
-    #expect(StudioOutputFormat.h264High.supports(target: .sdr))
-    #expect(!StudioOutputFormat.h264High.supports(target: .hdr))
-    #expect(StudioOutputFormat.h265High.supports(target: .hdr))
-    #expect(!StudioOutputFormat.h265High.supports(target: .sdr))
-    #expect(StudioOutputFormat.openEXR.supports(target: .acescg))
-    #expect(StudioOutputFormat.openEXR.supports(target: .aces2065))
-    #expect(!StudioOutputFormat.openEXR.supports(target: .sdr))
-    #expect(StudioOutputFormat.proRes4444.supports(target: .sdr))
-    #expect(StudioOutputFormat.proRes4444.supports(target: .hdr))
+@Test func previewAndFinalOwnOnlyTheTwoDeliveryTopologies() throws {
+    let preview = StudioResolvedRenderConfiguration(
+        renderMode: .preview, jobName: "Preview", versionSuffix: "",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .fullComposite, spillDeliveryMode: .physicalLinear,
+        motionBlurMode: .approximate2D, motionSamples: 8,
+        raster: .init(width: 1280, height: 720, placementID: "fit"),
+        format: .h264High, pipeline: .aces, target: .sdr, peakNits: 100,
+        display: "Rec.1886 Rec.709 - Display",
+        view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+        vfxInterchangeEncodingID: nil, pixelEncoding: .yuv4208,
+        signalRange: .video, alpha: .ignore, includeAudio: true,
+        frameRate: .fps24, firstFrame: 0, lastFrame: 1
+    )
+    try preview.validate()
+
+    let final = StudioResolvedRenderConfiguration(
+        renderMode: .final, jobName: "Final", versionSuffix: "_v1",
+        overwritePolicy: .failIfExists, fusionScene: nil,
+        composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
+        motionBlurMode: .physical, motionSamples: 8,
+        raster: .init(width: 4096, height: 2160, placementID: "fill-crop"),
+        format: .openEXR, pipeline: .aces, target: .acescg, peakNits: 0,
+        display: nil, view: nil, vfxInterchangeEncodingID: nil,
+        pixelEncoding: .rgba16Float, signalRange: .full, alpha: .straight,
+        includeAudio: false, frameRate: .fps24, firstFrame: 0, lastFrame: 1
+    )
+    try final.validate()
+
+    let encoded = try JSONEncoder().encode(final)
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    #expect(object["renderMode"] as? String == "final")
+    #expect(object["outputType"] == nil)
+}
+
+@Test func finalFusionCompositionRequiresSeparateAlphaMedia() throws {
+    let fusion = StudioResolvedRenderConfiguration(
+        renderMode: .final, jobName: "Fusion", versionSuffix: "",
+        overwritePolicy: .failIfExists,
+        fusionScene: .init(
+            dofMode: .fusion, resolutionMode: .nativeDevice,
+            customActiveWidth: nil, customActiveHeight: nil,
+            spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 4
+        ),
+        composition: .deviceAndSpillSeparate, spillDeliveryMode: .physicalLinear,
+        motionBlurMode: .disabled, motionSamples: 8,
+        raster: .init(width: 1920, height: 1080, placementID: "fit"),
+        format: .tiff16, pipeline: .aces, target: .sdr, peakNits: 100,
+        display: "Rec.1886 Rec.709 - Display",
+        view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+        vfxInterchangeEncodingID: nil, pixelEncoding: .rgb16,
+        signalRange: .full, alpha: .straight, includeAudio: false,
+        frameRate: .fps24, firstFrame: 0, lastFrame: 1
+    )
+    try fusion.validate()
+    let incompatible = StudioResolvedRenderConfiguration(
+        renderMode: .final, jobName: "Fusion", versionSuffix: "",
+        overwritePolicy: .failIfExists, fusionScene: fusion.fusionScene,
+        composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
+        motionBlurMode: .disabled, motionSamples: 8, raster: fusion.raster,
+        format: fusion.format, pipeline: fusion.pipeline, target: fusion.target,
+        peakNits: fusion.peakNits, display: fusion.display, view: fusion.view,
+        vfxInterchangeEncodingID: nil, pixelEncoding: fusion.pixelEncoding,
+        signalRange: fusion.signalRange, alpha: .straight, includeAudio: false,
+        frameRate: .fps24, firstFrame: 0, lastFrame: 1
+    )
+    #expect(throws: StudioOutputContractError.fusionDeliveryConfigurationInvalid) {
+        try incompatible.validate()
+    }
+    let editorialAdd = StudioResolvedRenderConfiguration(
+        renderMode: .final, jobName: "Fusion", versionSuffix: "",
+        overwritePolicy: .failIfExists, fusionScene: fusion.fusionScene,
+        composition: .deviceAndSpillSeparate,
+        spillDeliveryMode: .editorialEncodedAdd,
+        motionBlurMode: .disabled, motionSamples: 8, raster: fusion.raster,
+        format: fusion.format, pipeline: fusion.pipeline, target: fusion.target,
+        peakNits: fusion.peakNits, display: fusion.display, view: fusion.view,
+        vfxInterchangeEncodingID: nil, pixelEncoding: fusion.pixelEncoding,
+        signalRange: fusion.signalRange, alpha: .straight, includeAudio: false,
+        frameRate: .fps24, firstFrame: 0, lastFrame: 1
+    )
+    #expect(throws: StudioOutputContractError.editorialSpillDeliveryInvalid) {
+        try editorialAdd.validate()
+    }
 }

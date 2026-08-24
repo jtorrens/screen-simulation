@@ -193,7 +193,7 @@ import Testing
 @Test func wipContractRequiresOpaqueOutputAlpha() throws {
     let preset = StudioWIPReviewPreset.builtIns[0]
     let straight = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "WIP", versionSuffix: "", overwritePolicy: .failIfExists,
+        renderMode: .preview, jobName: "WIP", versionSuffix: "", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .tiff16,
@@ -228,7 +228,7 @@ import Testing
 @Test @MainActor func hlgWIPUsesHLGTransformAndRejectsPQSignaling() throws {
     let preset = StudioWIPReviewPreset.builtIns[3]
     let valid = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "HLG", versionSuffix: "", overwritePolicy: .failIfExists,
+        renderMode: .preview, jobName: "HLG", versionSuffix: "", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .h265High,
@@ -243,7 +243,7 @@ import Testing
     try valid.validate()
     #expect(try NativeOutputRenderer.outputTransform(for: valid)?.encoding == .rec2100HLG)
     let mismatched = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "HLG", versionSuffix: "", overwritePolicy: .failIfExists,
+        renderMode: .preview, jobName: "HLG", versionSuffix: "", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .h265High,

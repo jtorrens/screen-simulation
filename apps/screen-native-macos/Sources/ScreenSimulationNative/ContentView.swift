@@ -2116,22 +2116,19 @@ struct ContentView: View {
                     LabeledContent("Resultado", value: renderOutputNamePreview)
                 }
                 Section("Salida") {
-                    Picker("Tipo de salida", selection: Binding(
-                        get: { model.renderOutputType },
-                        set: { model.changeRenderOutputType($0) }
+                    Picker("Modo", selection: Binding(
+                        get: { model.renderMode },
+                        set: { model.changeRenderMode($0) }
                     )) {
-                        ForEach(StudioOutputType.allCases) { type in
-                            Text(type.label).tag(type)
+                        ForEach(StudioRenderMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
                         }
                     }
                     Picker("Preset", selection: Binding(
                         get: { model.renderPreset },
                         set: { model.applyRenderPreset($0) }
                     )) {
-                        ForEach(library.allRenderPresets.filter {
-                            model.renderOutputType != .fusionScenePackage
-                                || $0.supportsFusionScenePackage
-                        }) { preset in
+                        ForEach(library.allRenderPresets) { preset in
                             Text(preset.name).tag(preset)
                         }
                     }
@@ -2139,24 +2136,18 @@ struct ContentView: View {
                         get: { model.outputFormat },
                         set: { model.changeOutputFormat($0) }
                     )) {
-                        ForEach(StudioOutputFormat.allCases.filter { format in
-                            model.renderOutputType == .fusionScenePackage
-                                ? format.supportsFusionScenePackage
-                                : format.supports(target: model.effectiveRenderTarget)
-                        }) { format in
+                        ForEach(StudioOutputFormat.allCases) { format in
                             Text(format.displayName).tag(format)
                         }
                     }
-                    .disabled(model.renderPreset.fixedVFXInterchangeEncodingID != nil)
+                    if model.renderMode == .final && !model.outputFormat.supportsAlpha {
+                        Text("Final requiere un formato que conserve alpha.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                     if model.renderPreset.target == .vfxLog {
-                        if model.renderOutputType == .editorial
-                            || model.renderPreset.fixedVFXInterchangeEncodingID == nil {
-                            Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
-                                ForEach(StudioVFXInterchangeEncoding.catalog.filter { encoding in
-                                    model.renderOutputType != .editorial
-                                        || StudioVFXEditorialDeliveryContract
-                                            .supportedColorEncodingIDs.contains(encoding.id)
-                                }) { encoding in
+                        Picker("Log / Gamut VFX", selection: $model.vfxInterchangeEncodingID) {
+                                ForEach(StudioVFXInterchangeEncoding.catalog) { encoding in
                                     Text(encoding.label).tag(encoding.id)
                                 }
                             }
@@ -2171,13 +2162,6 @@ struct ContentView: View {
                                     }
                                 }
                             }
-                        } else {
-                            LabeledContent(
-                                "Log / Gamut VFX",
-                                value: model.selectedVFXInterchangeEncoding?.label
-                                    ?? StudioVFXEditorialDeliveryContract.colorEncodingID
-                            )
-                        }
                     }
                     GroupBox("Raster de la escena") {
                         VStack(alignment: .leading, spacing: 8) {
@@ -2199,12 +2183,15 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                         }
                     }
-                    if model.renderOutputType.usesStandardMediaRenderer {
-                    Picker("Composición", selection: Binding(
+                    if model.renderMode == .final {
+                    Picker("Entrega", selection: Binding(
                         get: { model.renderComposition },
                         set: { model.changeRenderComposition($0) }
                     )) {
-                        ForEach(StudioRenderComposition.allCases) { composition in
+                        ForEach([
+                            StudioRenderComposition.deviceAndSpillTogether,
+                            .deviceAndSpillSeparate
+                        ]) { composition in
                             Text(composition.label).tag(composition)
                         }
                     }
@@ -2214,10 +2201,15 @@ struct ContentView: View {
                                 Text(mode.label).tag(mode)
                             }
                         }
+                        Toggle("Incluir composición Fusion", isOn: Binding(
+                            get: { model.includeFusionComposition },
+                            set: {
+                                model.includeFusionComposition = $0
+                                model.ensureRenderOptionsCompatible()
+                            }
+                        ))
                     }
-                    if model.renderComposition != .deviceAndSpillSeparate
-                        && model.outputFormat != .openEXR
-                        && (model.renderPreset.target == .sdr || model.renderPreset.target == .hdr) {
+                    } else {
                         Picker("WIP Review", selection: Binding(
                             get: { model.renderWIPReviewPreset },
                             set: { model.changeWIPReviewPreset($0) }
@@ -2228,7 +2220,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    } else {
+                    if model.includeFusionComposition {
                         Picker("DOF", selection: $model.fusionDOFMode) {
                             ForEach(StudioFusionDOFMode.allCases) { Text($0.label).tag($0) }
                         }
@@ -2273,7 +2265,7 @@ struct ContentView: View {
                     }
                 }
                 Section("Movimiento") {
-                    if model.renderOutputType.usesStandardMediaRenderer {
+                    if !model.includeFusionComposition {
                     Picker("Motion Blur", selection: $model.renderMotionBlurMode) {
                         ForEach(StudioRenderMotionBlurMode.allCases) { mode in
                             Text(mode.label).tag(mode)
@@ -2303,7 +2295,6 @@ struct ContentView: View {
                     }
                 }
                 Section("Codificación") {
-                    if model.renderOutputType.usesStandardMediaRenderer {
                     LabeledContent("Píxel", value: model.outputPixelEncoding.label)
                     Picker("Rango de señal", selection: $model.outputSignalRange) {
                         ForEach(StudioSignalRange.allCases) { range in
@@ -2313,19 +2304,14 @@ struct ContentView: View {
                                 ).contains(range))
                         }
                     }
-                    Picker("Alpha", selection: $model.outputAlphaMode) {
-                        ForEach(StudioAlphaMode.allCases) { mode in
-                            Text(mode.label).tag(mode)
-                        }
-                    }
-                    .disabled(!model.outputFormat.supportsAlpha || model.renderWIPReviewPreset != nil)
+                    LabeledContent(
+                        "Alpha",
+                        value: model.renderMode == .preview
+                            ? "Ignore / opaco" : "Straight · matte físico"
+                    )
                     Toggle("Audio", isOn: $model.includeAudio)
-                        .disabled(!model.outputFormat.isMovie)
-                    } else {
-                        LabeledContent("Píxel", value: model.outputPixelEncoding.label)
-                        LabeledContent("Encoding", value: model.renderPreset.name)
-                        LabeledContent("Alpha", value: "Matte de oclusión independiente")
-                    }
+                        .disabled(!model.outputFormat.isMovie
+                            || model.renderComposition == .deviceAndSpillSeparate)
                 }
             }
             .formStyle(.grouped)
@@ -2344,7 +2330,7 @@ struct ContentView: View {
     private var renderOutputNamePreview: String {
         let stem = model.renderJobName + model.renderVersionSuffix
         let ext = model.outputFormat.fileExtension
-        if model.renderOutputType == .fusionScenePackage {
+        if model.includeFusionComposition {
             return "\(stem)_FusionScene/"
         }
         if model.renderComposition == .deviceAndSpillSeparate {
@@ -2878,7 +2864,7 @@ struct ContentView: View {
                         Button("Mostrar directorio en Finder") {
                             model.showRenderDestinationInFinder(job)
                         }
-                        if job.configuration.outputType == .fusionScenePackage {
+                        if job.configuration.fusionScene != nil {
                             Button("Actualizar comp Fusion") {
                                 model.refreshFusionComposition(job)
                             }

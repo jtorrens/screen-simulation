@@ -59,7 +59,7 @@ enum NativeOutputRenderer {
         progress: Progress
     ) async throws -> URL {
         let format = configuration.format
-        guard configuration.outputType.usesStandardMediaRenderer else {
+        guard configuration.fusionScene == nil else {
             throw NativeOutputError.unsupported("Fusion Scene Package requiere su escritor físico dedicado")
         }
         try configuration.validate()
@@ -619,17 +619,7 @@ enum NativeOutputRenderer {
         format: StudioOutputFormat,
         configuration: StudioResolvedRenderConfiguration
     ) throws {
-        guard format.supports(target: configuration.target) else {
-            throw NativeOutputError.unsupported(
-                "\(format.displayName) no admite el destino \(configuration.target.rawValue)"
-            )
-        }
         if configuration.target == .vfxLog {
-            guard format == .proRes4444 || format == .proRes4444XQ else {
-                throw NativeOutputError.unsupported(
-                    "el intercambio VFX vigente admite ProRes 4444 o ProRes 4444 XQ"
-                )
-            }
             guard let id = configuration.vfxInterchangeEncodingID,
                   StudioVFXInterchangeEncoding.catalog.contains(where: { $0.id == id })
             else {
@@ -638,8 +628,7 @@ enum NativeOutputRenderer {
                 )
             }
         } else if configuration.vfxInterchangeEncodingID != nil,
-                  !(configuration.outputType == .editorial
-                    && configuration.spillDeliveryMode == .editorialEncodedAdd
+                  !(configuration.spillDeliveryMode == .editorialEncodedAdd
                     && configuration.vfxInterchangeEncodingID
                         == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID) {
             throw NativeOutputError.unsupported(

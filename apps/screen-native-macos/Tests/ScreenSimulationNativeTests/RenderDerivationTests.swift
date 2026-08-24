@@ -33,8 +33,8 @@ import Testing
 
 @MainActor @Test func editorialOutputSeedsEditableResolveFriendlySettings() {
     let model = WorkspaceModel()
-    model.changeRenderOutputType(.editorial)
-    #expect(model.renderOutputType == .editorial)
+    model.applyRenderPreset(StudioRenderPreset.builtIns.last!)
+    #expect(model.renderMode == .final)
     #expect(model.renderComposition == .deviceAndSpillSeparate)
     #expect(model.renderSpillDeliveryMode == .editorialEncodedAdd)
     #expect(model.renderMotionBlurMode == .approximate2D)
@@ -50,16 +50,16 @@ import Testing
     #expect(model.effectiveRenderTarget == .sdr)
 
     model.applyRenderPreset(StudioRenderPreset.builtIns[0])
-    #expect(model.renderOutputType == .editorial)
+    #expect(model.renderMode == .final)
     #expect(model.renderPreset.target == .sdr)
-    #expect(model.renderSpillDeliveryMode == .physicalLinear)
+    #expect(model.renderSpillDeliveryMode == .editorialEncodedAdd)
 }
 
 @MainActor @Test func rec709EditorialRerenderRestoresTheEditableODTChoice() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-editorial-rec709-rerender-\(UUID().uuidString)")
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "Editorial", versionSuffix: "_rec709",
+        renderMode: .final, jobName: "Editorial", versionSuffix: "_rec709",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -81,7 +81,7 @@ import Testing
     model.configureRerender(from: configuration, outputPlan: plan)
     model.ensureRenderOptionsCompatible()
 
-    #expect(model.renderPreset.target == .vfxLog)
+    #expect(model.renderPreset.target == .sdr)
     #expect(model.vfxInterchangeEncodingID
         == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID)
     #expect(model.effectiveRenderTarget == .sdr)
@@ -112,7 +112,7 @@ import Testing
         .appendingPathComponent("screen-authored-role-name-\(UUID().uuidString)")
     let rate = try StudioFrameRate(numerator: 24, denominator: 1)
     let separated = StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
+        renderMode: .final, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .tiff16,
@@ -133,12 +133,12 @@ import Testing
     ])
 
     let fusion = StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
+        renderMode: .final, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: .init(
             dofMode: .disabled, resolutionMode: .nativeDevice,
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 0
-        ), composition: .deviceAndSpillTogether,
+        ), composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,
@@ -159,7 +159,7 @@ private func derivationConfiguration(
     format: StudioOutputFormat
 ) throws -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
-        outputType: .standard, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
+        renderMode: .preview, jobName: "Shot", versionSuffix: "_v12", overwritePolicy: .failIfExists,
         fusionScene: nil, composition: .fullComposite,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: format,

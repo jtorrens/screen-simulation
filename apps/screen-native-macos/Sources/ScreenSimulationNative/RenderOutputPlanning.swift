@@ -52,7 +52,7 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
         try validateJobName(configuration.jobName)
         try validateVersionSuffix(configuration.versionSuffix)
         let outputStem = configuration.jobName + configuration.versionSuffix
-        if configuration.outputType == .fusionScenePackage {
+        if configuration.fusionScene != nil {
             let packageName = "\(outputStem)_FusionScene"
             let destination = selectedDestination.appendingPathComponent(
                 packageName, isDirectory: true

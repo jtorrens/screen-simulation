@@ -58,10 +58,6 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         default: false
         }
     }
-    /// Fusion publishes an independent Device matte, so its media container must preserve alpha.
-    /// Color encoding is deliberately not part of this capability: any selected delivery
-    /// encoding may be written into any implemented alpha-capable format.
-    public var supportsFusionScenePackage: Bool { supportsAlpha }
     public var fileExtension: String {
         switch self {
         case .openEXR: "exr"
@@ -103,21 +99,6 @@ public enum StudioOutputFormat: String, Codable, CaseIterable, Identifiable, Sen
         supportedPixelEncodings[0]
     }
 
-    public func supports(target: StudioRenderTarget) -> Bool {
-        switch self {
-        case .h264Low, .h264Medium, .h264High:
-            target == .sdr
-        case .h265Low, .h265Medium, .h265High:
-            target == .hdr
-        case .proRes4444, .proRes4444XQ, .dpx10RGB, .tiff16:
-            target == .sdr || target == .hdr
-                || ((self == .proRes4444 || self == .proRes4444XQ)
-                    && target == .vfxLog)
-        case .openEXR:
-            target == .acescg || target == .aces2065
-        }
-    }
-
     public func supportedSignalRanges(
         for encoding: StudioPixelEncoding
     ) -> [StudioSignalRange] {
@@ -152,18 +133,15 @@ public enum StudioVFXEditorialDeliveryContract {
     public static let spillAlpha = 0.125
 }
 
-public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
-    case standard
-    case editorial
-    case fusionScenePackage
+public enum StudioRenderMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case preview
+    case final
 
     public var id: String { rawValue }
-    public var usesStandardMediaRenderer: Bool { self != .fusionScenePackage }
     public var label: String {
         switch self {
-        case .standard: "Render estándar"
-        case .editorial: "Editorial"
-        case .fusionScenePackage: "Fusion Scene Package"
+        case .preview: "Preview"
+        case .final: "Final"
         }
     }
 }
@@ -281,6 +259,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
     case invalidFrameRange
     case invalidMotionSamples
     case invalidRenderRaster
+    case invalidColorContract
     case invalidFusionSpillSupport
     case invalidFusionCustomResolution
     case unexpectedFusionCustomResolution
@@ -297,6 +276,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         case .invalidFrameRange: "El rango del trabajo no es válido."
         case .invalidMotionSamples: "Las muestras de Motion Blur deben estar entre 2 y 64."
         case .invalidRenderRaster: "El raster de render requiere dimensiones y placement explícitos válidos."
+        case .invalidColorContract: "La codificación de color del render está incompleta o es contradictoria."
         case .invalidFusionSpillSupport:
             "El threshold ACEScg scene-linear debe ser positivo y el fade no puede ser negativo."
         case .invalidFusionCustomResolution:
@@ -306,13 +286,13 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         case .fusionConfigurationRequired:
             "Fusion Scene Package requiere su configuración explícita."
         case .fusionConfigurationForbidden:
-            "Una salida estándar no puede contener configuración Fusion."
+            "Preview no puede contener una composición Fusion."
         case .fusionDeliveryConfigurationInvalid:
-            "Fusion Scene Package requiere un formato implementado con alpha straight, preset compatible, Device + Spill y sin audio."
+            "La composición Fusion requiere Final separado, formato con alpha straight, color resoluble y sin audio."
         case .separatedDeviceSpillDeliveryInvalid:
-            "Device y Spill separados requiere un formato con alpha, Device straight y sin audio."
+            "Preview debe ser opaco con referencia; Final requiere formato con alpha straight y la entrega separada no admite audio."
         case .editorialSpillDeliveryInvalid:
-            "Editorial Add requiere Device/Spill separado, ACEScct/AP1 o Rec.709 Gamma 2.4, ProRes 4444 RGB Full Range, alpha straight y sin audio."
+            "Editorial Add requiere Final con Device/Spill separado, alpha straight y sin audio."
         case .wipReviewDeliveryInvalid:
             "WIP Review solo puede aplicarse a una composición estándar única y display/output encoded."
         }
@@ -391,10 +371,6 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
             ? StudioVFXEditorialDeliveryContract.colorEncodingID : nil
     }
 
-    public var supportsFusionScenePackage: Bool {
-        id != StudioVFXEditorialDeliveryContract.presetID
-    }
-
     public static let builtIns: [Self] = [
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C01")!, name: "ACES · SDR", pipeline: .aces, target: .sdr, peakNits: 100, display: "Rec.1886 Rec.709 - Display", view: "ACES 2.0 - SDR 100 nits (Rec.709)", notes: "Roundtrip ACES SDR Rec.709 BT.1886."),
         .init(id: UUID(uuidString: "D7F465F6-3E58-4E8E-BEF3-A71A91E34C02")!, name: "ACES · HDR", pipeline: .aces, target: .hdr, peakNits: 1_000, display: "Rec.2100-PQ - Display", view: "ACES 2.0 - HDR 1000 nits (Rec.2020)", notes: "Roundtrip ACES HDR Rec.2100 ST2084 1000 nit."),
@@ -412,7 +388,7 @@ public struct StudioRenderPreset: Codable, Equatable, Hashable, Identifiable, Se
 /// Immutable options owned by one render job. A global preset only seeds these
 /// fields and is never retained as a dynamic dependency.
 public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
-    public let outputType: StudioOutputType
+    public let renderMode: StudioRenderMode
     public let jobName: String
     public let versionSuffix: String
     public let overwritePolicy: StudioOverwritePolicy
@@ -440,7 +416,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
     public let wipReview: StudioWIPReviewPreset?
 
     public init(
-        outputType: StudioOutputType,
+        renderMode: StudioRenderMode,
         jobName: String,
         versionSuffix: String,
         overwritePolicy: StudioOverwritePolicy,
@@ -466,7 +442,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         lastFrame: Int,
         wipReview: StudioWIPReviewPreset? = nil
     ) {
-        self.outputType = outputType
+        self.renderMode = renderMode
         self.jobName = jobName
         self.versionSuffix = versionSuffix
         self.overwritePolicy = overwritePolicy
@@ -509,44 +485,37 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             throw StudioOutputContractError.invalidMotionSamples
         }
         try raster.validate()
-        switch outputType {
-        case .standard, .editorial:
+        let colorContractIsComplete = switch target {
+        case .sdr, .hdr:
+            display != nil && view != nil
+                && (vfxInterchangeEncodingID == nil
+                    || vfxInterchangeEncodingID
+                        == StudioVFXEditorialDeliveryContract.rec709ColorEncodingID)
+        case .aces2065, .acescg:
+            display == nil && view == nil && vfxInterchangeEncodingID == nil
+        case .vfxLog:
+            display == nil && view == nil
+                && vfxInterchangeEncodingID?.isEmpty == false
+                && vfxInterchangeEncodingID
+                    != StudioVFXEditorialDeliveryContract.rec709ColorEncodingID
+        }
+        guard colorContractIsComplete else {
+            throw StudioOutputContractError.invalidColorContract
+        }
+        switch renderMode {
+        case .preview:
             guard fusionScene == nil else {
                 throw StudioOutputContractError.fusionConfigurationForbidden
             }
-            if composition == .deviceAndSpillSeparate {
-                guard format.supportsAlpha, alpha == .straight, !includeAudio else {
-                    throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
-                }
+            guard composition == .fullComposite, alpha == .ignore else {
+                throw wipReview == nil
+                    ? StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
+                    : StudioOutputContractError.wipReviewDeliveryInvalid
             }
-            if spillDeliveryMode == .editorialEncodedAdd {
-                let colorContractIsValid = switch vfxInterchangeEncodingID {
-                case StudioVFXEditorialDeliveryContract.colorEncodingID:
-                    target == .vfxLog && peakNits == 0
-                        && display == nil && view == nil
-                case StudioVFXEditorialDeliveryContract.rec709ColorEncodingID:
-                    target == .sdr
-                        && peakNits == StudioVFXEditorialDeliveryContract.rec709PeakNits
-                        && display == StudioVFXEditorialDeliveryContract.rec709Display
-                        && view == StudioVFXEditorialDeliveryContract.rec709View
-                default:
-                    false
-                }
-                guard composition == .deviceAndSpillSeparate,
-                      format == .proRes4444 || format == .proRes4444XQ,
-                      pipeline == .aces, colorContractIsValid,
-                      pixelEncoding == .rgb44412, signalRange == .full,
-                      alpha == .straight, !includeAudio, wipReview == nil else {
-                    throw StudioOutputContractError.editorialSpillDeliveryInvalid
-                }
+            guard spillDeliveryMode == .physicalLinear else {
+                throw StudioOutputContractError.editorialSpillDeliveryInvalid
             }
             if let wipReview {
-                guard composition != .deviceAndSpillSeparate,
-                      target == .sdr || target == .hdr,
-                      format != .openEXR,
-                      alpha == .ignore else {
-                    throw StudioOutputContractError.wipReviewDeliveryInvalid
-                }
                 try wipReview.validate()
                 let expected: (
                     target: StudioRenderTarget, peakNits: Double,
@@ -564,39 +533,52 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                 }
                 guard pipeline == .aces, target == expected.target,
                       peakNits == expected.peakNits,
-                      display == expected.display, view == expected.view,
-                      format.supports(target: expected.target),
-                      format.supportedPixelEncodings.contains(pixelEncoding),
-                      format.supportedSignalRanges(for: pixelEncoding).contains(signalRange)
-                else { throw StudioOutputContractError.wipReviewDeliveryInvalid }
+                      display == expected.display, view == expected.view else {
+                    throw StudioOutputContractError.wipReviewDeliveryInvalid
+                }
             }
-        case .fusionScenePackage:
-            guard wipReview == nil else {
-                throw StudioOutputContractError.wipReviewDeliveryInvalid
+        case .final:
+            guard composition != .fullComposite,
+                  format.supportsAlpha,
+                  alpha == .straight,
+                  wipReview == nil else {
+                throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
             }
-            let colorContractIsComplete = switch target {
-            case .sdr, .hdr:
-                display != nil && view != nil && vfxInterchangeEncodingID == nil
-            case .aces2065, .acescg:
-                display == nil && view == nil && vfxInterchangeEncodingID == nil
-            case .vfxLog:
-                display == nil && view == nil
-                    && vfxInterchangeEncodingID?.isEmpty == false
+            if composition == .deviceAndSpillSeparate {
+                guard !includeAudio else {
+                    throw StudioOutputContractError.separatedDeviceSpillDeliveryInvalid
+                }
             }
-            guard colorContractIsComplete,
-                  format.supportsFusionScenePackage,
-                  format.supportedPixelEncodings.contains(pixelEncoding),
-                  format.supportedSignalRanges(for: pixelEncoding).contains(signalRange),
-                  alpha == .straight, !includeAudio,
-                  composition == .deviceAndSpillTogether,
-                  spillDeliveryMode == .physicalLinear,
-                  motionBlurMode == .disabled else {
-                throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
+            if spillDeliveryMode == .editorialEncodedAdd {
+                guard composition == .deviceAndSpillSeparate,
+                      alpha == .straight, !includeAudio, wipReview == nil,
+                      fusionScene == nil else {
+                    throw StudioOutputContractError.editorialSpillDeliveryInvalid
+                }
             }
-            guard let fusionScene else {
-                throw StudioOutputContractError.fusionConfigurationRequired
+            if let fusionScene {
+                let colorContractIsComplete = switch target {
+                case .sdr, .hdr:
+                    display != nil && view != nil && vfxInterchangeEncodingID == nil
+                case .aces2065, .acescg:
+                    display == nil && view == nil && vfxInterchangeEncodingID == nil
+                case .vfxLog:
+                    display == nil && view == nil
+                        && vfxInterchangeEncodingID?.isEmpty == false
+                }
+                guard colorContractIsComplete,
+                      format.supportsAlpha,
+                      composition == .deviceAndSpillSeparate,
+                      !includeAudio,
+                      motionBlurMode == .disabled else {
+                    throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
+                }
+                try fusionScene.validate()
             }
-            try fusionScene.validate()
+        }
+        guard format.supportedPixelEncodings.contains(pixelEncoding),
+              format.supportedSignalRanges(for: pixelEncoding).contains(signalRange) else {
+            throw StudioOutputContractError.fusionDeliveryConfigurationInvalid
         }
     }
 
@@ -604,7 +586,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
         _ policy: StudioOverwritePolicy
     ) -> StudioResolvedRenderConfiguration {
         StudioResolvedRenderConfiguration(
-            outputType: outputType, jobName: jobName, versionSuffix: versionSuffix,
+            renderMode: renderMode, jobName: jobName, versionSuffix: versionSuffix,
             overwritePolicy: policy, fusionScene: fusionScene,
             composition: composition, spillDeliveryMode: spillDeliveryMode,
             motionBlurMode: motionBlurMode,

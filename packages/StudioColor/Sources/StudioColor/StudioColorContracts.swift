@@ -496,9 +496,6 @@ public struct StudioVFXInterchangeEncoding: Hashable, Identifiable, Sendable {
         )
     }
 
-    public var supportsFusionScenePackage: Bool {
-        id != "acescct-ap1" && id != "rec709-gamma24"
-    }
 }
 
 public enum StudioColorAlphaAssociation: String, CaseIterable, Identifiable, Sendable {

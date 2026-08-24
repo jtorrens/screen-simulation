@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v9"
+    static let schema = "ScreenSimulation.RenderQueue.v10"
 
     let schema: String
     let isPaused: Bool
@@ -43,7 +43,7 @@ struct RenderQueueDocument: Codable {
                 throw RenderQueueStoreError.invalidDocument("Un trabajo persistido de Render Queue no es válido.")
             }
             let expectedKind: RenderOutputPlan.Kind
-            if job.configuration.outputType == .fusionScenePackage {
+            if job.configuration.fusionScene != nil {
                 expectedKind = .fusionScenePackage
             } else if job.configuration.composition == .deviceAndSpillSeparate {
                 expectedKind = .deviceSpillDelivery
@@ -78,7 +78,7 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v9.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v10.json")
     }
 
     func load() throws -> RenderQueueDocument {
@@ -122,7 +122,7 @@ struct RenderQueueStore: Sendable {
             throw RenderQueueStoreError.invalidDocument("Un trabajo de Render Queue contiene campos desconocidos.")
         }
         let requiredConfigurationKeys: Set<String> = [
-            "outputType", "jobName", "versionSuffix", "overwritePolicy", "composition",
+            "renderMode", "jobName", "versionSuffix", "overwritePolicy", "composition",
             "spillDeliveryMode", "motionBlurMode", "motionSamples", "format", "pipeline", "target",
             "raster", "peakNits", "pixelEncoding", "signalRange", "alpha", "includeAudio",
             "frameRate", "firstFrame", "lastFrame",

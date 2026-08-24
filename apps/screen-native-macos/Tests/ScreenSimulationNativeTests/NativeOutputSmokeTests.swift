@@ -57,7 +57,7 @@ import Testing
     _ = try await NativeOutputRenderer.render(
         configuration: renderConfiguration(
             format: .openEXR, preset: StudioRenderPreset.builtIns[5],
-            alpha: .premultiplied, signalRange: .full, frameRange: 7 ... 8,
+            alpha: .straight, signalRange: .full, frameRange: 7 ... 8,
             jobName: "Scene", versionSuffix: "_v03"
         ),
         selectedDirectory: exrDirectory, audioSource: nil,
@@ -184,7 +184,7 @@ import Testing
         format: .proRes4444XQ, preset: preset, alpha: .straight,
         signalRange: .full, frameRange: 0 ... 0,
         composition: .deviceAndSpillSeparate,
-        outputType: .editorial,
+        renderMode: .final,
         spillDeliveryMode: .editorialEncodedAdd,
         motionBlurMode: .approximate2D
     )
@@ -428,17 +428,14 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
 }
 
 @Test @MainActor func proRes4444RoundtripPreservesFramesMetadataAndAlpha() async throws {
-    for alpha in [StudioColorAlphaAssociation.straight, .premultiplied] {
-        let result = try await movieRoundtrip(format: .proRes4444, alpha: alpha)
-        #expect(result.detection.proposedInputTransformID == "input-rec709")
-        #expect(result.detection.hasAlpha)
-        #expect(result.detection.alpha == (alpha == .straight ? .straight : .premultiplied))
-        #expect(result.exactFrameRate == .fps24)
-        #expect(result.frameCount == 3)
-        #expect(result.maximumError <= 0.026, "ProRes \(alpha.rawValue) max \(result.maximumError)")
-        #expect(result.rootMeanSquareError <= 0.003, "ProRes \(alpha.rawValue) RMSE \(result.rootMeanSquareError)")
-        print("PRORES alpha=\(alpha.rawValue) max=\(result.maximumError) rmse=\(result.rootMeanSquareError)")
-    }
+    let result = try await movieRoundtrip(format: .proRes4444, alpha: .straight)
+    #expect(result.detection.proposedInputTransformID == "input-rec709")
+    #expect(result.detection.hasAlpha)
+    #expect(result.detection.alpha == .straight)
+    #expect(result.exactFrameRate == .fps24)
+    #expect(result.frameCount == 3)
+    #expect(result.maximumError <= 0.026, "ProRes straight max \(result.maximumError)")
+    #expect(result.rootMeanSquareError <= 0.003, "ProRes straight RMSE \(result.rootMeanSquareError)")
 }
 
 @Test @MainActor func proRes4444HDRPortraitEncodesMoreThanTwoFrames() async throws {
@@ -620,7 +617,7 @@ private func firstEXRChunkOffset(in data: Data) throws -> (offset: UInt64, minim
 
 @Test @MainActor func editorialRec709UsesTheCompleteACES2D65Rec709BT1886OutputTransform() throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .editorial, jobName: "Editorial", versionSuffix: "_rec709",
+        renderMode: .final, jobName: "Editorial", versionSuffix: "_rec709",
         overwritePolicy: .failIfExists, fusionScene: nil,
         composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .editorialEncodedAdd,
@@ -1040,7 +1037,7 @@ private func renderConfiguration(
     frameRate: StudioFrameRate = .fps24,
     frameRange: ClosedRange<Int>,
     composition: StudioRenderComposition = .deviceAndSpillTogether,
-    outputType: StudioOutputType = .standard,
+    renderMode: StudioRenderMode? = nil,
     spillDeliveryMode: StudioSpillDeliveryMode = .physicalLinear,
     motionBlurMode: StudioRenderMotionBlurMode = .disabled,
     jobName: String = "ScreenSimulation",
@@ -1051,13 +1048,16 @@ private func renderConfiguration(
     case .premultiplied: .premultiplied
     case .ignore: .ignore
     }
+    let resolvedMode = renderMode ?? (alphaMode == .ignore ? .preview : .final)
+    let resolvedComposition: StudioRenderComposition =
+        resolvedMode == .preview ? .fullComposite : composition
     return StudioResolvedRenderConfiguration(
-        outputType: outputType,
+        renderMode: resolvedMode,
         jobName: jobName,
         versionSuffix: versionSuffix,
         overwritePolicy: .failIfExists,
         fusionScene: nil,
-        composition: composition,
+        composition: resolvedComposition,
         spillDeliveryMode: spillDeliveryMode,
         motionBlurMode: motionBlurMode,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),

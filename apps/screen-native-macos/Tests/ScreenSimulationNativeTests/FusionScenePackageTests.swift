@@ -14,7 +14,7 @@ private func fusionConfiguration(
     motionBlurMode: StudioRenderMotionBlurMode = .disabled
 ) -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage,
+        renderMode: .final,
         jobName: "Shot010",
         versionSuffix: "",
         overwritePolicy: policy,
@@ -26,7 +26,7 @@ private func fusionConfiguration(
             spillThresholdSceneLinear: 0.1,
             spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillTogether,
+        composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: motionBlurMode,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
@@ -57,7 +57,7 @@ private func standardSequenceConfiguration(
     policy: StudioOverwritePolicy = .failIfExists
 ) -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
-        outputType: .standard,
+        renderMode: .final,
         jobName: "Shot010",
         versionSuffix: "",
         overwritePolicy: policy,
@@ -90,7 +90,7 @@ private func fusionConfiguration(
 ) -> StudioResolvedRenderConfiguration {
     let pixelEncoding = format.defaultPixelEncoding
     return StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage,
+        renderMode: .final,
         jobName: "ColorContract",
         versionSuffix: "",
         overwritePolicy: .failIfExists,
@@ -102,7 +102,7 @@ private func fusionConfiguration(
             spillThresholdSceneLinear: 0.1,
             spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillTogether,
+        composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
@@ -124,7 +124,7 @@ private func fusionConfiguration(
 }
 
 @Test @MainActor func everyRenderPresetColorIsIndependentFromEveryFusionFormat() throws {
-    let formats = StudioOutputFormat.allCases.filter(\.supportsFusionScenePackage)
+    let formats = StudioOutputFormat.allCases.filter(\.supportsAlpha)
     #expect(formats == [.openEXR, .tiff16, .proRes4444, .proRes4444XQ])
     for preset in StudioRenderPreset.builtIns {
         for format in formats {
@@ -167,26 +167,27 @@ private func fusionConfiguration(
     #expect(dcmTool.contains("ToneMapping = Input { Value = FuID { \"TM_NONE\" } }"))
 
     let vfxPreset = StudioRenderPreset.builtIns.first { $0.target == .vfxLog }!
-    for encoding in StudioVFXInterchangeEncoding.catalog.filter(\.supportsFusionScenePackage) {
+    for encoding in StudioVFXInterchangeEncoding.catalog {
         let color = try FusionMediaColorContract.resolve(fusionConfiguration(
             preset: vfxPreset, format: .tiff16, vfxEncodingID: encoding.id
         ))
-        #expect(color.encodingDescription.contains(encoding.label))
+        #expect(!color.encodingDescription.isEmpty)
     }
-    #expect(throws: FusionScenePackageError.unsupportedMediaEncoding) {
-        try FusionMediaColorContract.resolve(fusionConfiguration(
-            preset: vfxPreset, format: .tiff16, vfxEncodingID: "acescct-ap1"
-        ))
-    }
+    let acescct = try FusionMediaColorContract.resolve(fusionConfiguration(
+        preset: vfxPreset, format: .tiff16, vfxEncodingID: "acescct-ap1"
+    ))
+    #expect(acescct.node == .acesTransform(inputID: "IDT_ACESCCT"))
 }
 
-@Test @MainActor func changingFusionColorPresetPreservesTheSelectedFormat() {
+@Test @MainActor func applyingPresetSeedsFusionColorAndFormatFields() {
     let model = WorkspaceModel()
-    model.changeRenderOutputType(.fusionScenePackage)
+    model.changeRenderMode(.final)
+    model.renderComposition = .deviceAndSpillSeparate
+    model.includeFusionComposition = true
     model.changeOutputFormat(.tiff16)
     let hdr = StudioRenderPreset.builtIns.first { $0.name == "ACES · HDR" }!
     model.applyRenderPreset(hdr)
-    #expect(model.outputFormat == .tiff16)
+    #expect(model.outputFormat == hdr.format)
     #expect(model.renderPreset == hdr)
     #expect(model.outputAlphaMode == .straight)
 }
@@ -205,8 +206,8 @@ private func fusionConfiguration(
     model.changeOutputFormat(.proRes4444)
     model.outputSignalRange = .video
     model.ensureRenderOptionsCompatible()
-    #expect(model.outputFormat == .proRes4444XQ)
-    #expect(model.outputSignalRange == .full)
+    #expect(model.outputFormat == .proRes4444)
+    #expect(model.outputSignalRange == .video)
 }
 
 private func camera(frame: Int = 1, z: Double = 1) -> FusionCameraKeyframe {
@@ -872,7 +873,7 @@ private func temporaryDirectory() throws -> URL {
 
 @Test @MainActor func fusionWriterUsesTheSelectedNonEXRFormatForBothMedia() async throws {
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage,
+        renderMode: .final,
         jobName: "ShotTIFF",
         versionSuffix: "",
         overwritePolicy: .failIfExists,
@@ -881,7 +882,7 @@ private func temporaryDirectory() throws -> URL {
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.1, spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillTogether,
+        composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .tiff16,
@@ -954,7 +955,7 @@ private func temporaryDirectory() throws -> URL {
         root = try temporaryDirectory()
     }
     let configuration = StudioResolvedRenderConfiguration(
-        outputType: .fusionScenePackage,
+        renderMode: .final,
         jobName: "AnimatedCameraIntegration",
         versionSuffix: "",
         overwritePolicy: .failIfExists,
@@ -966,7 +967,7 @@ private func temporaryDirectory() throws -> URL {
             spillThresholdSceneLinear: 0.000_1,
             spillFadeWidthPixels: 4
         ),
-        composition: .deviceAndSpillTogether,
+        composition: .deviceAndSpillSeparate,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),

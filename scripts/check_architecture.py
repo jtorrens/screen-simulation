@@ -1175,7 +1175,8 @@ def validate_wip_review_metal_contract() -> None:
     host = (ROOT / "tools/wip-ofx-host/main.cpp").read_text(encoding="utf-8")
     cmake = (ROOT / "tools/wip-ofx-host/CMakeLists.txt").read_text(encoding="utf-8")
     for required in (
-        "format != .openEXR,\n                      alpha == .ignore",
+        "case .preview:",
+        "composition == .fullComposite, alpha == .ignore",
         "static func opaqueWIPRGBA(",
         "result[offset + 3] = 1",
     ):

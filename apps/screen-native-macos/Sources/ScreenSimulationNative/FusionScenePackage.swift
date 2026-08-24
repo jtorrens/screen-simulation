@@ -540,7 +540,8 @@ struct FusionScenePackageRequest: Equatable, Sendable {
     func validate() throws {
         try configuration.validate()
         _ = try FusionMediaColorContract.resolve(configuration)
-        guard configuration.outputType == .fusionScenePackage,
+        guard configuration.renderMode == .final,
+              configuration.fusionScene != nil,
               outputPlan.kind == .fusionScenePackage,
               configuration.frameRate.framesPerSecond.isFinite,
               configuration.frameRate.framesPerSecond > 0,
@@ -683,9 +684,22 @@ struct FusionMediaColorContract: Equatable, Sendable {
             guard let id = configuration.vfxInterchangeEncodingID else {
                 throw FusionScenePackageError.unsupportedMediaEncoding
             }
-            guard StudioVFXInterchangeEncoding.catalog.first(where: { $0.id == id })?
-                .supportsFusionScenePackage == true else {
+            guard StudioVFXInterchangeEncoding.catalog.contains(where: { $0.id == id }) else {
                 throw FusionScenePackageError.unsupportedMediaEncoding
+            }
+            if id == "acescct-ap1" {
+                return .init(
+                    encodingDescription: "ACEScct / AP1 scene-referred Log",
+                    transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_ACESCCT to ODT_ACESCG",
+                    node: .acesTransform(inputID: "IDT_ACESCCT")
+                )
+            }
+            if id == "rec709-gamma24" {
+                return .init(
+                    encodingDescription: "ACES 2.0 Rec.709 D65 100 nit display/output encoded",
+                    transformDescription: "AcesTransform ACES_VERSION_2_0_0 IDT_REC709_100_INV_ODT to ODT_ACESCG",
+                    node: .acesTransform(inputID: "IDT_REC709_100_INV_ODT")
+                )
             }
             let acesIDs: [String: String] = [
                 "arri-logc4-awg4": "IDT_ARRI_LOGC4_CSC",
