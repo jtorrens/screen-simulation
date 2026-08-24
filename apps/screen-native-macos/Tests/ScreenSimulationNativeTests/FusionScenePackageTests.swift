@@ -54,7 +54,7 @@ private func fusionConfiguration(
     }
 }
 
-@Test @MainActor func fusionEditorialAddKeepsMediaAlphaAndNormalizesOnlyThe3DPlane() throws {
+@Test @MainActor func fusionEditorialAddTransformsRGBThenAssociatesTheMediaAlpha() throws {
     let configuration = fusionConfiguration(spillDeliveryMode: .editorialEncodedAdd)
     try configuration.validate()
     let root = try temporaryDirectory()
@@ -84,11 +84,22 @@ private func fusionConfiguration(
         request: request, prepared: prepared
     )
     #expect(comp.contains("straight-editorial-alpha-0.125"))
-    #expect(comp.contains("SpillOpaqueBlack = Background"))
-    #expect(comp.contains("SpillOpaque = Merge"))
-    #expect(comp.contains("ApplyMode = Input { Value = FuID { \"Add\" } }"))
-    #expect(comp.contains("Purpose = \"normalize-editorial-spill-alpha-without-scaling-rgb\""))
-    #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillOpaque\", Source = \"Output\" }"))
+    #expect(!comp.contains("SpillOpaqueBlack"))
+    #expect(!comp.contains("SpillOpaque = Merge"))
+    let isolation = try #require(comp.range(of: "SpillRGBForColor = Custom"))
+    let transform = try #require(comp.range(of: "SpillToACEScg = AcesTransform"))
+    let association = try #require(comp.range(of: "SpillAssociateAlpha = Custom"))
+    let plane = try #require(comp.range(of: "SpillRGBPlane = ImagePlane3D"))
+    #expect(isolation.lowerBound < transform.lowerBound)
+    #expect(transform.lowerBound < association.lowerBound)
+    #expect(association.lowerBound < plane.lowerBound)
+    let isolationBlock = String(comp[isolation.lowerBound ..< transform.lowerBound])
+    let associationBlock = String(comp[association.lowerBound ..< plane.lowerBound])
+    #expect(isolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
+    #expect(associationBlock.contains("Image2 = Input { SourceOp = \"SpillRGBA\", Source = \"Output\" }"))
+    #expect(associationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
+    #expect(associationBlock.contains("AlphaExpression = Input { Value = \"a2\" }"))
+    #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillAssociateAlpha\", Source = \"Output\" }"))
     let metadata = try FusionScenePackageWriter.metadata(
         request: request, prepared: prepared
     )
@@ -189,10 +200,12 @@ private func fusionConfiguration(
         inputID: "IDT_REC2100_ST2084_1000_INV_ODT"
     ))
     let acesTool = acesHDR.fusionTool(
-        name: "DeviceToACEScg", source: "DeviceRGBA", x: 0, y: 0
+        name: "DeviceToACEScg", source: "DeviceRGBForColor", x: 0, y: 0
     )
     #expect(acesTool.contains("DeviceToACEScg = AcesTransform"))
     #expect(acesTool.contains("IDT_REC2100_ST2084_1000_INV_ODT"))
+    #expect(acesTool.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
+    #expect(acesTool.contains("Input = Input { SourceOp = \"DeviceRGBForColor\", Source = \"Output\" }"))
 
     let dcmHDR = try FusionMediaColorContract.resolve(fusionConfiguration(
         preset: StudioRenderPreset.builtIns.first { $0.name == "DCM · HDR" }!,
@@ -202,11 +215,13 @@ private func fusionConfiguration(
         inputColorSpaceID: "REC2020_COLORSPACE", inputGammaID: "PQ1000_GAMMA"
     ))
     let dcmTool = dcmHDR.fusionTool(
-        name: "SpillToACEScg", source: "SpillRGBA", x: 0, y: 0
+        name: "SpillToACEScg", source: "SpillRGBForColor", x: 0, y: 0
     )
     #expect(dcmTool.contains("SpillToACEScg = ColorSpaceTransform"))
     #expect(dcmTool.contains("OutputColorSpace = Input { Value = FuID { \"ACES_AP1_COLORSPACE\" } }"))
     #expect(dcmTool.contains("ToneMapping = Input { Value = FuID { \"TM_NONE\" } }"))
+    #expect(dcmTool.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
+    #expect(dcmTool.contains("Input = Input { SourceOp = \"SpillRGBForColor\", Source = \"Output\" }"))
 
     let vfxPreset = StudioRenderPreset.builtIns.first { $0.target == .vfxLog }!
     for encoding in StudioVFXInterchangeEncoding.catalog {
@@ -554,9 +569,9 @@ private func temporaryDirectory() throws -> URL {
         #expect(rgbaBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
         #expect(spillBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
         #expect(comp.contains("DeviceRGBAPlane = ImagePlane3D"))
-        #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceToACEScg\", Source = \"Output\" }"))
+        #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceAssociateAlpha\", Source = \"Output\" }"))
         #expect(comp.contains("SpillRGBPlane = ImagePlane3D"))
-        #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillToACEScg\", Source = \"Output\" }"))
+        #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillAssociateAlpha\", Source = \"Output\" }"))
         #expect(comp.contains("AddProjectedDeviceSpill = Custom"))
         #expect(comp.contains("Image1 = Input { SourceOp = \"RenderDeviceRGBA\", Source = \"Output\" }"))
         #expect(comp.contains("Image2 = Input { SourceOp = \"RenderSpillRGB\", Source = \"Output\" }"))
@@ -575,8 +590,35 @@ private func temporaryDirectory() throws -> URL {
         #expect(comp.contains("Equation = \"resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)\""))
         #expect(!comp.contains("PhysicalComposite = Merge"))
         #expect(comp.contains("DeviceRGBA = Loader {"))
-        #expect(comp.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
-        #expect(comp.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
+        let deviceLoader = try! #require(comp.range(of: "DeviceRGBA = Loader {"))
+        let deviceIsolation = try! #require(comp.range(of: "DeviceRGBForColor = Custom"))
+        let deviceTransform = try! #require(comp.range(of: "DeviceToACEScg = AcesTransform"))
+        let deviceAssociation = try! #require(comp.range(of: "DeviceAssociateAlpha = Custom"))
+        let spillLoader = try! #require(comp.range(of: "SpillRGBA = Loader {"))
+        let spillIsolation = try! #require(comp.range(of: "SpillRGBForColor = Custom"))
+        let spillTransform = try! #require(comp.range(of: "SpillToACEScg = AcesTransform"))
+        let spillAssociation = try! #require(comp.range(of: "SpillAssociateAlpha = Custom"))
+        #expect(deviceLoader.lowerBound < deviceIsolation.lowerBound)
+        #expect(deviceIsolation.lowerBound < deviceTransform.lowerBound)
+        #expect(deviceTransform.lowerBound < deviceAssociation.lowerBound)
+        #expect(spillLoader.lowerBound < spillIsolation.lowerBound)
+        #expect(spillIsolation.lowerBound < spillTransform.lowerBound)
+        #expect(spillTransform.lowerBound < spillAssociation.lowerBound)
+        let deviceLoaderBlock = String(comp[deviceLoader.lowerBound ..< deviceIsolation.lowerBound])
+        let deviceIsolationBlock = String(comp[deviceIsolation.lowerBound ..< deviceTransform.lowerBound])
+        let deviceTransformBlock = String(comp[deviceTransform.lowerBound ..< deviceAssociation.lowerBound])
+        let deviceAssociationBlock = String(comp[deviceAssociation.lowerBound ..< spillLoader.lowerBound])
+        let spillLoaderBlock = String(comp[spillLoader.lowerBound ..< spillIsolation.lowerBound])
+        let spillIsolationBlock = String(comp[spillIsolation.lowerBound ..< spillTransform.lowerBound])
+        let spillTransformBlock = String(comp[spillTransform.lowerBound ..< spillAssociation.lowerBound])
+        #expect(deviceLoaderBlock.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
+        #expect(deviceIsolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
+        #expect(deviceTransformBlock.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
+        #expect(deviceAssociationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
+        #expect(deviceAssociationBlock.contains("AlphaExpression = Input { Value = \"a2\" }"))
+        #expect(spillLoaderBlock.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
+        #expect(spillIsolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
+        #expect(spillTransformBlock.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
         #expect(comp.contains("[\"Clip1.OpenEXRFormat.AlphaName\"] = Input { Value = FuID { \"A\" } }"))
         #expect(comp.contains("ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }"))
         #expect(comp.contains("PhysicalComposite = Custom {"))
@@ -612,6 +654,14 @@ private func temporaryDirectory() throws -> URL {
         prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [], spillRGBA: [])
     )
     #expect(comp.contains("ReferenceToACEScg = AcesTransform"))
+    let referenceLoader = try #require(comp.range(of: "ReferenceLoader = Loader"))
+    let referenceDepth = try #require(comp.range(of: "ReferenceDepthFloat16 = ChangeDepth"))
+    let referenceTransform = try #require(comp.range(of: "ReferenceToACEScg = AcesTransform"))
+    #expect(referenceLoader.lowerBound < referenceDepth.lowerBound)
+    #expect(referenceDepth.lowerBound < referenceTransform.lowerBound)
+    #expect(comp.contains("Depth = Input { Value = 3 }"))
+    #expect(comp.contains("Input = Input { SourceOp = \"ReferenceLoader\", Source = \"Output\" }"))
+    #expect(comp.contains("Input = Input { SourceOp = \"ReferenceDepthFloat16\", Source = \"Output\" }"))
     #expect(comp.contains("Filename = \"/reference.mov\""))
     #expect(comp.contains("FormatID = \"QuickTimeMovies\""))
     #expect(comp.contains("Length = 2"))

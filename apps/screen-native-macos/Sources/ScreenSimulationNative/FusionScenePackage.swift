@@ -736,7 +736,14 @@ struct FusionMediaColorContract: Equatable, Sendable {
         }
     }
 
-    func fusionTool(name: String, source: String, x: Int, y: Double) -> String {
+    func fusionTool(
+        name: String,
+        source: String,
+        x: Int,
+        y: Double,
+        preDividePostMultiply: Bool = false
+    ) -> String {
+        let alphaHandling = preDividePostMultiply ? 1 : 0
         switch node {
         case let .acesTransform(inputID):
             return """
@@ -745,6 +752,7 @@ struct FusionMediaColorContract: Equatable, Sendable {
                 AcesVersion = Input { Value = FuID { "ACES_VERSION_2_0_0" } },
                 InputTransform200 = Input { Value = FuID { "\(inputID)" } },
                 OutputTransform200 = Input { Value = FuID { "ODT_ACESCG" } },
+                ["Gamut.PreDividePostMultiply"] = Input { Value = \(alphaHandling) },
                 Input = Input { SourceOp = "\(source)", Source = "Output" }
               },
               CustomData = { SourceEncoding = "\(encodingDescription)", WorkingSpace = "ACEScg scene-linear" },
@@ -761,6 +769,7 @@ struct FusionMediaColorContract: Equatable, Sendable {
                 OutputGamma = Input { Value = FuID { "LINEAR_GAMMA" } },
                 ToneMapping = Input { Value = FuID { "TM_NONE" } },
                 GamutMapping = Input { Value = FuID { "GM_NONE" } },
+                ["Gamut.PreDividePostMultiply"] = Input { Value = \(alphaHandling) },
                 Input = Input { SourceOp = "\(source)", Source = "Output" }
               },
               CustomData = { SourceEncoding = "\(encodingDescription)", WorkingSpace = "ACEScg scene-linear" },
@@ -1268,39 +1277,18 @@ enum FusionScenePackageWriter {
         let mediaEncodingDescription = color.encodingDescription
         let mediaTransformDescription = color.transformDescription
         let deviceColorTool = color.fusionTool(
-            name: "DeviceToACEScg", source: "DeviceRGBA", x: 275, y: 82.5
+            name: "DeviceToACEScg", source: "DeviceRGBForColor", x: 330, y: 82.5
         )
         let spillColorTool = color.fusionTool(
-            name: "SpillToACEScg", source: "SpillRGBA", x: 275, y: 346.5
+            name: "SpillToACEScg", source: "SpillRGBForColor", x: 330, y: 346.5
         )
         let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
         let spillAlphaDescription = editorialAdd
-            ? "straight editorial alpha 0.125; normalized to opaque before additive 3D projection"
+            ? "straight editorial alpha 0.125; applied after the RGB color transform"
             : "no alpha; opaque RGB already composed over black for Add"
         let spillLoaderAlphaSemantics = editorialAdd
             ? "straight-editorial-alpha-0.125"
             : "no-alpha-additive-over-black"
-        let spillPlaneSource = editorialAdd ? "SpillOpaque" : "SpillToACEScg"
-        let spillAlphaNormalizationTools = editorialAdd ? """
-            SpillOpaqueBlack = Background {
-              Inputs = {
-                Width = Input { Value = \(prepared.width) },
-                Height = Input { Value = \(prepared.height) },
-                Alpha = Input { Value = 1 }
-              },
-              ViewInfo = OperatorInfo { Pos = { 440, 412.5 } }
-            },
-            SpillOpaque = Merge {
-              Inputs = {
-                Background = Input { SourceOp = "SpillOpaqueBlack", Source = "Output" },
-                Foreground = Input { SourceOp = "SpillToACEScg", Source = "Output" },
-                ApplyMode = Input { Value = FuID { "Add" } },
-                PerformDepthMerge = Input { Value = 0 }
-              },
-              CustomData = { Purpose = "normalize-editorial-spill-alpha-without-scaling-rgb" },
-              ViewInfo = OperatorInfo { Pos = { 440, 346.5 } }
-            },
-        """ : ""
         let cameraX = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[0]) })
         let cameraY = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[1]) })
         let cameraZ = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[2]) })
@@ -1338,9 +1326,9 @@ enum FusionScenePackageWriter {
         // halved or have the texture aspect applied a second time.
         let planeScaleX = planeWidth
         let planeScaleY = planeHeight * Double(prepared.width) / Double(prepared.height)
-        // Device travels as the exported RGBA medium through one 3D carrier. Physical Spill is
-        // already opaque; Editorial Spill is added over opaque black to normalize only its alpha.
-        // Spill then travels through its own RGB carrier. Their projected RGB
+        // Each Loader alpha bypasses color conversion. RGB is transformed while temporarily
+        // opaque, then explicitly associated with the original alpha exactly once for Fusion.
+        // Their projected RGB
         // is added while Device alpha remains unchanged. The final Custom node implements the
         // physical equation directly; a Merge/Over node is intentionally absent.
         return """
@@ -1351,7 +1339,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: \(spillAlphaDescription).\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; bypasses color conversion and is associated after RGB reaches ACEScg.\\n- RGB transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: \(spillAlphaDescription); bypasses color conversion.\\n- RGB transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceDepthFloat16 converts the Loader output to float16 before color processing.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1390,7 +1378,30 @@ enum FusionScenePackageWriter {
               CustomData = { SourceEncoding = "\(mediaEncodingDescription)", AlphaSemantics = "embedded-physical-occlusion-alpha" },
               ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }
             },
+            DeviceRGBForColor = Custom {
+              Inputs = {
+                Image1 = Input { SourceOp = "DeviceRGBA", Source = "Output" },
+                RedExpression = Input { Value = "r1" },
+                GreenExpression = Input { Value = "g1" },
+                BlueExpression = Input { Value = "b1" },
+                AlphaExpression = Input { Value = "1" }
+              },
+              CustomData = { Role = "rgb-only-color-transform-input", OriginalAlpha = "DeviceRGBA.A" },
+              ViewInfo = OperatorInfo { Pos = { 220, 214.5 } }
+            },
             \(deviceColorTool)
+            DeviceAssociateAlpha = Custom {
+              Inputs = {
+                Image1 = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
+                Image2 = Input { SourceOp = "DeviceRGBA", Source = "Output" },
+                RedExpression = Input { Value = "r1*a2" },
+                GreenExpression = Input { Value = "g1*a2" },
+                BlueExpression = Input { Value = "b1*a2" },
+                AlphaExpression = Input { Value = "a2" }
+              },
+              CustomData = { Role = "associate-original-alpha-after-color", AlphaSource = "DeviceRGBA.A" },
+              ViewInfo = OperatorInfo { Pos = { 440, 82.5 } }
+            },
             SpillRGBA = Loader {
               Clips = { Clip {
                 ID = "Clip1",
@@ -1413,11 +1424,33 @@ enum FusionScenePackageWriter {
               CustomData = { AlphaSemantics = "\(spillLoaderAlphaSemantics)" },
               ViewInfo = OperatorInfo { Pos = { 110, 346.5 } }
             },
+            SpillRGBForColor = Custom {
+              Inputs = {
+                Image1 = Input { SourceOp = "SpillRGBA", Source = "Output" },
+                RedExpression = Input { Value = "r1" },
+                GreenExpression = Input { Value = "g1" },
+                BlueExpression = Input { Value = "b1" },
+                AlphaExpression = Input { Value = "1" }
+              },
+              CustomData = { Role = "rgb-only-color-transform-input", OriginalAlpha = "SpillRGBA.A" },
+              ViewInfo = OperatorInfo { Pos = { 220, 346.5 } }
+            },
             \(spillColorTool)
-            \(spillAlphaNormalizationTools)
+            SpillAssociateAlpha = Custom {
+              Inputs = {
+                Image1 = Input { SourceOp = "SpillToACEScg", Source = "Output" },
+                Image2 = Input { SourceOp = "SpillRGBA", Source = "Output" },
+                RedExpression = Input { Value = "r1*a2" },
+                GreenExpression = Input { Value = "g1*a2" },
+                BlueExpression = Input { Value = "b1*a2" },
+                AlphaExpression = Input { Value = "a2" }
+              },
+              CustomData = { Role = "associate-original-alpha-after-color", AlphaSource = "SpillRGBA.A" },
+              ViewInfo = OperatorInfo { Pos = { 440, 346.5 } }
+            },
             DeviceRGBAPlane = ImagePlane3D {
               Inputs = {
-                MaterialInput = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
+                MaterialInput = Input { SourceOp = "DeviceAssociateAlpha", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
@@ -1428,7 +1461,7 @@ enum FusionScenePackageWriter {
             },
             SpillRGBPlane = ImagePlane3D {
               Inputs = {
-                MaterialInput = Input { SourceOp = "\(spillPlaneSource)", Source = "Output" },
+                MaterialInput = Input { SourceOp = "SpillAssociateAlpha", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
@@ -1665,6 +1698,15 @@ enum FusionScenePackageWriter {
           GlobalIn = \(firstFrame), GlobalOut = \(lastFrame),
           ViewInfo = OperatorInfo { Pos = { 1100, 346.5 } }
         },
+        ReferenceDepthFloat16 = ChangeDepth {
+          CtrlWZoom = false,
+          Inputs = {
+            Depth = Input { Value = 3 },
+            Input = Input { SourceOp = "ReferenceLoader", Source = "Output" }
+          },
+          CustomData = { Role = "reference-minimum-float16-boundary" },
+          ViewInfo = OperatorInfo { Pos = { 1183.33, 345.894 } }
+        },
         ReferenceToACEScg = AcesTransform {
         \(colorTransformPassThrough)  CustomData = { Role = "saved-reference-color-transform", InputTransformID = "\(reference.inputTransformID)", ColorTransformContract = "ACES 2.0 Rec.709 D65 100 nit inverse Output Transform to ACEScg", Enabled = \(colorTransformEnabled) },
           CtrlWZoom = false,
@@ -1672,7 +1714,7 @@ enum FusionScenePackageWriter {
             AcesVersion = Input { Value = FuID { "ACES_VERSION_2_0_0" } },
             InputTransform200 = Input { Value = FuID { "IDT_REC709_100_INV_ODT" } },
             OutputTransform200 = Input { Value = FuID { "ODT_ACESCG" } },
-            Input = Input { SourceOp = "ReferenceLoader", Source = "Output" }
+            Input = Input { SourceOp = "ReferenceDepthFloat16", Source = "Output" }
           },
           ViewInfo = OperatorInfo { Pos = { 1265, 346.5 } }
         },
