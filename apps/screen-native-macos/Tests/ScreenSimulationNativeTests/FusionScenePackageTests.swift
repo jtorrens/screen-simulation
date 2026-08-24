@@ -98,7 +98,8 @@ private func fusionConfiguration(
     #expect(isolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
     #expect(associationBlock.contains("Image2 = Input { SourceOp = \"SpillRGBA\", Source = \"Output\" }"))
     #expect(associationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
-    #expect(associationBlock.contains("AlphaExpression = Input { Value = \"a2\" }"))
+    #expect(associationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
+    #expect(associationBlock.contains("Role = \"attenuate-additive-rgb-once-after-color\""))
     #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillAssociateAlpha\", Source = \"Output\" }"))
     let metadata = try FusionScenePackageWriter.metadata(
         request: request, prepared: prepared
@@ -619,6 +620,9 @@ private func temporaryDirectory() throws -> URL {
         #expect(spillLoaderBlock.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
         #expect(spillIsolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
         #expect(spillTransformBlock.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
+        let spillAssociationBlock = String(comp[spillAssociation.lowerBound ..< comp.range(of: "DeviceRGBAPlane = ImagePlane3D")!.lowerBound])
+        #expect(spillAssociationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
+        #expect(spillAssociationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
         #expect(comp.contains("[\"Clip1.OpenEXRFormat.AlphaName\"] = Input { Value = FuID { \"A\" } }"))
         #expect(comp.contains("ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }"))
         #expect(comp.contains("PhysicalComposite = Custom {"))

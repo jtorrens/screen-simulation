@@ -1443,9 +1443,9 @@ enum FusionScenePackageWriter {
                 RedExpression = Input { Value = "r1*a2" },
                 GreenExpression = Input { Value = "g1*a2" },
                 BlueExpression = Input { Value = "b1*a2" },
-                AlphaExpression = Input { Value = "a2" }
+                AlphaExpression = Input { Value = "1" }
               },
-              CustomData = { Role = "associate-original-alpha-after-color", AlphaSource = "SpillRGBA.A" },
+              CustomData = { Role = "attenuate-additive-rgb-once-after-color", AlphaSource = "SpillRGBA.A", PlaneAlpha = "opaque" },
               ViewInfo = OperatorInfo { Pos = { 440, 346.5 } }
             },
             DeviceRGBAPlane = ImagePlane3D {
