@@ -11,7 +11,8 @@ private func fusionConfiguration(
     resolution: StudioFusionResolutionMode = .maximumProjectedDensity,
     policy: StudioOverwritePolicy = .failIfExists,
     frames: ClosedRange<Int> = 1 ... 2,
-    motionBlurMode: StudioRenderMotionBlurMode = .disabled
+    motionBlurMode: StudioRenderMotionBlurMode = .disabled,
+    spillDeliveryMode: StudioSpillDeliveryMode = .physicalLinear
 ) -> StudioResolvedRenderConfiguration {
     StudioResolvedRenderConfiguration(
         renderMode: .final,
@@ -27,7 +28,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: .physicalLinear,
+        spillDeliveryMode: spillDeliveryMode,
         motionBlurMode: motionBlurMode,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .openEXR,
@@ -51,6 +52,47 @@ private func fusionConfiguration(
     #expect(throws: StudioOutputContractError.fusionDeliveryConfigurationInvalid) {
         try fusionConfiguration(motionBlurMode: .approximate2D).validate()
     }
+}
+
+@Test @MainActor func fusionEditorialAddKeepsMediaAlphaAndNormalizesOnlyThe3DPlane() throws {
+    let configuration = fusionConfiguration(spillDeliveryMode: .editorialEncodedAdd)
+    try configuration.validate()
+    let root = try temporaryDirectory()
+    let request = FusionScenePackageRequest(
+        configuration: configuration,
+        outputPlan: try RenderOutputPlan.prepare(
+            configuration: configuration, selectedDestination: root
+        ),
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
+        sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
+        camera: [camera(frame: 1), camera(frame: 2)],
+        lens: [lens(frame: 1), lens(frame: 2)],
+        motionBlur: .init(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: 180, shutterPhaseDegrees: 0
+        ),
+        referencePlate: nil
+    )
+    let prepared = FusionPreparedPhysicalFrame(
+        width: 12, height: 8,
+        activeRect: .init(x: 2, y: 2, width: 8, height: 4),
+        uniformPaddingPixels: 2, thresholdSupportPixels: 1,
+        deviceRGBA: [], spillRGBA: []
+    )
+    let comp = try FusionScenePackageWriter.fusionComp(
+        request: request, prepared: prepared
+    )
+    #expect(comp.contains("straight-editorial-alpha-0.125"))
+    #expect(comp.contains("SpillOpaqueBlack = Background"))
+    #expect(comp.contains("SpillOpaque = Merge"))
+    #expect(comp.contains("ApplyMode = Input { Value = FuID { \"Add\" } }"))
+    #expect(comp.contains("Purpose = \"normalize-editorial-spill-alpha-without-scaling-rgb\""))
+    #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillOpaque\", Source = \"Output\" }"))
+    let metadata = try FusionScenePackageWriter.metadata(
+        request: request, prepared: prepared
+    )
+    #expect(metadata.alphaAssociation.contains("editorial-0.125"))
 }
 
 private func standardSequenceConfiguration(

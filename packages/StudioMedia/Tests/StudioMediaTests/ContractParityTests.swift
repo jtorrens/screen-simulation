@@ -398,7 +398,5 @@ import Testing
         signalRange: fusion.signalRange, alpha: .straight, includeAudio: false,
         frameRate: .fps24, firstFrame: 0, lastFrame: 1
     )
-    #expect(throws: StudioOutputContractError.editorialSpillDeliveryInvalid) {
-        try editorialAdd.validate()
-    }
+    try editorialAdd.validate()
 }

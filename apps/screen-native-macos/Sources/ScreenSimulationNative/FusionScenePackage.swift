@@ -798,6 +798,7 @@ enum FusionScenePackageWriter {
         var firstPrepared: FusionPreparedPhysicalFrame?
         var deviceMovie: MovieWriter?
         var spillMovie: MovieWriter?
+        var editorialEncodedBlack: SIMD3<Float>?
         let frames = Array(configuration.frameRange)
         let fixedThresholdSupport = request.sourceOverscanPixels
             - options.spillFadeWidthPixels
@@ -841,11 +842,17 @@ enum FusionScenePackageWriter {
                     throw NativeOutputError.unsupported("Fusion movie requiere el writer Metal")
                 }
                 let output = try requiredOutputTransform(configuration)
-                let deviceFrame = try makeACEScgFrame(
-                    prepared.deviceRGBA, width: prepared.width, height: prepared.height,
-                    display: display
-                )
-                let spillFrame = try makeACEScgFrame(
+                let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
+                let deviceFrame = editorialAdd
+                    ? try display.makeIndependentLinearACEScgFrame(
+                        width: prepared.width, height: prepared.height,
+                        rgba: prepared.deviceRGBA
+                    )
+                    : try makeACEScgFrame(
+                        prepared.deviceRGBA, width: prepared.width, height: prepared.height,
+                        display: display
+                    )
+                let spillFrame = editorialAdd ? nil : try makeACEScgFrame(
                     prepared.spillRGBA, width: prepared.width, height: prepared.height,
                     display: display
                 )
@@ -858,35 +865,101 @@ enum FusionScenePackageWriter {
                         frameRate: configuration.frameRate, format: configuration.format,
                         pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
-                        alpha: .straight, output: output
+                        alpha: .straight, output: output,
+                        preservesIndependentRGB: editorialAdd
                     )
                     spillMovie = try MovieWriter(
                         url: spillURL, width: prepared.width, height: prepared.height,
                         frameRate: configuration.frameRate, format: configuration.format,
                         pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
-                        alpha: .ignore, output: output
+                        alpha: editorialAdd ? .straight : .ignore, output: output
                     )
                 }
                 try await deviceMovie!.append(
                     frame: deviceFrame, presentationFrame: position,
                     display: display, output: output
                 )
-                try await spillMovie!.append(
-                    frame: spillFrame, presentationFrame: position,
-                    display: display, output: output
-                )
+                if editorialAdd {
+                    if editorialEncodedBlack == nil {
+                        let blackFrame = try display.makeIndependentLinearACEScgFrame(
+                            width: 1, height: 1, rgba: [0, 0, 0, 1]
+                        )
+                        let encodedBlack = try display.renderIndependentRGBAFloat(
+                            blackFrame, output: output, alpha: .ignore
+                        )
+                        editorialEncodedBlack = SIMD3(
+                            encodedBlack[0], encodedBlack[1], encodedBlack[2]
+                        )
+                    }
+                    let encodedCarrier = try display.renderIndependentRGBAFloat(
+                        deviceFrame, output: output, alpha: .straight
+                    )
+                    let encodedSpill = try NativeOutputRenderer.editorialEncodedAddSpill(
+                        encodedCarrier: encodedCarrier,
+                        encodedBlack: editorialEncodedBlack!
+                    )
+                    try await spillMovie!.appendEncodedRGBA(
+                        encodedSpill, presentationFrame: position
+                    )
+                } else {
+                    try await spillMovie!.append(
+                        frame: spillFrame!, presentationFrame: position,
+                        display: display, output: output
+                    )
+                }
             } else {
-                try writeStillPass(
-                    prepared.deviceRGBA, width: prepared.width, height: prepared.height,
-                    to: deviceURL, configuration: configuration, display: display,
-                    alpha: .straight
-                )
-                try writeStillPass(
-                    prepared.spillRGBA, width: prepared.width, height: prepared.height,
-                    to: spillURL, configuration: configuration, display: display,
-                    alpha: .ignore
-                )
+                if configuration.spillDeliveryMode == .editorialEncodedAdd {
+                    guard let display else {
+                        throw NativeOutputError.unsupported(
+                            "Fusion Editorial still requiere el writer Metal"
+                        )
+                    }
+                    let output = try requiredOutputTransform(configuration)
+                    let deviceFrame = try display.makeIndependentLinearACEScgFrame(
+                        width: prepared.width, height: prepared.height,
+                        rgba: prepared.deviceRGBA
+                    )
+                    let encodedDevice = try display.renderIndependentRGBAFloat(
+                        deviceFrame, output: output, alpha: .straight
+                    )
+                    if editorialEncodedBlack == nil {
+                        let blackFrame = try display.makeIndependentLinearACEScgFrame(
+                            width: 1, height: 1, rgba: [0, 0, 0, 1]
+                        )
+                        let encodedBlack = try display.renderIndependentRGBAFloat(
+                            blackFrame, output: output, alpha: .ignore
+                        )
+                        editorialEncodedBlack = SIMD3(
+                            encodedBlack[0], encodedBlack[1], encodedBlack[2]
+                        )
+                    }
+                    let encodedSpill = try NativeOutputRenderer.editorialEncodedAddSpill(
+                        encodedCarrier: encodedDevice,
+                        encodedBlack: editorialEncodedBlack!
+                    )
+                    try writeEncodedStillPass(
+                        encodedDevice, width: prepared.width, height: prepared.height,
+                        to: deviceURL, configuration: configuration, output: output,
+                        alpha: .straight
+                    )
+                    try writeEncodedStillPass(
+                        encodedSpill, width: prepared.width, height: prepared.height,
+                        to: spillURL, configuration: configuration, output: output,
+                        alpha: .straight
+                    )
+                } else {
+                    try writeStillPass(
+                        prepared.deviceRGBA, width: prepared.width, height: prepared.height,
+                        to: deviceURL, configuration: configuration, display: display,
+                        alpha: .straight
+                    )
+                    try writeStillPass(
+                        prepared.spillRGBA, width: prepared.width, height: prepared.height,
+                        to: spillURL, configuration: configuration, display: display,
+                        alpha: .ignore
+                    )
+                }
             }
 
             progress(position + 1, frames.count)
@@ -995,6 +1068,29 @@ enum FusionScenePackageWriter {
         }
     }
 
+    private static func writeEncodedStillPass(
+        _ rgba: [Float], width: Int, height: Int, to url: URL,
+        configuration: StudioResolvedRenderConfiguration,
+        output: StudioColorOutputTransform,
+        alpha: StudioColorAlphaAssociation
+    ) throws {
+        guard rgba.count == width * height * 4, rgba.allSatisfy(\.isFinite) else {
+            throw NativeOutputError.invalidFrame
+        }
+        switch configuration.format {
+        case .openEXR:
+            try NativeOutputRenderer.encodeEXR(rgba, width: width, height: height)
+                .write(to: url, options: .atomic)
+        case .tiff16:
+            try NativeOutputRenderer.encodeTIFF16(
+                rgba, width: width, height: height,
+                colorSpace: output.colorSpace, alpha: alpha
+            ).write(to: url, options: .atomic)
+        default:
+            throw NativeOutputError.unsupported(configuration.format.displayName)
+        }
+    }
+
     /// Rewrites only the generated Fusion composition from the immutable queued snapshot and
     /// the package's existing raster metadata. Media frames are intentionally never opened,
     /// rewritten or re-rendered here.
@@ -1075,6 +1171,7 @@ enum FusionScenePackageWriter {
         let outputStem = configuration.jobName + configuration.versionSuffix
         let options = configuration.fusionScene!
         let color = try FusionMediaColorContract.resolve(configuration)
+        let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
         return FusionSceneMetadata(
             schema: "ScreenSimulation.FusionScenePackage",
             schemaVersion: 2,
@@ -1086,8 +1183,12 @@ enum FusionScenePackageWriter {
             transfer: "scene-linear",
             channels: ["R", "G", "B", "A"],
             rgbMeaning: "two typed media: Device surface RGB and additive Spill RGB",
-            alphaMeaning: "Device media embeds the non-chromatic physical occlusion alpha; Spill is opaque RGB over black",
-            alphaAssociation: "device-embedded-physical-alpha-spill-opaque-black",
+            alphaMeaning: editorialAdd
+                ? "Device embeds physical occlusion alpha; Spill carries straight editorial alpha 0.125 and Fusion normalizes it to opaque before additive projection"
+                : "Device media embeds the non-chromatic physical occlusion alpha; Spill is opaque RGB over black",
+            alphaAssociation: editorialAdd
+                ? "device-embedded-physical-alpha-spill-straight-editorial-0.125"
+                : "device-embedded-physical-alpha-spill-opaque-black",
             physicalCompositeEquation: "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
             raster: .init(
                 width: prepared.width,
@@ -1172,6 +1273,34 @@ enum FusionScenePackageWriter {
         let spillColorTool = color.fusionTool(
             name: "SpillToACEScg", source: "SpillRGBA", x: 275, y: 346.5
         )
+        let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
+        let spillAlphaDescription = editorialAdd
+            ? "straight editorial alpha 0.125; normalized to opaque before additive 3D projection"
+            : "no alpha; opaque RGB already composed over black for Add"
+        let spillLoaderAlphaSemantics = editorialAdd
+            ? "straight-editorial-alpha-0.125"
+            : "no-alpha-additive-over-black"
+        let spillPlaneSource = editorialAdd ? "SpillOpaque" : "SpillToACEScg"
+        let spillAlphaNormalizationTools = editorialAdd ? """
+            SpillOpaqueBlack = Background {
+              Inputs = {
+                Width = Input { Value = \(prepared.width) },
+                Height = Input { Value = \(prepared.height) },
+                Alpha = Input { Value = 1 }
+              },
+              ViewInfo = OperatorInfo { Pos = { 440, 412.5 } }
+            },
+            SpillOpaque = Merge {
+              Inputs = {
+                Background = Input { SourceOp = "SpillOpaqueBlack", Source = "Output" },
+                Foreground = Input { SourceOp = "SpillToACEScg", Source = "Output" },
+                ApplyMode = Input { Value = FuID { "Add" } },
+                PerformDepthMerge = Input { Value = 0 }
+              },
+              CustomData = { Purpose = "normalize-editorial-spill-alpha-without-scaling-rgb" },
+              ViewInfo = OperatorInfo { Pos = { 440, 346.5 } }
+            },
+        """ : ""
         let cameraX = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[0]) })
         let cameraY = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[1]) })
         let cameraZ = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[2]) })
@@ -1209,8 +1338,9 @@ enum FusionScenePackageWriter {
         // halved or have the texture aspect applied a second time.
         let planeScaleX = planeWidth
         let planeScaleY = planeHeight * Double(prepared.width) / Double(prepared.height)
-        // Device travels as the exported RGBA medium through one 3D carrier. Spill is already
-        // composed over opaque black and travels through its own RGB carrier. Their projected RGB
+        // Device travels as the exported RGBA medium through one 3D carrier. Physical Spill is
+        // already opaque; Editorial Spill is added over opaque black to normalize only its alpha.
+        // Spill then travels through its own RGB carrier. Their projected RGB
         // is added while Device alpha remains unchanged. The final Custom node implements the
         // physical equation directly; a Merge/Over node is intentionally absent.
         return """
@@ -1221,7 +1351,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: no alpha; opaque RGB already composed over black for Add.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; the RGBA medium remains together through projection.\\n- Transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: \(spillAlphaDescription).\\n- Transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1280,10 +1410,11 @@ enum FusionScenePackageWriter {
                 ["Clip1.OpenEXRFormat.BlueName"] = Input { Value = FuID { "B" } },
                 ["Clip1.OpenEXRFormat.AlphaName"] = Input { Value = FuID { "A" } }
               },
-              CustomData = { AlphaSemantics = "no-alpha-additive-over-black" },
+              CustomData = { AlphaSemantics = "\(spillLoaderAlphaSemantics)" },
               ViewInfo = OperatorInfo { Pos = { 110, 346.5 } }
             },
             \(spillColorTool)
+            \(spillAlphaNormalizationTools)
             DeviceRGBAPlane = ImagePlane3D {
               Inputs = {
                 MaterialInput = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
@@ -1297,7 +1428,7 @@ enum FusionScenePackageWriter {
             },
             SpillRGBPlane = ImagePlane3D {
               Inputs = {
-                MaterialInput = Input { SourceOp = "SpillToACEScg", Source = "Output" },
+                MaterialInput = Input { SourceOp = "\(spillPlaneSource)", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },

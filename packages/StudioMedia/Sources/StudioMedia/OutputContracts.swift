@@ -551,8 +551,7 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
             }
             if spillDeliveryMode == .editorialEncodedAdd {
                 guard composition == .deviceAndSpillSeparate,
-                      alpha == .straight, !includeAudio, wipReview == nil,
-                      fusionScene == nil else {
+                      alpha == .straight, !includeAudio, wipReview == nil else {
                     throw StudioOutputContractError.editorialSpillDeliveryInvalid
                 }
             }
