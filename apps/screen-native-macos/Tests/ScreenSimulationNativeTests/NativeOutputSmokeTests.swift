@@ -140,7 +140,7 @@ import Testing
     #expect(edge.spill[0] > 0.199)
 }
 
-@Test @MainActor func editorialEncodedSpillUsesTheDeclaredTwelvePointFivePercentGain() throws {
+@Test @MainActor func editorialEncodedSpillKeepsRGBAndUsesDeclaredTwelvePointFivePercentAlpha() throws {
     let black = SIMD3<Float>(0.08, 0.08, 0.08)
     let carrier: [Float] = [
         0.20, 0.40, 0.90, 0,
@@ -155,11 +155,11 @@ import Testing
         let offset = pixel * 4
         let matte = carrier[offset + 3]
         for channel in 0 ..< 3 {
-            let expected = Float(StudioVFXEditorialDeliveryContract.spillGain)
-                * (1 - matte) * (carrier[offset + channel] - black[channel])
+            let expected = (1 - matte) * (carrier[offset + channel] - black[channel])
             #expect(abs(spill[offset + channel] - expected) < 0.000_001)
         }
-        #expect(spill[offset + 3] == 1)
+        #expect(spill[offset + 3]
+            == Float(StudioVFXEditorialDeliveryContract.spillAlpha))
     }
     #expect(spill[0] > 0) // encoded RGB survives where matte is zero
     #expect(spill[8] == 0)
@@ -215,7 +215,7 @@ import Testing
     #expect(device[0] > 0.1)
     #expect(spill[0] > 0.01)
     for offset in stride(from: 3, to: spill.count, by: 4) {
-        #expect(spill[offset] > 0.998)
+        #expect(abs(spill[offset] - 0.125) < 0.002)
     }
 }
 

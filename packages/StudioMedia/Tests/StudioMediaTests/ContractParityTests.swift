@@ -198,7 +198,7 @@ import Testing
     try configuration.validate()
     #expect(StudioVFXEditorialDeliveryContract.supportedColorEncodingIDs
         == ["acescct-ap1", "rec709-gamma24"])
-    #expect(StudioVFXEditorialDeliveryContract.spillGain == 0.125)
+    #expect(StudioVFXEditorialDeliveryContract.spillAlpha == 0.125)
     let rec709 = StudioResolvedRenderConfiguration(
         outputType: .editorial, jobName: "editorial-rec709",
         overwritePolicy: .failIfExists, fusionScene: nil,

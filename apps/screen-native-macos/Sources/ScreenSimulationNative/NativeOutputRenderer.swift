@@ -372,7 +372,9 @@ enum NativeOutputRenderer {
                         frameRate: configuration.frameRate, format: configuration.format,
                         pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
-                        alpha: .ignore, output: output
+                        alpha: configuration.spillDeliveryMode == .editorialEncodedAdd
+                            ? .straight : .ignore,
+                        output: output
                     )
                 }
                 try await deviceMovie!.append(
@@ -469,14 +471,14 @@ enum NativeOutputRenderer {
               encodedBlack.z.isFinite
         else { throw NativeOutputError.invalidFrame }
         var spill = encodedCarrier
-        let gain = Float(StudioVFXEditorialDeliveryContract.spillGain)
+        let editorialAlpha = Float(StudioVFXEditorialDeliveryContract.spillAlpha)
         for offset in stride(from: 0, to: spill.count, by: 4) {
             let matte = min(1, max(0, encodedCarrier[offset + 3]))
             let exterior = 1 - matte
-            spill[offset] = gain * exterior * (encodedCarrier[offset] - encodedBlack.x)
-            spill[offset + 1] = gain * exterior * (encodedCarrier[offset + 1] - encodedBlack.y)
-            spill[offset + 2] = gain * exterior * (encodedCarrier[offset + 2] - encodedBlack.z)
-            spill[offset + 3] = 1
+            spill[offset] = exterior * (encodedCarrier[offset] - encodedBlack.x)
+            spill[offset + 1] = exterior * (encodedCarrier[offset + 1] - encodedBlack.y)
+            spill[offset + 2] = exterior * (encodedCarrier[offset + 2] - encodedBlack.z)
+            spill[offset + 3] = editorialAlpha
         }
         guard spill.allSatisfy(\.isFinite) else { throw NativeOutputError.invalidFrame }
         return spill

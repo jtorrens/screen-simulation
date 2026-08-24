@@ -145,7 +145,7 @@ public enum StudioVFXEditorialDeliveryContract {
     )!
     public static let colorEncodingID = "acescct-ap1"
     public static let supportedColorEncodingIDs = ["acescct-ap1", "rec709-gamma24"]
-    public static let spillGain = 0.125
+    public static let spillAlpha = 0.125
 }
 
 public enum StudioOutputType: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -172,7 +172,7 @@ public enum StudioSpillDeliveryMode: String, Codable, CaseIterable, Identifiable
     public var label: String {
         switch self {
         case .physicalLinear: "Físico lineal"
-        case .editorialEncodedAdd: "Editorial Add · 12,5%"
+        case .editorialEncodedAdd: "Editorial Add · alpha 12,5%"
         }
     }
 }
