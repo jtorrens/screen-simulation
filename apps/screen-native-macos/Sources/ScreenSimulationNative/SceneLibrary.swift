@@ -1026,8 +1026,12 @@ final class SceneLibraryController: ObservableObject {
     func rename(_ scene: SavedScene, to name: String) throws {
         guard let store, let index = document.scenes.firstIndex(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        let committedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !committedName.isEmpty else {
+            throw SceneLibraryError.invalidDocument("El nombre de la escena está vacío.")
+        }
         var candidate = document
-        candidate.scenes[index].name = name
+        candidate.scenes[index].name = committedName
         try store.save(candidate)
         document = candidate
     }

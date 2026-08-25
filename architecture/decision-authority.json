@@ -15,6 +15,19 @@
       ]
     },
     {
+      "id": "scene.library-rename",
+      "scope": "workstation Saved Scene shelf-name editing and persistence",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift"
+      ]
+    },
+    {
       "id": "scene.profile-resolution",
       "scope": "workstation Saved Scene profile defaults, overrides and Render Queue attempt materialization",
       "owner": {

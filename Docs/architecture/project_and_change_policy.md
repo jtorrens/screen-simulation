@@ -16,8 +16,11 @@ Normal open validates without writing. Each document has one current schema and 
 <!-- decision-owner: scene.profile-resolution -->
 <!-- decision-owner: scene.external-resources -->
 <!-- decision-owner: scene.imported-3d-ownership -->
+<!-- decision-owner: scene.library-rename -->
 
 Global Library text and numeric editors own incomplete keyboard text locally and submit one complete candidate only on Return or focus loss. Domain validation and persistence never run against each intermediate keypress. Pickers and toggles remain complete candidates and commit immediately.
+
+A Saved Scene rename is an immediate shelf-record mutation, not unsaved scene authoring. Return, focus loss, leaving the shelf presentation or invoking a contextual scene action first commits the trimmed nonempty name atomically. Navigation and normal application termination cannot leave a visually edited draft as the apparent name; reopening reads the committed name, and contextual Render resolves the scene again after committing so its seeded output name is current.
 
 The workstation scene shelf is separate from the portable `.screensim` project. Its current `ScreenSimulation.SavedScene.v23` records live under Application Support. The current Global Library is the strict `GlobalLibrary.v17.json`; earlier filenames and schemas are not opened, repaired or migrated by normal startup. A scene stores exactly one stable identity for every selected internal simulation-profile family—Device, Cover Glass, Camera/Sensor, Lens, procedural Environment and every later family—together with only explicit fixed overrides. All those identities resolve through one typed immutable snapshot of the workstation Global Library. Every current Camera record owns `vfx-2d-dof` as its default Lens evaluation model; a scene may explicitly override it with `thin-lens`, and duplication preserves that authored override verbatim. Bundled definitions are seed input used only to create initial library records or an explicitly new record; after that boundary a locked seed record and a user-created record have identical identity, resolution, validation and evaluation semantics. No host or Application path may consult a compiled seed catalog as a second runtime authority or substitute another item when an identity is missing.
 

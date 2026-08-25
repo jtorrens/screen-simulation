@@ -1936,16 +1936,33 @@ struct ContentView: View {
                                 thumbnailURL: scenes.thumbnailURL(for: scene),
                                 isActive: model.activeSceneID == scene.id,
                                 onRename: { name in
-                                    do { try scenes.rename(scene, to: name) }
-                                    catch { model.errorMessage = error.localizedDescription }
+                                    do {
+                                        try scenes.rename(scene, to: name)
+                                        return true
+                                    } catch {
+                                        model.errorMessage = error.localizedDescription
+                                        return false
+                                    }
                                 },
-                                onOpen: { requestOpenScene(scene) },
+                                onOpen: {
+                                    guard let current = scenes.scene(id: scene.id) else {
+                                        model.errorMessage = "La escena ya no existe."
+                                        return
+                                    }
+                                    requestOpenScene(current)
+                                },
                                 onUpdate: { requestSceneAction(.update, scene: scene) },
                                 onDuplicate: {
                                     do { _ = try scenes.duplicate(scene) }
                                     catch { model.errorMessage = error.localizedDescription }
                                 },
-                                onRender: { requestSceneRender(scene) },
+                                onRender: {
+                                    guard let current = scenes.scene(id: scene.id) else {
+                                        model.errorMessage = "La escena ya no existe."
+                                        return
+                                    }
+                                    requestSceneRender(current)
+                                },
                                 onHistory: { autosaveHistoryTarget = scenes.autosaveHistoryTarget(for: scene) },
                                 onDelete: { requestSceneAction(.delete, scene: scene) }
                             )
@@ -4585,7 +4602,7 @@ private struct SceneLibraryItemView: View {
     let scene: SavedScene
     let thumbnailURL: URL?
     let isActive: Bool
-    let onRename: (String) -> Void
+    let onRename: (String) -> Bool
     let onOpen: () -> Void
     let onUpdate: () -> Void
     let onDuplicate: () -> Void
@@ -4593,12 +4610,13 @@ private struct SceneLibraryItemView: View {
     let onHistory: () -> Void
     let onDelete: () -> Void
     @State private var draftName: String
+    @FocusState private var nameFieldIsFocused: Bool
 
     init(
         scene: SavedScene,
         thumbnailURL: URL?,
         isActive: Bool,
-        onRename: @escaping (String) -> Void,
+        onRename: @escaping (String) -> Bool,
         onOpen: @escaping () -> Void,
         onUpdate: @escaping () -> Void,
         onDuplicate: @escaping () -> Void,
@@ -4641,7 +4659,14 @@ private struct SceneLibraryItemView: View {
                 .textFieldStyle(.plain)
                 .font(.caption)
                 .frame(width: 150)
-                .onSubmit(commitName)
+                .focused($nameFieldIsFocused)
+                .onSubmit {
+                    _ = commitName()
+                    nameFieldIsFocused = false
+                }
+                .onChange(of: nameFieldIsFocused) { wasFocused, isFocused in
+                    if wasFocused, !isFocused { _ = commitName() }
+                }
                 .onChange(of: scene.name) { _, name in draftName = name }
         }
         .padding(7)
@@ -4655,24 +4680,37 @@ private struct SceneLibraryItemView: View {
         }
         .accessibilityValue(isActive ? "Escena abierta" : "")
         .contextMenu {
-            Button("Abrir escena", action: onOpen)
-            Button("Actualizar con el estado actual", action: onUpdate)
-            Button("Duplicar escena", action: onDuplicate)
-            Button("Añadir a Render Queue…", action: onRender)
-            Button("Historial…", action: onHistory)
+            Button("Abrir escena") { performAfterNameCommit(onOpen) }
+            Button("Actualizar con el estado actual") { performAfterNameCommit(onUpdate) }
+            Button("Duplicar escena") { performAfterNameCommit(onDuplicate) }
+            Button("Añadir a Render Queue…") { performAfterNameCommit(onRender) }
+            Button("Historial…") { performAfterNameCommit(onHistory) }
             Divider()
-            Button("Eliminar escena", role: .destructive, action: onDelete)
+            Button("Eliminar escena", role: .destructive) {
+                performAfterNameCommit(onDelete)
+            }
         }
-        .onDisappear(perform: commitName)
+        .onDisappear { _ = commitName() }
     }
 
-    private func commitName() {
+    @discardableResult
+    private func commitName() -> Bool {
         let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name != scene.name else {
             draftName = scene.name
-            return
+            return name == scene.name
         }
-        onRename(name)
+        guard onRename(name) else {
+            draftName = scene.name
+            return false
+        }
+        draftName = name
+        return true
+    }
+
+    private func performAfterNameCommit(_ action: () -> Void) {
+        guard commitName() else { return }
+        action()
     }
 }
 

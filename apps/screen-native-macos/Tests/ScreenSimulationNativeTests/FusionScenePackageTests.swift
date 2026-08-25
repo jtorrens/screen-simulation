@@ -140,7 +140,9 @@ private func standardSequenceConfiguration(
 private func fusionConfiguration(
     preset: StudioRenderPreset,
     format: StudioOutputFormat,
-    vfxEncodingID: String? = "arri-logc4-awg4"
+    vfxEncodingID: String? = "arri-logc4-awg4",
+    frames: ClosedRange<Int> = 1 ... 1,
+    spillDeliveryMode: StudioSpillDeliveryMode = .physicalLinear
 ) -> StudioResolvedRenderConfiguration {
     let pixelEncoding = format.defaultPixelEncoding
     return StudioResolvedRenderConfiguration(
@@ -157,7 +159,7 @@ private func fusionConfiguration(
             spillFadeWidthPixels: 1
         ),
         composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: .physicalLinear,
+        spillDeliveryMode: spillDeliveryMode,
         motionBlurMode: .disabled,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: format,
@@ -172,8 +174,8 @@ private func fusionConfiguration(
         alpha: .straight,
         includeAudio: false,
         frameRate: .fps24,
-        firstFrame: 1,
-        lastFrame: 1
+        firstFrame: frames.lowerBound,
+        lastFrame: frames.upperBound
     )
 }
 
@@ -1030,6 +1032,60 @@ private func temporaryDirectory() throws -> URL {
     ), encoding: .utf8)
     #expect(comp.contains("FormatID = \"TIFFFormat\""))
     #expect(comp.contains("InputTransform200 = Input { Value = FuID { \"IDT_REC709_100_INV_ODT\" } }"))
+}
+
+@Test @MainActor func fusionMovieOwnsItsOpenFilesAcrossEveryFrame() async throws {
+    let vfxPreset = try #require(StudioRenderPreset.builtIns.first { $0.target == .vfxLog })
+    let configuration = fusionConfiguration(
+        preset: vfxPreset,
+        format: .proRes4444XQ,
+        vfxEncodingID: "acescct-ap1",
+        frames: 1 ... 2,
+        spillDeliveryMode: .editorialEncodedAdd
+    )
+    try configuration.validate()
+    let root = try temporaryDirectory()
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    let request = FusionScenePackageRequest(
+        configuration: configuration, outputPlan: plan,
+        deviceWidthMeters: 0.2, deviceHeightMeters: 0.2,
+        activeRaster: .init(activeWidth: 2, activeHeight: 2, pixelsPerMeter: 10),
+        sourceOverscanPixels: 2, deliveryWidth: 8, deliveryHeight: 8,
+        camera: [camera(frame: 1), camera(frame: 2)],
+        lens: [lens(frame: 1), lens(frame: 2)],
+        motionBlur: .init(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: 180, shutterPhaseDegrees: 0
+        ),
+        referencePlate: nil
+    )
+    let rgba = [Float](repeating: 0.18, count: 6 * 6 * 4)
+        .enumerated().map { $0.offset % 4 == 3 ? 0.5 : $0.element }
+    var requestedFrames: [Int] = []
+    let destination = try await FusionScenePackageWriter.render(
+        request: request,
+        display: try StudioColorMetalDisplay(),
+        frameProvider: { frame in
+            requestedFrames.append(frame)
+            return FusionRawPhysicalFrame(
+                width: 6, height: 6,
+                activeRect: .init(x: 2, y: 2, width: 2, height: 2),
+                deviceRGBA: rgba, spillRGBA: rgba
+            )
+        },
+        progress: { _, _ in }
+    )
+    #expect(requestedFrames == [1, 2])
+    for relativePath in [
+        "media/ColorContract_Device.mov",
+        "media/ColorContract_Spill.mov",
+    ] {
+        let url = destination.appendingPathComponent(relativePath)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 > 0)
+    }
 }
 
 @Test @MainActor func savedAnimatedCameraSceneRendersACompleteFusionPackageWhenRequested() async throws {

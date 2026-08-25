@@ -231,10 +231,15 @@ Point cloud, auxiliary tracking geometry, centres and labels form one persistent
 
 Interactive tracking-world scale publishes successive complete resolved scene frames while the gesture is active. Each publication contains the updated imported-camera scale and Device anchor together, so its diagnostic overlay remains visible and carries the same identity. Ending the gesture records Undo but cannot rematerialize a different scale or change the last visible result.
 
+A Fusion movie attempt authorizes each declared Device/Spill path exactly once before constructing its writers. Later frames append to those owned open movies and never reinterpret them as external collisions; numbered sequences continue to authorize each distinct frame path before writing it.
+
 ## Native workspace navigation
 <!-- decision-owner: ui.workspace-navigation -->
 <!-- decision-owner: ui.copyable-error-reporting -->
 <!-- decision-owner: ui.active-scene-selection -->
+<!-- decision-ref: scene.library-rename -->
+
+A scene-name field commits its trimmed nonempty shelf label on Return, focus loss, presentation exit and before a contextual scene action. Contextual Render re-resolves that committed record before seeding its output name, and restart reads the same stored label.
 
 The native macOS workspace has exactly three primary pages in this order: `Escena`, `Render` and `Settings`. `Escena` contains the scene library, physical authoring inspector and Viewer. `Render` contains the same scene library and the Render Queue as its sole work panel; it has no second Output tab, contextual output inspector or Viewer. `Settings` owns the general Application output preset/ODT controls, Output inspector and Viewer-presentation information together with the existing Library and Monitor settings. Queue navigation never mutates the active scene or its published Viewer result. Returning to `Escena` refreshes presentation descriptors without selecting or evaluating a diagnostic phase, then republishes the result already owned by the active Setup or physical quality. A cached physical foreground is recomposed only through the existing Reference provider, so a video or synthetic Reference remains visible after visiting Render or Settings.
 

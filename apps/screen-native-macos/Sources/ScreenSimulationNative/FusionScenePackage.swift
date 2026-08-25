@@ -844,8 +844,14 @@ enum FusionScenePackageWriter {
             let spillRelative = request.outputPlan.generatedRelativePaths[manifestOffset + 1]
             let deviceURL = request.outputPlan.destination.appendingPathComponent(deviceRelative)
             let spillURL = request.outputPlan.destination.appendingPathComponent(spillRelative)
-            try request.outputPlan.authorizeWrite(to: deviceURL, policy: configuration.overwritePolicy)
-            try request.outputPlan.authorizeWrite(to: spillURL, policy: configuration.overwritePolicy)
+            if !configuration.format.isMovie {
+                try request.outputPlan.authorizeWrite(
+                    to: deviceURL, policy: configuration.overwritePolicy
+                )
+                try request.outputPlan.authorizeWrite(
+                    to: spillURL, policy: configuration.overwritePolicy
+                )
+            }
             if configuration.format.isMovie {
                 guard let display else {
                     throw NativeOutputError.unsupported("Fusion movie requiere el writer Metal")
@@ -866,6 +872,12 @@ enum FusionScenePackageWriter {
                     display: display
                 )
                 if deviceMovie == nil {
+                    try request.outputPlan.authorizeWrite(
+                        to: deviceURL, policy: configuration.overwritePolicy
+                    )
+                    try request.outputPlan.authorizeWrite(
+                        to: spillURL, policy: configuration.overwritePolicy
+                    )
                     for url in [deviceURL, spillURL] where FileManager.default.fileExists(atPath: url.path) {
                         try FileManager.default.removeItem(at: url)
                     }

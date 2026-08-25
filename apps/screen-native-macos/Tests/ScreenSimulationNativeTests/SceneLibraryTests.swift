@@ -94,6 +94,42 @@ private func scalarControl(
 }
 
 @MainActor
+@Test func sceneRenameIsTrimmedAndPersistsAcrossControllerReload() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-rename-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let controller = SceneLibraryController(store: store)
+    let scene = try controller.add(
+        capture: .init(
+            snapshot: .init(
+                source: .init(
+                    kind: .syntheticPattern,
+                    patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                    assets: [], missingMedia: nil
+                ),
+                currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+                viewerIsFitted: true, authoring: try sceneAuthoring()
+            ),
+            thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
+        ),
+        name: "Nombre anterior"
+    )
+
+    try controller.rename(scene, to: "  Nombre confirmado  ")
+    #expect(controller.scene(id: scene.id)?.name == "Nombre confirmado")
+
+    let reopened = SceneLibraryController(
+        store: try SceneLibraryStore(directoryURL: root)
+    )
+    #expect(reopened.scene(id: scene.id)?.name == "Nombre confirmado")
+    #expect(throws: SceneLibraryError.self) {
+        try reopened.rename(scene, to: "   ")
+    }
+    #expect(reopened.scene(id: scene.id)?.name == "Nombre confirmado")
+}
+
+@MainActor
 @Test func duplicatingScenePreservesExplicitThinLensOverride() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-duplicate-lens-\(UUID().uuidString)")
