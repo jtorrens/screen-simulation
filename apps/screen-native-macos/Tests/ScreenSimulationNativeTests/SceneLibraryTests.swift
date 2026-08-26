@@ -58,13 +58,179 @@ private func scalarControl(
     return control.value
 }
 
+private func sceneCapture() throws -> SavedSceneCapture {
+    .init(
+        snapshot: .init(
+            source: .init(
+                kind: .syntheticPattern, patternRawValue: SyntheticPattern.eyeChart.rawValue,
+                assets: [], missingMedia: nil
+            ),
+            currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+            viewerIsFitted: true, authoring: try sceneAuthoring()
+        ),
+        thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
+    )
+}
+
+@MainActor
+@Test func sceneTreeMovementAllocatesMonotonicOrdinalsAndSortsByName() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-tree-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let controller = SceneLibraryController(store: try SceneLibraryStore(directoryURL: root))
+    let zeta = try controller.add(capture: sceneCapture(), name: "Zeta")
+    let alpha = try controller.add(capture: sceneCapture(), name: "Alpha")
+    let production = try controller.createProduction(name: "Producción", seasonSlug: "S01")
+    let episode = try controller.createEpisode(in: production.id, name: "Episodio")
+    let shot = try controller.createShot(in: episode.id, name: "Plano")
+
+    try controller.moveScene(zeta.id, to: shot.id)
+    try controller.moveScene(alpha.id, to: shot.id)
+    try controller.moveScene(alpha.id, to: shot.id)
+    var stored = try #require(controller.document.productions.first?.episodes.first?.shots.first)
+    #expect(stored.scenes.map(\.ordinal) == [1, 2])
+    #expect(controller.sortedScenes(stored.scenes.map(\.sceneID)).map(\.name) == ["Plano_001", "Plano_002"])
+    #expect(throws: SceneLibraryError.self) {
+        try controller.rename(zeta, to: "No permitido")
+    }
+
+    try controller.moveScene(zeta.id, to: nil)
+    let freeScene = try #require(controller.scene(id: zeta.id))
+    try controller.rename(freeScene, to: "Libre")
+    try controller.moveScene(zeta.id, to: shot.id)
+    try controller.renameShot(shot.id, to: "Plano B")
+    stored = try #require(controller.document.productions.first?.episodes.first?.shots.first)
+    #expect(stored.scenes.first(where: { $0.sceneID == zeta.id })?.ordinal == 3)
+    #expect(stored.nextSceneOrdinal == 4)
+    #expect(controller.scene(id: alpha.id)?.name == "Plano B_002")
+    #expect(controller.scene(id: zeta.id)?.name == "Plano B_003")
+    #expect(try SceneLibraryStore(directoryURL: root).load() == controller.document)
+}
+
+@MainActor
+@Test func associatedRenderUsesPersistedValuesWithoutReadingProductionJSON() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-shot-manager-offline-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let libraryRoot = root.appendingPathComponent("library")
+    let productionRoot = root.appendingPathComponent("production")
+    try FileManager.default.createDirectory(at: productionRoot, withIntermediateDirectories: true)
+    let productionID = UUID().uuidString
+    let episodeID = UUID().uuidString
+    let shotID = UUID().uuidString
+    let projection = ShotManagerProductionProjection(
+        productionId: productionID, productionSlug: "PROD", seasonSlug: "S01",
+        episodes: [.init(id: episodeID, order: 7, slug: "EP07")],
+        workstreams: [.init(name: "CG", folders: [.init(name: "renders", suffix: "_beauty")])],
+        shots: [.init(id: shotID, episodeId: episodeID, canonicalName: "SH010")]
+    )
+    let association = ShotManagerProductionAssociation(
+        productionId: productionID, productionRootPath: productionRoot.path,
+        productionSlug: "PROD", seasonSlug: "S01",
+        destinations: [
+            .init(
+                role: "render", workstreamName: "CG", folderName: "renders",
+                folderSuffix: "_beauty"
+            ),
+            .init(
+                role: "comps", workstreamName: "CG", folderName: "comps",
+                folderSuffix: "_comp"
+            ),
+        ]
+    )
+    let controller = SceneLibraryController(store: try SceneLibraryStore(directoryURL: libraryRoot))
+    let scene = try controller.add(capture: sceneCapture(), name: "Prueba")
+    let production = try controller.createAssociatedProduction(
+        name: "PROD", association: association, projection: projection
+    )
+    let episode = try controller.createEpisode(in: production.id, name: "EP")
+    try controller.associateEpisode(episode.id, with: projection.episodes[0])
+    #expect(controller.document.productions[0].episodes[0].name == "EP07")
+    #expect(throws: SceneLibraryError.self) {
+        try controller.renameEpisode(episode.id, to: "No permitido")
+    }
+    let shot = try controller.createShot(in: episode.id, name: "SH")
+    try controller.moveScene(scene.id, to: shot.id)
+    #expect(controller.scene(id: scene.id)?.name == "SH_001")
+    try controller.associateShot(shot.id, with: projection.shots[0])
+    #expect(controller.document.productions[0].episodes[0].shots[0].name == "SH010")
+    #expect(controller.scene(id: scene.id)?.name == "SH010_001")
+    #expect(throws: SceneLibraryError.self) {
+        try controller.renameShot(shot.id, to: "No permitido")
+    }
+
+    let target = try #require(try controller.associatedRenderTarget(for: scene.id))
+    #expect(target.outputBaseName == "SH010_beauty_001")
+    #expect(target.directoryPath.hasSuffix("/007/CG/renders"))
+    #expect(FileManager.default.fileExists(atPath: target.directoryPath))
+    #expect(!FileManager.default.fileExists(atPath: productionRoot.appendingPathComponent("production.json").path))
+
+    try controller.makeShotFree(shot.id)
+    try controller.renameShot(shot.id, to: "Manual")
+    #expect(controller.scene(id: scene.id)?.name == "Manual_001")
+}
+
+@Test func productionAssociationPersistsRenderAndCompsDestinationsTogether() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-shot-manager-destinations-\(UUID().uuidString)")
+    let productionID = UUID().uuidString
+    let read = ShotManagerDocumentRead(
+        documentURL: root.appendingPathComponent("production.json"), rootURL: root,
+        projection: .init(
+            productionId: productionID, productionSlug: "PROD", seasonSlug: "S01",
+            episodes: [],
+            workstreams: [
+                .init(name: "CG", folders: [
+                    .init(name: "renders", suffix: "_beauty"),
+                    .init(name: "comps", suffix: "_comp"),
+                ]),
+            ],
+            shots: []
+        )
+    )
+    let options = ShotManagerAssociationService.destinationOptions(in: read.projection)
+    let association = try ShotManagerAssociationService.makeAssociation(
+        from: read, selections: [("render", options[0]), ("comps", options[1])]
+    )
+
+    #expect(association.destinations.map(\.role) == ["render", "comps"])
+}
+
+@MainActor
+@Test func treeInspectorEditsAndDeletesOnlyEmptyBranches() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-tree-inspector-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let controller = SceneLibraryController(store: try SceneLibraryStore(directoryURL: root))
+    let production = try controller.createProduction(name: "Producción", seasonSlug: "S01")
+    let episode = try controller.createEpisode(in: production.id, name: "Episodio")
+    let shot = try controller.createShot(in: episode.id, name: "Plano")
+
+    try controller.renameProduction(production.id, to: "  Proyecto  ")
+    try controller.setProductionSeason(production.id, to: "  S02  ")
+    try controller.renameEpisode(episode.id, to: "  EP  " )
+    try controller.renameShot(shot.id, to: "  SH010  ")
+    #expect(controller.document.productions[0].name == "Proyecto")
+    #expect(controller.document.productions[0].seasonSlug == "S02")
+    #expect(controller.document.productions[0].episodes[0].name == "EP")
+    #expect(controller.document.productions[0].episodes[0].shots[0].name == "SH010")
+    #expect(throws: SceneLibraryError.self) { try controller.deleteEpisode(episode.id) }
+    #expect(throws: SceneLibraryError.self) { try controller.deleteProduction(production.id) }
+
+    try controller.deleteShot(shot.id)
+    try controller.deleteEpisode(episode.id)
+    try controller.deleteProduction(production.id)
+    #expect(controller.document.productions.isEmpty)
+}
+
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 23)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 24)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v23.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v24.json")
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(

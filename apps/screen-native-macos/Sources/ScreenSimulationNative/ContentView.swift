@@ -6,6 +6,7 @@ import StudioColor
 import StudioMedia
 import StudioVideoOutput
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum NativeTheme {
     static let accent = Color(red: 0.88, green: 0.57, blue: 0.16)
@@ -76,6 +77,13 @@ private struct WindowTitleUpdater: NSViewRepresentable {
 }
 
 struct ContentView: View {
+    enum SceneTreeSelection: Hashable {
+        case unclassified
+        case production(UUID)
+        case episode(UUID)
+        case shot(UUID)
+        case scene(UUID)
+    }
     enum PendingSceneAction {
         case update, renderAfterUpdate, delete
     }
@@ -165,6 +173,7 @@ struct ContentView: View {
     @State private var renderDraft: RenderDraft?
     @State private var pendingRenderDraftAfterUpdate: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
+    @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
 
     private struct RenderDraft: Identifiable {
         let scene: SavedScene
@@ -362,7 +371,7 @@ struct ContentView: View {
                     .frame(minHeight: 300)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .frame(minWidth: 400, idealWidth: 470, maxWidth: 620)
+                .frame(minWidth: 560, idealWidth: 680, maxWidth: 900)
             }
             queuePanel
                 .frame(minWidth: 640, minHeight: 480)
@@ -457,7 +466,7 @@ struct ContentView: View {
                         .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
                     testSetupPanel
                 }
-                .frame(minWidth: 380, idealWidth: 430, maxWidth: 620)
+                .frame(minWidth: 560, idealWidth: 680, maxWidth: 900)
             }
 
             preview(showTestPhasePicker: true)
@@ -1878,6 +1887,14 @@ struct ContentView: View {
                 Label("Escenas", systemImage: "rectangle.stack")
                     .font(.headline)
                 Spacer()
+                Menu {
+                    Button("Nueva Producción manual…") { createManualProduction() }
+                    Button("Asociar production.json…") { associateNewProduction() }
+                } label: {
+                    Label("Estructura", systemImage: "folder.badge.plus")
+                        .labelStyle(.iconOnly)
+                }
+                .disabled(scenes.blockedError != nil)
                 Button {
                     trackingScenePanel.toggle(model: model)
                 } label: {
@@ -1921,54 +1938,112 @@ struct ContentView: View {
                     systemImage: "exclamationmark.lock",
                     description: Text(blocked)
                 )
-            } else if scenes.document.scenes.isEmpty {
+            } else if scenes.document.scenes.isEmpty && scenes.document.productions.isEmpty {
                 ContentUnavailableView(
                     "Sin escenas",
                     systemImage: "rectangle.stack.badge.plus",
                     description: Text("Guarda el estado activo con el botón +.")
                 )
             } else {
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: 10) {
-                        ForEach(scenes.document.scenes) { scene in
-                            SceneLibraryItemView(
-                                scene: scene,
-                                thumbnailURL: scenes.thumbnailURL(for: scene),
-                                isActive: model.activeSceneID == scene.id,
-                                onRename: { name in
-                                    do {
-                                        try scenes.rename(scene, to: name)
-                                        return true
-                                    } catch {
-                                        model.errorMessage = error.localizedDescription
-                                        return false
+                HSplitView {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Producciones").font(.headline)
+                                Text("Episodios, Planos y Escenas")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Menu {
+                                Button("Nueva Producción manual…") { createManualProduction() }
+                                Button("Asociar nueva Producción…") { associateNewProduction() }
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .menuStyle(.borderlessButton)
+                            .help("Crear Producción")
+                        }
+                        .padding(10)
+                        Divider()
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 2) {
+                            DisclosureGroup {
+                                ForEach(scenes.sortedScenes(scenes.document.unclassifiedSceneIDs)) { scene in
+                                    compactSceneTreeRow(scene).padding(.leading, 18)
+                                }
+                            } label: {
+                                sceneTreeRow(
+                                    .unclassified,
+                                    title: "Sin clasificar",
+                                    detail: "\(scenes.document.unclassifiedSceneIDs.count) escenas libres",
+                                    icon: "tray"
+                                )
+                            }
+                            .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                                acceptSceneDrop(providers, shotID: nil)
+                            }
+                            ForEach(scenes.document.productions) { production in
+                                DisclosureGroup {
+                                    ForEach(production.episodes) { episode in
+                                        DisclosureGroup {
+                                            ForEach(episode.shots) { shot in
+                                                DisclosureGroup {
+                                                    ForEach(scenes.sortedScenes(shot.scenes.map(\.sceneID))) { scene in
+                                                        compactSceneTreeRow(scene).padding(.leading, 54)
+                                                    }
+                                                } label: {
+                                                    sceneTreeRow(
+                                                        .shot(shot.id), title: shot.name,
+                                                        detail: shot.associationState == .associated
+                                                            ? shot.externalReference?.canonicalName
+                                                            : "Libre · Salida manual",
+                                                        icon: "camera"
+                                                    )
+                                                }
+                                                .padding(.leading, 36)
+                                                .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
+                                                    acceptSceneDrop(providers, shotID: shot.id)
+                                                }
+                                            }
+                                        } label: {
+                                            sceneTreeRow(
+                                                .episode(episode.id), title: episode.name,
+                                                detail: episode.associationState == .associated
+                                                    ? episode.externalReference.map {
+                                                        "Episodio \(String(format: "%03d", $0.episodeOrder))"
+                                                    }
+                                                    : "Libre · Salida manual",
+                                                icon: "rectangle.stack",
+                                                onAdd: { createShot(in: episode) }
+                                            )
+                                        }
+                                        .padding(.leading, 18)
                                     }
-                                },
-                                onOpen: {
-                                    guard let current = scenes.scene(id: scene.id) else {
-                                        model.errorMessage = "La escena ya no existe."
-                                        return
-                                    }
-                                    requestOpenScene(current)
-                                },
-                                onUpdate: { requestSceneAction(.update, scene: scene) },
-                                onDuplicate: {
-                                    do { _ = try scenes.duplicate(scene) }
-                                    catch { model.errorMessage = error.localizedDescription }
-                                },
-                                onRender: {
-                                    guard let current = scenes.scene(id: scene.id) else {
-                                        model.errorMessage = "La escena ya no existe."
-                                        return
-                                    }
-                                    requestSceneRender(current)
-                                },
-                                onHistory: { autosaveHistoryTarget = scenes.autosaveHistoryTarget(for: scene) },
-                                onDelete: { requestSceneAction(.delete, scene: scene) }
-                            )
+                                } label: {
+                                    sceneTreeRow(
+                                        .production(production.id), title: production.name,
+                                        detail: production.association == nil
+                                            ? "Manual\(production.seasonSlug.isEmpty ? "" : " · \(production.seasonSlug)")"
+                                            : "Shot Manager · \(production.seasonSlug)",
+                                        icon: "building.2",
+                                        onAdd: { createEpisode(in: production) }
+                                    )
+                                }
+                            }
+                            }
+                            .padding(8)
                         }
                     }
-                    .padding(10)
+                    .background(
+                        Color(nsColor: .controlBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
+                    .padding(8)
+                    .frame(minWidth: 280, idealWidth: 340)
+                    sceneTreeInspector
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.vertical, 8).padding(.trailing, 8)
+                        .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
                 }
             }
         }
@@ -1983,6 +2058,617 @@ struct ContentView: View {
         case .renderAfterUpdate: "¿Actualizar ‘\(scene.name)’ antes de renderizar?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
         }
+    }
+
+    private func sceneTreeRow(
+        _ selection: SceneTreeSelection, title: String, detail: String?, icon: String,
+        onAdd: (() -> Void)? = nil
+    ) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .frame(width: 17)
+                .foregroundStyle(sceneTreeSelection == selection ? .white : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).fontWeight(.medium).lineLimit(1)
+                if let detail, !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(
+                        sceneTreeSelection == selection ? .white.opacity(0.82) : .secondary
+                    ).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            if let onAdd {
+                Button(action: onAdd) { Image(systemName: "plus") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(sceneTreeSelection == selection ? .white : .secondary)
+                    .help("Añadir nivel hijo")
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .background(
+            sceneTreeSelection == selection ? Color.accentColor : .clear,
+            in: RoundedRectangle(cornerRadius: 5)
+        )
+        .onTapGesture { sceneTreeSelection = selection }
+    }
+
+    private func compactSceneTreeRow(_ scene: SavedScene) -> some View {
+        sceneTreeRow(
+            .scene(scene.id), title: scene.name,
+            detail: model.activeSceneID == scene.id ? "abierta" : nil,
+            icon: "doc.text"
+        )
+        .overlay(alignment: .leading) {
+            if model.activeSceneID == scene.id {
+                RoundedRectangle(cornerRadius: 4).stroke(NativeTheme.accent, lineWidth: 1)
+            }
+        }
+        .onTapGesture(count: 2) { requestOpenScene(scene) }
+        .onDrag { NSItemProvider(object: scene.id.uuidString as NSString) }
+        .contextMenu {
+            Button("Abrir escena") { requestOpenScene(scene) }
+            Button("Actualizar con el estado actual") { requestSceneAction(.update, scene: scene) }
+            Button("Duplicar escena") {
+                do { _ = try scenes.duplicate(scene) }
+                catch { model.errorMessage = error.localizedDescription }
+            }
+            Button("Añadir a Render Queue…") { requestSceneRender(scene) }
+            Divider()
+            Button("Eliminar escena", role: .destructive) { requestSceneAction(.delete, scene: scene) }
+        }
+    }
+
+    @ViewBuilder
+    private var sceneTreeInspector: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                switch sceneTreeSelection {
+                case .unclassified:
+                    inspectorTitle("Sin clasificar", icon: "tray")
+                    Text("Escenas que todavía no pertenecen a ningún Plano.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("Escenas", value: "\(scenes.document.unclassifiedSceneIDs.count)")
+                    Divider()
+                    Button("Nueva Producción manual…") { createManualProduction() }
+                    Button("Asociar nueva Producción…") { associateNewProduction() }
+                case let .production(id):
+                    if let production = production(id: id) {
+                        productionInspector(production)
+                    } else { missingTreeSelection() }
+                case let .episode(id):
+                    if let context = episodeContext(id: id) {
+                        episodeInspector(context.episode, production: context.production)
+                    } else { missingTreeSelection() }
+                case let .shot(id):
+                    if let context = shotContext(id: id) {
+                        shotInspector(
+                            context.shot, episode: context.episode,
+                            production: context.production
+                        )
+                    } else { missingTreeSelection() }
+                case let .scene(id):
+                    if let scene = scenes.scene(id: id) {
+                        sceneInspector(scene)
+                    } else { missingTreeSelection() }
+                case nil:
+                    ContentUnavailableView(
+                        "Inspector del árbol", systemImage: "sidebar.right",
+                        description: Text("Selecciona un elemento del árbol.")
+                    )
+                }
+            }
+            .padding(12)
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func inspectorTitle(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon).font(.headline)
+    }
+
+    private func productionInspector(_ production: SceneProduction) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            inspectorTitle("Producción", icon: "building.2")
+            TreeInspectorTextField(title: "Nombre", value: production.name) { value in
+                do { try scenes.renameProduction(production.id, to: value); return true }
+                catch { model.errorMessage = error.localizedDescription; return false }
+            }
+            TreeInspectorTextField(
+                title: "Temporada", value: production.seasonSlug,
+                allowsEmpty: true, isEnabled: production.association == nil
+            ) { value in
+                do { try scenes.setProductionSeason(production.id, to: value); return true }
+                catch { model.errorMessage = error.localizedDescription; return false }
+            }
+            Divider()
+            productionAssociationPicker(production)
+            if let association = production.association {
+                LabeledContent("Estado", value: productionIsLive(production) ? "Conectada" : "Desconectada")
+                LabeledContent("Production ID", value: association.productionId)
+                LabeledContent("Raíz", value: association.productionRootPath)
+                ForEach(association.destinations) { destination in
+                    LabeledContent(
+                        destination.role,
+                        value: "\(destination.workstreamName)/\(destination.folderName)\(destination.folderSuffix)"
+                    )
+                }
+                Button("Actualizar desde production.json…") { reconnectProduction(production, replace: false) }
+                Button("Seleccionar nueva raíz…") { selectOfflineRoot(production) }
+            } else {
+                LabeledContent("Estado", value: "Manual")
+            }
+            Divider()
+            Button("Nuevo Episodio libre…") { createEpisode(in: production) }
+            Button("Eliminar Producción", role: .destructive) {
+                do {
+                    try scenes.deleteProduction(production.id)
+                    sceneTreeSelection = .unclassified
+                } catch { model.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    private func productionAssociationPicker(_ production: SceneProduction) -> some View {
+        Picker(
+            "Asociación",
+            selection: Binding(
+                get: { production.association?.productionId ?? "" },
+                set: { selection in
+                    guard selection != production.association?.productionId else { return }
+                    if selection.isEmpty {
+                        do { try scenes.makeProductionManual(production.id) }
+                        catch { model.errorMessage = error.localizedDescription }
+                    } else if selection == "choose-production-json" {
+                        if production.association == nil {
+                            associateExistingProduction(production)
+                        } else {
+                            reconnectProduction(production, replace: true)
+                        }
+                    }
+                }
+            )
+        ) {
+            Text("Libre · Salida manual").tag("")
+            if let association = production.association {
+                Text("Shot Manager · \(association.productionSlug)")
+                    .tag(association.productionId)
+            }
+            Text("Asociar otro production.json…").tag("choose-production-json")
+        }
+        .pickerStyle(.menu)
+    }
+
+    private func episodeAssociationPicker(
+        _ episode: SceneEpisode, production: SceneProduction
+    ) -> some View {
+        let live = try? liveProjection(for: production)
+        let currentID = episode.associationState == .associated
+            ? episode.externalReference?.episodeId ?? "" : ""
+        var options = (live?.episodes ?? []).sorted {
+            $0.order == $1.order ? $0.id < $1.id : $0.order < $1.order
+        }.map { ($0.id, "\(String(format: "%03d", $0.order)) · \($0.slug)") }
+        if let reference = episode.externalReference,
+           episode.associationState == .associated,
+           !options.contains(where: { $0.0 == reference.episodeId }) {
+            options.append((reference.episodeId, "No disponible · \(reference.episodeSlug)"))
+        }
+        return Picker(
+            "Asociación",
+            selection: Binding(
+                get: { currentID },
+                set: { selection in
+                    guard selection != currentID else { return }
+                    if selection.isEmpty {
+                        do { try scenes.makeEpisodeFree(episode.id) }
+                        catch { model.errorMessage = error.localizedDescription }
+                    } else if let external = live?.episodes.first(where: { $0.id == selection }) {
+                        do { try scenes.associateEpisode(episode.id, with: external) }
+                        catch { model.errorMessage = error.localizedDescription }
+                    }
+                }
+            )
+        ) {
+            Text("Libre · Salida manual").tag("")
+            ForEach(options, id: \.0) { option in Text(option.1).tag(option.0) }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private func shotAssociationPicker(
+        _ shot: SceneShot, episode: SceneEpisode, production: SceneProduction
+    ) -> some View {
+        let live = try? liveProjection(for: production)
+        let episodeID = episode.associationState == .associated
+            ? episode.externalReference?.episodeId : nil
+        let currentID = shot.associationState == .associated
+            ? shot.externalReference?.shotId ?? "" : ""
+        var options = (live?.shots ?? []).filter { $0.episodeId == episodeID }.sorted {
+            let order = $0.canonicalName.localizedStandardCompare($1.canonicalName)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        }.map { ($0.id, $0.canonicalName) }
+        if let reference = shot.externalReference,
+           shot.associationState == .associated,
+           !options.contains(where: { $0.0 == reference.shotId }) {
+            options.append((reference.shotId, "No disponible · \(reference.canonicalName)"))
+        }
+        return Picker(
+            "Asociación",
+            selection: Binding(
+                get: { currentID },
+                set: { selection in
+                    guard selection != currentID else { return }
+                    if selection.isEmpty {
+                        do { try scenes.makeShotFree(shot.id) }
+                        catch { model.errorMessage = error.localizedDescription }
+                    } else if let external = live?.shots.first(where: { $0.id == selection }) {
+                        do { try scenes.associateShot(shot.id, with: external) }
+                        catch { model.errorMessage = error.localizedDescription }
+                    }
+                }
+            )
+        ) {
+            Text("Libre · Salida manual").tag("")
+            ForEach(options, id: \.0) { option in Text(option.1).tag(option.0) }
+        }
+        .pickerStyle(.menu)
+    }
+
+    private func episodeInspector(
+        _ episode: SceneEpisode, production: SceneProduction
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            inspectorTitle("Episodio", icon: "rectangle.stack")
+            TreeInspectorTextField(
+                title: "Nombre", value: episode.name,
+                isEnabled: episode.associationState == .free
+            ) { value in
+                do { try scenes.renameEpisode(episode.id, to: value); return true }
+                catch { model.errorMessage = error.localizedDescription; return false }
+            }
+            LabeledContent(
+                "Estado", value: episode.associationState == .associated ? "Asociado" : "Libre"
+            )
+            episodeAssociationPicker(episode, production: production)
+            if let reference = episode.externalReference {
+                LabeledContent("Orden", value: String(format: "%03d", reference.episodeOrder))
+                LabeledContent("Slug", value: reference.episodeSlug)
+                LabeledContent("Episode ID", value: reference.episodeId)
+            }
+            Divider()
+            Button("Nuevo Plano libre…") { createShot(in: episode) }
+            Button("Eliminar Episodio", role: .destructive) {
+                do {
+                    try scenes.deleteEpisode(episode.id)
+                    sceneTreeSelection = .production(production.id)
+                } catch { model.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    private func shotInspector(
+        _ shot: SceneShot, episode: SceneEpisode, production: SceneProduction
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            inspectorTitle("Plano", icon: "camera")
+            TreeInspectorTextField(
+                title: "Nombre", value: shot.name,
+                isEnabled: shot.associationState == .free
+            ) { value in
+                do { try scenes.renameShot(shot.id, to: value); return true }
+                catch { model.errorMessage = error.localizedDescription; return false }
+            }
+            LabeledContent("Estado", value: shot.associationState == .associated ? "Asociado" : "Libre")
+            shotAssociationPicker(shot, episode: episode, production: production)
+            LabeledContent("Escenas", value: "\(shot.scenes.count)")
+            LabeledContent("Próximo ordinal", value: String(format: "%03d", shot.nextSceneOrdinal))
+            if let reference = shot.externalReference {
+                LabeledContent("Nombre canónico", value: reference.canonicalName)
+                LabeledContent("Shot ID", value: reference.shotId)
+            }
+            Divider()
+            Text("Arrastra escenas sobre este Plano para asociarlas.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Eliminar Plano", role: .destructive) {
+                do {
+                    try scenes.deleteShot(shot.id)
+                    sceneTreeSelection = .episode(episode.id)
+                } catch { model.errorMessage = error.localizedDescription }
+            }
+        }
+    }
+
+    private func sceneInspector(_ scene: SavedScene) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            inspectorTitle("Escena", icon: "doc.text")
+            let placement = scenePlacement(scene.id)
+            TreeInspectorTextField(
+                title: "Nombre", value: scene.name, isEnabled: placement == nil
+            ) { value in
+                do { try scenes.rename(scene, to: value); return true }
+                catch { model.errorMessage = error.localizedDescription; return false }
+            }
+            if let placement {
+                LabeledContent("Plano", value: placement.shot.name)
+                LabeledContent("Ordinal", value: String(format: "%03d", placement.ordinal))
+                Text("El nombre procede del Plano asociado. Muévela a Sin clasificar para editarlo.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Mover a Sin clasificar") {
+                    do { try scenes.moveScene(scene.id, to: nil) }
+                    catch { model.errorMessage = error.localizedDescription }
+                }
+            } else {
+                LabeledContent("Ubicación", value: "Sin clasificar")
+            }
+            Divider()
+            Button("Abrir escena") { requestOpenScene(scene) }
+            Button("Actualizar con estado actual") { requestSceneAction(.update, scene: scene) }
+            Button("Duplicar escena") {
+                do { _ = try scenes.duplicate(scene) }
+                catch { model.errorMessage = error.localizedDescription }
+            }
+            Button("Añadir a Render Queue…") { requestSceneRender(scene) }
+            Button("Historial…") { autosaveHistoryTarget = scenes.autosaveHistoryTarget(for: scene) }
+            Button("Eliminar escena", role: .destructive) { requestSceneAction(.delete, scene: scene) }
+        }
+    }
+
+    private func missingTreeSelection() -> some View {
+        ContentUnavailableView("Elemento inexistente", systemImage: "questionmark.folder")
+    }
+
+    private func production(id: UUID) -> SceneProduction? {
+        scenes.document.productions.first { $0.id == id }
+    }
+
+    private func episodeContext(id: UUID) -> (production: SceneProduction, episode: SceneEpisode)? {
+        for production in scenes.document.productions {
+            if let episode = production.episodes.first(where: { $0.id == id }) {
+                return (production, episode)
+            }
+        }
+        return nil
+    }
+
+    private func shotContext(
+        id: UUID
+    ) -> (production: SceneProduction, episode: SceneEpisode, shot: SceneShot)? {
+        for production in scenes.document.productions {
+            for episode in production.episodes {
+                if let shot = episode.shots.first(where: { $0.id == id }) {
+                    return (production, episode, shot)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func scenePlacement(_ sceneID: UUID) -> (shot: SceneShot, ordinal: Int)? {
+        for production in scenes.document.productions {
+            for episode in production.episodes {
+                for shot in episode.shots {
+                    if let placement = shot.scenes.first(where: { $0.sceneID == sceneID }) {
+                        return (shot, placement.ordinal)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func acceptSceneDrop(_ providers: [NSItemProvider], shotID: UUID?) -> Bool {
+        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+        provider.loadObject(ofClass: NSString.self) { value, _ in
+            guard let text = value as? String, let sceneID = UUID(uuidString: text) else { return }
+            Task { @MainActor in
+                do { try scenes.moveScene(sceneID, to: shotID) }
+                catch { model.errorMessage = error.localizedDescription }
+            }
+        }
+        return true
+    }
+
+    private func prompt(_ title: String, label: String, initial: String = "") -> String? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.addButton(withTitle: "Aceptar")
+        alert.addButton(withTitle: "Cancelar")
+        let field = NSTextField(string: initial)
+        field.placeholderString = label
+        field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func chooseProductionJSON() -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "Selecciona production.json"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func chooseDestinations(
+        _ options: [ShotManagerDestinationOption]
+    ) -> (render: ShotManagerDestinationOption, comps: ShotManagerDestinationOption)? {
+        guard !options.isEmpty else { model.errorMessage = "La Producción no publica destinos."; return nil }
+        let labels = options.map { "\($0.workstream.name) / \($0.folder.name)" }
+        let renderPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        renderPopup.addItems(withTitles: labels)
+        let compsPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        compsPopup.addItems(withTitles: labels)
+        if let renderIndex = options.firstIndex(where: {
+            $0.folder.name.localizedCaseInsensitiveContains("render")
+        }) { renderPopup.selectItem(at: renderIndex) }
+        if let compsIndex = options.firstIndex(where: {
+            $0.folder.name.localizedCaseInsensitiveContains("comp")
+        }) { compsPopup.selectItem(at: compsIndex) }
+        let stack = NSStackView(views: [
+            NSTextField(labelWithString: "Carpeta de renders"), renderPopup,
+            NSTextField(labelWithString: "Carpeta de comps"), compsPopup,
+        ])
+        stack.orientation = .vertical
+        stack.spacing = 6
+        stack.frame = NSRect(x: 0, y: 0, width: 360, height: 92)
+        let alert = NSAlert()
+        alert.messageText = "Destinos de Producción"
+        alert.informativeText = "Elige por separado las carpetas de renders y composiciones."
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Asociar")
+        alert.addButton(withTitle: "Cancelar")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return (
+            options[renderPopup.indexOfSelectedItem],
+            options[compsPopup.indexOfSelectedItem]
+        )
+    }
+
+    private func createManualProduction() {
+        let nameField = NSTextField(string: "")
+        nameField.placeholderString = "Nombre de Producción"
+        let seasonField = NSTextField(string: "")
+        seasonField.placeholderString = "Temporada (atributo, puede quedar vacío)"
+        let fields = NSStackView(views: [nameField, seasonField])
+        fields.orientation = .vertical; fields.spacing = 8
+        fields.frame = NSRect(x: 0, y: 0, width: 340, height: 56)
+        let alert = NSAlert(); alert.messageText = "Nueva Producción manual"
+        alert.accessoryView = fields
+        alert.addButton(withTitle: "Crear"); alert.addButton(withTitle: "Cancelar")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            _ = try scenes.createProduction(
+                name: nameField.stringValue, seasonSlug: seasonField.stringValue
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func associateNewProduction() {
+        guard let url = chooseProductionJSON() else { return }
+        do {
+            let read = try ShotManagerAssociationService.readProductionJSON(at: url)
+            let options = ShotManagerAssociationService.destinationOptions(in: read.projection)
+            guard let destinations = chooseDestinations(options) else { return }
+            let association = try ShotManagerAssociationService.makeAssociation(
+                from: read,
+                selections: [("render", destinations.render), ("comps", destinations.comps)]
+            )
+            _ = try scenes.createAssociatedProduction(
+                name: read.projection.productionSlug, association: association,
+                projection: read.projection
+            )
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func associateExistingProduction(_ production: SceneProduction) {
+        guard let url = chooseProductionJSON() else { return }
+        do {
+            let read = try ShotManagerAssociationService.readProductionJSON(at: url)
+            let options = ShotManagerAssociationService.destinationOptions(in: read.projection)
+            guard let destinations = chooseDestinations(options) else { return }
+            let association = try ShotManagerAssociationService.makeAssociation(
+                from: read,
+                selections: [("render", destinations.render), ("comps", destinations.comps)]
+            )
+            try scenes.associateProduction(
+                production.id, association: association, projection: read.projection,
+                replacingProduction: false
+            )
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func createEpisode(in production: SceneProduction) {
+        guard let name = prompt("Nuevo Episodio libre", label: "Nombre") else { return }
+        do { _ = try scenes.createEpisode(in: production.id, name: name) }
+        catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func createShot(in episode: SceneEpisode) {
+        guard let name = prompt("Nuevo Plano libre", label: "Nombre") else { return }
+        do { _ = try scenes.createShot(in: episode.id, name: name) }
+        catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func liveProjection(for production: SceneProduction) throws -> ShotManagerProductionProjection {
+        guard let association = production.association else {
+            throw SceneLibraryError.inaccessible("La Producción es manual.")
+        }
+        let url = URL(fileURLWithPath: association.productionRootPath).appendingPathComponent("production.json")
+        let read = try ShotManagerAssociationService.readProductionJSON(at: url)
+        guard read.projection.productionId == association.productionId else {
+            throw ShotManagerAssociationError.differentProduction
+        }
+        return read.projection
+    }
+
+    private func productionIsLive(_ production: SceneProduction) -> Bool {
+        (try? liveProjection(for: production)) != nil
+    }
+
+    private func chooseItem<T>(_ title: String, items: [T], label: (T) -> String) -> T? {
+        guard !items.isEmpty else { model.errorMessage = "No hay opciones disponibles."; return nil }
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        popup.addItems(withTitles: items.map(label))
+        let alert = NSAlert(); alert.messageText = title; alert.accessoryView = popup
+        alert.addButton(withTitle: "Asociar"); alert.addButton(withTitle: "Cancelar")
+        return alert.runModal() == .alertFirstButtonReturn ? items[popup.indexOfSelectedItem] : nil
+    }
+
+    private func associateEpisode(_ episode: SceneEpisode, production: SceneProduction) {
+        do {
+            let projection = try liveProjection(for: production)
+            guard let external = chooseItem("Asociar Episodio", items: projection.episodes, label: {
+                "\(String(format: "%03d", $0.order)) · \($0.slug)"
+            }) else { return }
+            try scenes.associateEpisode(episode.id, with: external)
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func associateShot(_ shot: SceneShot, episode: SceneEpisode, production: SceneProduction) {
+        do {
+            guard let episodeID = episode.externalReference?.episodeId,
+                  episode.associationState == .associated else {
+                throw SceneLibraryError.invalidDocument("Asocia primero el Episodio.")
+            }
+            let projection = try liveProjection(for: production)
+            let options = projection.shots.filter { $0.episodeId == episodeID }
+            guard let external = chooseItem("Asociar Plano", items: options, label: { $0.canonicalName }) else { return }
+            try scenes.associateShot(shot.id, with: external)
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func reconnectProduction(_ production: SceneProduction, replace: Bool) {
+        guard let url = chooseProductionJSON() else { return }
+        do {
+            let read = try ShotManagerAssociationService.readProductionJSON(at: url)
+            let association: ShotManagerProductionAssociation
+            if replace {
+                let options = ShotManagerAssociationService.destinationOptions(in: read.projection)
+                guard let destinations = chooseDestinations(options) else { return }
+                association = try ShotManagerAssociationService.makeAssociation(
+                    from: read,
+                    selections: [("render", destinations.render), ("comps", destinations.comps)]
+                )
+            } else if let existing = production.association {
+                association = try ShotManagerAssociationService.refreshedAssociation(existing, from: read)
+            } else { return }
+            try scenes.associateProduction(
+                production.id, association: association, projection: read.projection,
+                replacingProduction: replace
+            )
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func selectOfflineRoot(_ production: SceneProduction) {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try scenes.selectOfflineRoot(production.id, root: url) }
+        catch { model.errorMessage = error.localizedDescription }
     }
 
     private func sceneConfirmationButton(_ action: PendingSceneAction) -> String {
@@ -2049,7 +2735,12 @@ struct ContentView: View {
     private func requestSceneRender(_ scene: SavedScene) {
         do {
             try model.configureRenderRaster(for: scene)
-            model.renderJobName = scene.name
+            if let associated = try scenes.associatedRenderTarget(for: scene.id) {
+                model.renderJobName = associated.outputBaseName
+                model.renderOutputDirectoryPath = associated.directoryPath
+            } else {
+                model.renderJobName = scene.name
+            }
             model.renderVersionSuffix = ""
             if model.renderOutputDirectoryPath.isEmpty {
                 model.renderOutputDirectoryPath = FileDialogDirectory.renderOutput.url?.path ?? ""
@@ -4598,119 +5289,53 @@ private struct SceneAutosaveHistoryView: View {
     }
 }
 
-private struct SceneLibraryItemView: View {
-    let scene: SavedScene
-    let thumbnailURL: URL?
-    let isActive: Bool
-    let onRename: (String) -> Bool
-    let onOpen: () -> Void
-    let onUpdate: () -> Void
-    let onDuplicate: () -> Void
-    let onRender: () -> Void
-    let onHistory: () -> Void
-    let onDelete: () -> Void
-    @State private var draftName: String
-    @FocusState private var nameFieldIsFocused: Bool
+private struct TreeInspectorTextField: View {
+    let title: String
+    let value: String
+    var allowsEmpty = false
+    var isEnabled = true
+    let onCommit: (String) -> Bool
+    @State private var draft: String
+    @FocusState private var isFocused: Bool
 
     init(
-        scene: SavedScene,
-        thumbnailURL: URL?,
-        isActive: Bool,
-        onRename: @escaping (String) -> Bool,
-        onOpen: @escaping () -> Void,
-        onUpdate: @escaping () -> Void,
-        onDuplicate: @escaping () -> Void,
-        onRender: @escaping () -> Void,
-        onHistory: @escaping () -> Void,
-        onDelete: @escaping () -> Void
+        title: String, value: String, allowsEmpty: Bool = false,
+        isEnabled: Bool = true, onCommit: @escaping (String) -> Bool
     ) {
-        self.scene = scene
-        self.thumbnailURL = thumbnailURL
-        self.isActive = isActive
-        self.onRename = onRename
-        self.onOpen = onOpen
-        self.onUpdate = onUpdate
-        self.onDuplicate = onDuplicate
-        self.onRender = onRender
-        self.onHistory = onHistory
-        self.onDelete = onDelete
-        _draftName = State(initialValue: scene.name)
+        self.title = title
+        self.value = value
+        self.allowsEmpty = allowsEmpty
+        self.isEnabled = isEnabled
+        self.onCommit = onCommit
+        _draft = State(initialValue: value)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Group {
-                if let thumbnailURL, let image = NSImage(contentsOf: thumbnailURL) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                } else {
-                    Rectangle()
-                        .fill(.quaternary)
-                        .overlay { Image(systemName: "photo") }
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            TextField(title, text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!isEnabled)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .onChange(of: isFocused) { wasFocused, focused in
+                    if wasFocused, !focused { commit() }
                 }
-            }
-            .frame(width: 150, height: 84)
-            .background(.black)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay { RoundedRectangle(cornerRadius: 5).stroke(.separator) }
-            .onTapGesture(count: 2, perform: onOpen)
-            TextField("Nombre de escena", text: $draftName)
-                .textFieldStyle(.plain)
-                .font(.caption)
-                .frame(width: 150)
-                .focused($nameFieldIsFocused)
-                .onSubmit {
-                    _ = commitName()
-                    nameFieldIsFocused = false
+                .onChange(of: value) { _, newValue in
+                    if !isFocused { draft = newValue }
                 }
-                .onChange(of: nameFieldIsFocused) { wasFocused, isFocused in
-                    if wasFocused, !isFocused { _ = commitName() }
-                }
-                .onChange(of: scene.name) { _, name in draftName = name }
         }
-        .padding(7)
-        .background(
-            isActive ? NativeTheme.accent.opacity(0.08) : .clear,
-            in: RoundedRectangle(cornerRadius: 9)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(isActive ? NativeTheme.accent : .clear, lineWidth: 2)
-        }
-        .accessibilityValue(isActive ? "Escena abierta" : "")
-        .contextMenu {
-            Button("Abrir escena") { performAfterNameCommit(onOpen) }
-            Button("Actualizar con el estado actual") { performAfterNameCommit(onUpdate) }
-            Button("Duplicar escena") { performAfterNameCommit(onDuplicate) }
-            Button("Añadir a Render Queue…") { performAfterNameCommit(onRender) }
-            Button("Historial…") { performAfterNameCommit(onHistory) }
-            Divider()
-            Button("Eliminar escena", role: .destructive) {
-                performAfterNameCommit(onDelete)
-            }
-        }
-        .onDisappear { _ = commitName() }
+        .onDisappear { if isFocused { commit() } }
     }
 
-    @discardableResult
-    private func commitName() -> Bool {
-        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != scene.name else {
-            draftName = scene.name
-            return name == scene.name
+    private func commit() {
+        let candidate = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate != value else { return }
+        guard allowsEmpty || !candidate.isEmpty, onCommit(candidate) else {
+            draft = value
+            return
         }
-        guard onRename(name) else {
-            draftName = scene.name
-            return false
-        }
-        draftName = name
-        return true
-    }
-
-    private func performAfterNameCommit(_ action: () -> Void) {
-        guard commitName() else { return }
-        action()
+        draft = candidate
     }
 }
 

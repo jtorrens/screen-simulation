@@ -28,6 +28,39 @@
       ]
     },
     {
+      "id": "scene.library-hierarchy",
+      "scope": "workstation Production, Episode, Shot and Saved Scene organization, placement and ordinals",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/migrate_scene_library_v23_to_v24.py",
+        "scripts/test_migrate_scene_library_v23_to_v24.py",
+        "scripts/normalize_scene_library_v24_associated_names.py",
+        "scripts/test_normalize_scene_library_v24_associated_names.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "scene.shot-manager-association",
+      "scope": "read-only Shot Manager Production, Episode and Shot association with disconnected output continuity",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Shot Manager workstation association"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ShotManagerAssociation.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "scene.profile-resolution",
       "scope": "workstation Saved Scene profile defaults, overrides and Render Queue attempt materialization",
       "owner": {

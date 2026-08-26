@@ -483,14 +483,85 @@ struct SceneAutosaveHistoryTarget: Identifiable, Sendable {
     var id: UUID { sceneID }
 }
 
+enum SceneBranchAssociationState: String, Codable, Equatable, Sendable {
+    case free
+    case associated
+}
+
+struct ScenePlacement: Codable, Equatable, Identifiable, Sendable {
+    let sceneID: UUID
+    let ordinal: Int
+    var id: UUID { sceneID }
+}
+
+struct SceneShot: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var name: String
+    var associationState: SceneBranchAssociationState
+    var externalReference: ShotManagerShotReference?
+    var nextSceneOrdinal: Int
+    var scenes: [ScenePlacement]
+
+    init(id: UUID = UUID(), name: String, externalReference: ShotManagerShotReference? = nil) {
+        self.id = id
+        self.name = name
+        associationState = externalReference == nil ? .free : .associated
+        self.externalReference = externalReference
+        nextSceneOrdinal = 1
+        scenes = []
+    }
+}
+
+struct SceneEpisode: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var name: String
+    var associationState: SceneBranchAssociationState
+    var externalReference: ShotManagerEpisodeReference?
+    var shots: [SceneShot]
+
+    init(id: UUID = UUID(), name: String, externalReference: ShotManagerEpisodeReference? = nil) {
+        self.id = id
+        self.name = name
+        associationState = externalReference == nil ? .free : .associated
+        self.externalReference = externalReference
+        shots = []
+    }
+}
+
+struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var name: String
+    var seasonSlug: String
+    var association: ShotManagerProductionAssociation?
+    var episodes: [SceneEpisode]
+
+    init(
+        id: UUID = UUID(), name: String, seasonSlug: String = "",
+        association: ShotManagerProductionAssociation? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.seasonSlug = seasonSlug
+        self.association = association
+        episodes = []
+    }
+}
+
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 23
+    static let currentSchemaVersion = 24
     let schemaVersion: Int
     var scenes: [SavedScene]
+    var productions: [SceneProduction]
+    var unclassifiedSceneIDs: [UUID]
 
-    init(scenes: [SavedScene] = []) {
+    init(
+        scenes: [SavedScene] = [], productions: [SceneProduction] = [],
+        unclassifiedSceneIDs: [UUID]? = nil
+    ) {
         schemaVersion = Self.currentSchemaVersion
         self.scenes = scenes
+        self.productions = productions
+        self.unclassifiedSceneIDs = unclassifiedSceneIDs ?? scenes.map(\.id)
     }
 
     func validate() throws {
@@ -501,6 +572,160 @@ struct SceneLibraryDocument: Codable, Equatable, Sendable {
             throw SceneLibraryError.invalidDocument("Hay identidades de escena duplicadas.")
         }
         try scenes.forEach { try $0.validate() }
+        guard Set(productions.map(\.id)).count == productions.count,
+              Set(unclassifiedSceneIDs).count == unclassifiedSceneIDs.count else {
+            throw SceneLibraryError.invalidDocument("Hay identidades jerárquicas duplicadas.")
+        }
+        let sceneIDs = Set(scenes.map(\.id))
+        var placements = unclassifiedSceneIDs
+        for production in productions {
+            guard !production.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SceneLibraryError.invalidDocument("La Producción necesita nombre.")
+            }
+            try production.association?.validate()
+            guard Set(production.episodes.map(\.id)).count == production.episodes.count else {
+                throw SceneLibraryError.invalidDocument("Hay Episodios locales duplicados.")
+            }
+            var activeEpisodeIDs = Set<String>()
+            for episode in production.episodes {
+                guard !episode.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      episode.associationState != .associated || episode.externalReference != nil,
+                      Set(episode.shots.map(\.id)).count == episode.shots.count else {
+                    throw SceneLibraryError.invalidDocument("El Episodio local no es válido.")
+                }
+                if let reference = episode.externalReference {
+                    try reference.validate()
+                    guard episode.associationState != .associated || (
+                        production.association?.productionId == reference.productionId
+                        && activeEpisodeIDs.insert(reference.episodeId).inserted
+                    ) else {
+                        throw SceneLibraryError.invalidDocument("La asociación de Episodio no pertenece a su Producción.")
+                    }
+                }
+                var activeShotIDs = Set<String>()
+                for shot in episode.shots {
+                    guard !shot.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          shot.associationState != .associated || shot.externalReference != nil,
+                          (1...1000).contains(shot.nextSceneOrdinal),
+                          Set(shot.scenes.map(\.sceneID)).count == shot.scenes.count,
+                          Set(shot.scenes.map(\.ordinal)).count == shot.scenes.count,
+                          shot.scenes.allSatisfy({ (1...999).contains($0.ordinal) && $0.ordinal < shot.nextSceneOrdinal }) else {
+                        throw SceneLibraryError.invalidDocument("El Plano local o sus ordinales no son válidos.")
+                    }
+                    if let reference = shot.externalReference {
+                        try reference.validate()
+                        guard shot.associationState != .associated || (
+                            episode.associationState == .associated
+                            && episode.externalReference != nil
+                            && production.association?.productionId == reference.productionId
+                            && activeShotIDs.insert(reference.shotId).inserted
+                        ) else {
+                            throw SceneLibraryError.invalidDocument("La asociación de Plano no pertenece a su Episodio.")
+                        }
+                    }
+                    placements.append(contentsOf: shot.scenes.map(\.sceneID))
+                }
+            }
+        }
+        guard Set(placements) == sceneIDs, placements.count == sceneIDs.count else {
+            throw SceneLibraryError.invalidDocument("Cada escena debe pertenecer exactamente a un Plano o a Sin clasificar.")
+        }
+    }
+}
+
+private extension SceneLibraryDocument {
+    mutating func renameScene(_ sceneID: UUID, for shotName: String, ordinal: Int) {
+        guard let sceneIndex = scenes.firstIndex(where: { $0.id == sceneID }) else { return }
+        scenes[sceneIndex].name = "\(shotName)_\(String(format: "%03d", ordinal))"
+    }
+
+    mutating func renamePlacedScenes(for shot: SceneShot) {
+        for placement in shot.scenes {
+            renameScene(placement.sceneID, for: shot.name, ordinal: placement.ordinal)
+        }
+    }
+
+    func episodeLocation(id: UUID) -> (production: Int, episode: Int)? {
+        for production in productions.indices {
+            if let episode = productions[production].episodes.firstIndex(where: { $0.id == id }) {
+                return (production, episode)
+            }
+        }
+        return nil
+    }
+
+    func shotLocation(id: UUID) -> (production: Int, episode: Int, shot: Int)? {
+        for production in productions.indices {
+            for episode in productions[production].episodes.indices {
+                if let shot = productions[production].episodes[episode].shots.firstIndex(where: { $0.id == id }) {
+                    return (production, episode, shot)
+                }
+            }
+        }
+        return nil
+    }
+
+    func shotContaining(sceneID: UUID) -> (
+        production: SceneProduction, episode: SceneEpisode, shot: SceneShot
+    )? {
+        for production in productions {
+            for episode in production.episodes {
+                if let shot = episode.shots.first(where: { $0.scenes.contains(where: { $0.sceneID == sceneID }) }) {
+                    return (production, episode, shot)
+                }
+            }
+        }
+        return nil
+    }
+
+    mutating func freeAllReferences(productionIndex: Int) {
+        for episode in productions[productionIndex].episodes.indices {
+            productions[productionIndex].episodes[episode].associationState = .free
+            for shot in productions[productionIndex].episodes[episode].shots.indices {
+                productions[productionIndex].episodes[episode].shots[shot].associationState = .free
+            }
+        }
+    }
+
+    mutating func refreshReferences(
+        productionIndex: Int, from projection: ShotManagerProductionProjection
+    ) {
+        let productionID = projection.productionId
+        for episodeIndex in productions[productionIndex].episodes.indices {
+            var episode = productions[productionIndex].episodes[episodeIndex]
+            if let prior = episode.externalReference,
+               prior.productionId == productionID,
+               let current = projection.episodes.first(where: { $0.id == prior.episodeId }) {
+                episode.externalReference = .init(
+                    productionId: productionID, episodeId: current.id,
+                    episodeOrder: current.order, episodeSlug: current.slug
+                )
+                episode.associationState = .associated
+                episode.name = current.slug
+            } else {
+                episode.associationState = .free
+            }
+            for shotIndex in episode.shots.indices {
+                guard episode.associationState == .associated,
+                      let episodeID = episode.externalReference?.episodeId,
+                      let prior = episode.shots[shotIndex].externalReference,
+                      prior.productionId == productionID,
+                      let current = projection.shots.first(where: {
+                          $0.id == prior.shotId && $0.episodeId == episodeID
+                      }) else {
+                    episode.shots[shotIndex].associationState = .free
+                    continue
+                }
+                episode.shots[shotIndex].externalReference = .init(
+                    productionId: productionID, shotId: current.id,
+                    canonicalName: current.canonicalName
+                )
+                episode.shots[shotIndex].associationState = .associated
+                episode.shots[shotIndex].name = current.canonicalName
+                renamePlacedScenes(for: episode.shots[shotIndex])
+            }
+            productions[productionIndex].episodes[episodeIndex] = episode
+        }
     }
 }
 
@@ -545,11 +770,17 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v23.json")
+        documentURL = directory.appendingPathComponent("Scenes.v24.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            let prior = directoryURL.appendingPathComponent("Scenes.v23.json")
+            if FileManager.default.fileExists(atPath: prior.path) {
+                throw SceneLibraryError.inaccessible(
+                    "Existe Scenes.v23.json. Ejecuta la migración de mantenimiento v23→v24 antes de abrir la biblioteca."
+                )
+            }
             return SceneLibraryDocument()
         }
         let data = try Data(contentsOf: documentURL)
@@ -691,9 +922,45 @@ struct SceneLibraryStore: Sendable {
 
     private func validateStrictShape(_ data: Data) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(root.keys) == ["schemaVersion", "scenes"],
-              let scenes = root["scenes"] as? [[String: Any]]
+              Set(root.keys) == ["schemaVersion", "scenes", "productions", "unclassifiedSceneIDs"],
+              let scenes = root["scenes"] as? [[String: Any]],
+              root["unclassifiedSceneIDs"] is [String],
+              let productions = root["productions"] as? [[String: Any]]
         else { throw SceneLibraryError.invalidDocument("Contrato de biblioteca desconocido.") }
+        for production in productions {
+            guard (Set(production.keys) == ["id", "name", "seasonSlug", "association", "episodes"]
+                    || Set(production.keys) == ["id", "name", "seasonSlug", "episodes"]),
+                  let episodes = production["episodes"] as? [[String: Any]],
+                  (production["association"] == nil || production["association"] is NSNull || {
+                      guard let value = production["association"] as? [String: Any] else { return false }
+                      return Set(value.keys) == [
+                          "productionId", "productionRootPath", "productionSlug", "seasonSlug", "destinations",
+                      ] && (value["destinations"] as? [[String: Any]])?.allSatisfy({
+                          Set($0.keys) == ["role", "workstreamName", "folderName", "folderSuffix"]
+                      }) == true
+                  }()) else { throw SceneLibraryError.invalidDocument("La Producción contiene campos desconocidos.") }
+            for episode in episodes {
+                guard (Set(episode.keys) == ["id", "name", "associationState", "externalReference", "shots"]
+                        || Set(episode.keys) == ["id", "name", "associationState", "shots"]),
+                      let shots = episode["shots"] as? [[String: Any]],
+                      (episode["externalReference"] == nil || episode["externalReference"] is NSNull || {
+                          guard let value = episode["externalReference"] as? [String: Any] else { return false }
+                          return Set(value.keys) == ["productionId", "episodeId", "episodeOrder", "episodeSlug"]
+                      }()) else { throw SceneLibraryError.invalidDocument("El Episodio contiene campos desconocidos.") }
+                for shot in shots {
+                    guard (Set(shot.keys) == [
+                        "id", "name", "associationState", "externalReference", "nextSceneOrdinal", "scenes",
+                    ] || Set(shot.keys) == [
+                        "id", "name", "associationState", "nextSceneOrdinal", "scenes",
+                    ]), let placements = shot["scenes"] as? [[String: Any]],
+                    placements.allSatisfy({ Set($0.keys) == ["sceneID", "ordinal"] }),
+                    (shot["externalReference"] == nil || shot["externalReference"] is NSNull || {
+                        guard let value = shot["externalReference"] as? [String: Any] else { return false }
+                        return Set(value.keys) == ["productionId", "shotId", "canonicalName"]
+                    }()) else { throw SceneLibraryError.invalidDocument("El Plano contiene campos desconocidos.") }
+                }
+            }
+        }
         for scene in scenes {
             guard Set(scene.keys) == ["id", "name", "thumbnailFileName", "snapshot"],
                   let snapshot = scene["snapshot"] as? [String: Any],
@@ -940,6 +1207,211 @@ final class SceneLibraryController: ObservableObject {
         document.scenes.first { $0.id == id }
     }
 
+    func sortedScenes(_ ids: [UUID]) -> [SavedScene] {
+        let selected = Set(ids)
+        return document.scenes.filter { selected.contains($0.id) }.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.id.uuidString < $1.id.uuidString : order == .orderedAscending
+        }
+    }
+
+    @discardableResult
+    func createProduction(name: String, seasonSlug: String = "") throws -> SceneProduction {
+        let production = SceneProduction(name: try requiredName(name, kind: "Producción"), seasonSlug: seasonSlug)
+        try persist { $0.productions.append(production) }
+        return production
+    }
+
+    @discardableResult
+    func createAssociatedProduction(
+        name: String, association: ShotManagerProductionAssociation,
+        projection: ShotManagerProductionProjection
+    ) throws -> SceneProduction {
+        try association.validate()
+        try projection.validate()
+        guard association.productionId == projection.productionId else {
+            throw SceneLibraryError.invalidDocument("La asociación no pertenece al JSON seleccionado.")
+        }
+        let production = SceneProduction(
+            name: try requiredName(name, kind: "Producción"),
+            seasonSlug: association.seasonSlug, association: association
+        )
+        try persist { $0.productions.append(production) }
+        return production
+    }
+
+    @discardableResult
+    func createEpisode(in productionID: UUID, name: String) throws -> SceneEpisode {
+        let episode = SceneEpisode(name: try requiredName(name, kind: "Episodio"))
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            candidate.productions[index].episodes.append(episode)
+        }
+        return episode
+    }
+
+    @discardableResult
+    func createShot(in episodeID: UUID, name: String) throws -> SceneShot {
+        let shot = SceneShot(name: try requiredName(name, kind: "Plano"))
+        try persist { candidate in
+            guard let location = candidate.episodeLocation(id: episodeID) else {
+                throw SceneLibraryError.inaccessible("El Episodio ya no existe.")
+            }
+            candidate.productions[location.production].episodes[location.episode].shots.append(shot)
+        }
+        return shot
+    }
+
+    func moveScene(_ sceneID: UUID, to shotID: UUID?) throws {
+        try persist { candidate in
+            let currentShotID = candidate.shotContaining(sceneID: sceneID)?.shot.id
+            guard currentShotID != shotID else { return }
+            candidate.unclassifiedSceneIDs.removeAll { $0 == sceneID }
+            for productionIndex in candidate.productions.indices {
+                for episodeIndex in candidate.productions[productionIndex].episodes.indices {
+                    for shotIndex in candidate.productions[productionIndex].episodes[episodeIndex].shots.indices {
+                        candidate.productions[productionIndex].episodes[episodeIndex].shots[shotIndex]
+                            .scenes.removeAll { $0.sceneID == sceneID }
+                    }
+                }
+            }
+            guard let shotID else {
+                candidate.unclassifiedSceneIDs.append(sceneID)
+                return
+            }
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            var shot = candidate.productions[location.production].episodes[location.episode].shots[location.shot]
+            guard shot.nextSceneOrdinal <= 999 else {
+                throw SceneLibraryError.invalidDocument("El Plano ha agotado sus 999 ordinales de escena.")
+            }
+            let ordinal = shot.nextSceneOrdinal
+            shot.scenes.append(.init(sceneID: sceneID, ordinal: ordinal))
+            shot.nextSceneOrdinal += 1
+            candidate.productions[location.production].episodes[location.episode].shots[location.shot] = shot
+            candidate.renameScene(sceneID, for: shot.name, ordinal: ordinal)
+        }
+    }
+
+    func associateProduction(
+        _ productionID: UUID, association: ShotManagerProductionAssociation,
+        projection: ShotManagerProductionProjection, replacingProduction: Bool
+    ) throws {
+        try association.validate()
+        try projection.validate()
+        try persist { candidate in
+            guard let productionIndex = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            let previous = candidate.productions[productionIndex].association
+            if let previous, previous.productionId != association.productionId, !replacingProduction {
+                throw ShotManagerAssociationError.differentProduction
+            }
+            candidate.productions[productionIndex].association = association
+            candidate.productions[productionIndex].seasonSlug = association.seasonSlug
+            if previous?.productionId == association.productionId {
+                candidate.refreshReferences(productionIndex: productionIndex, from: projection)
+            } else {
+                candidate.freeAllReferences(productionIndex: productionIndex)
+            }
+        }
+    }
+
+    func selectOfflineRoot(_ productionID: UUID, root: URL) throws {
+        let canonical = try ShotManagerAssociationService.canonicalExistingRoot(root)
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }),
+                  candidate.productions[index].association != nil else {
+                throw SceneLibraryError.inaccessible("La Producción no está asociada.")
+            }
+            candidate.productions[index].association?.productionRootPath = canonical.path
+        }
+    }
+
+    func makeProductionManual(_ productionID: UUID) throws {
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            candidate.productions[index].association = nil
+            candidate.freeAllReferences(productionIndex: index)
+        }
+    }
+
+    func associateEpisode(_ episodeID: UUID, with external: ShotManagerEpisodeProjection) throws {
+        try persist { candidate in
+            guard let location = candidate.episodeLocation(id: episodeID),
+                  let association = candidate.productions[location.production].association else {
+                throw SceneLibraryError.inaccessible("El Episodio necesita una Producción asociada.")
+            }
+            var episode = candidate.productions[location.production].episodes[location.episode]
+            episode.externalReference = .init(
+                productionId: association.productionId, episodeId: external.id,
+                episodeOrder: external.order, episodeSlug: external.slug
+            )
+            episode.associationState = .associated
+            episode.name = try requiredName(external.slug, kind: "Episodio externo")
+            for index in episode.shots.indices { episode.shots[index].associationState = .free }
+            candidate.productions[location.production].episodes[location.episode] = episode
+        }
+    }
+
+    func associateShot(_ shotID: UUID, with external: ShotManagerShotProjection) throws {
+        try persist { candidate in
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            var episode = candidate.productions[location.production].episodes[location.episode]
+            guard let episodeReference = episode.externalReference,
+                  episode.associationState == .associated,
+                  episodeReference.episodeId == external.episodeId else {
+                throw SceneLibraryError.invalidDocument("El Plano externo no pertenece al Episodio asociado.")
+            }
+            episode.shots[location.shot].externalReference = .init(
+                productionId: episodeReference.productionId,
+                shotId: external.id, canonicalName: external.canonicalName
+            )
+            episode.shots[location.shot].associationState = .associated
+            episode.shots[location.shot].name = external.canonicalName
+            candidate.renamePlacedScenes(for: episode.shots[location.shot])
+            candidate.productions[location.production].episodes[location.episode] = episode
+        }
+    }
+
+    func associatedRenderTarget(for sceneID: UUID, role: String = "render") throws -> ShotManagerAssociatedRenderTarget? {
+        guard let location = document.shotContaining(sceneID: sceneID),
+              let production = document.productions.first(where: { $0.id == location.production.id }),
+              let association = production.association,
+              location.episode.associationState == .associated,
+              let episode = location.episode.externalReference,
+              location.shot.associationState == .associated,
+              let shot = location.shot.externalReference,
+              let placement = location.shot.scenes.first(where: { $0.sceneID == sceneID }) else { return nil }
+        return try ShotManagerAssociationService.materializeDestination(
+            production: association, episodeOrder: episode.episodeOrder,
+            canonicalName: shot.canonicalName, sceneOrdinal: placement.ordinal, role: role
+        )
+    }
+
+    private func requiredName(_ value: String, kind: String) throws -> String {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw SceneLibraryError.invalidDocument("\(kind) necesita un nombre.")
+        }
+        return name
+    }
+
+    private func persist(_ mutation: (inout SceneLibraryDocument) throws -> Void) throws {
+        guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
+        var candidate = document
+        try mutation(&candidate)
+        try store.save(candidate)
+        document = candidate
+    }
+
     func autosaveHistoryTarget(for scene: SavedScene) -> SceneAutosaveHistoryTarget {
         .init(sceneID: scene.id, sceneName: scene.name, isDeletedScene: false)
     }
@@ -1008,6 +1480,7 @@ final class SceneLibraryController: ObservableObject {
         try store.writeThumbnail(capture.thumbnailPNG, for: scene)
         var candidate = document
         candidate.scenes.insert(scene, at: 0)
+        candidate.unclassifiedSceneIDs.insert(scene.id, at: 0)
         do {
             try store.save(candidate)
             document = candidate
@@ -1026,6 +1499,11 @@ final class SceneLibraryController: ObservableObject {
     func rename(_ scene: SavedScene, to name: String) throws {
         guard let store, let index = document.scenes.firstIndex(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
+        guard document.shotContaining(sceneID: scene.id) == nil else {
+            throw SceneLibraryError.invalidDocument(
+                "El nombre de una Escena asociada procede de su Plano. Muévela a Sin clasificar para editarlo."
+            )
+        }
         let committedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !committedName.isEmpty else {
             throw SceneLibraryError.invalidDocument("El nombre de la escena está vacío.")
@@ -1034,6 +1512,129 @@ final class SceneLibraryController: ObservableObject {
         candidate.scenes[index].name = committedName
         try store.save(candidate)
         document = candidate
+    }
+
+    func renameProduction(_ productionID: UUID, to name: String) throws {
+        let committed = try requiredName(name, kind: "Producción")
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            candidate.productions[index].name = committed
+        }
+    }
+
+    func setProductionSeason(_ productionID: UUID, to seasonSlug: String) throws {
+        let committed = seasonSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            guard candidate.productions[index].association == nil else {
+                throw SceneLibraryError.invalidDocument(
+                    "La temporada de una Producción asociada procede de Shot Manager."
+                )
+            }
+            candidate.productions[index].seasonSlug = committed
+        }
+    }
+
+    func renameEpisode(_ episodeID: UUID, to name: String) throws {
+        let committed = try requiredName(name, kind: "Episodio")
+        try persist { candidate in
+            guard let location = candidate.episodeLocation(id: episodeID) else {
+                throw SceneLibraryError.inaccessible("El Episodio ya no existe.")
+            }
+            guard candidate.productions[location.production].episodes[location.episode]
+                .associationState == .free else {
+                throw SceneLibraryError.invalidDocument(
+                    "El nombre de un Episodio asociado procede de Shot Manager. Déjalo libre para editarlo."
+                )
+            }
+            candidate.productions[location.production].episodes[location.episode].name = committed
+        }
+    }
+
+    func renameShot(_ shotID: UUID, to name: String) throws {
+        let committed = try requiredName(name, kind: "Plano")
+        try persist { candidate in
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            var shot = candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot]
+            guard shot.associationState == .free else {
+                throw SceneLibraryError.invalidDocument(
+                    "El nombre de un Plano asociado procede de Shot Manager. Déjalo libre para editarlo."
+                )
+            }
+            shot.name = committed
+            candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot] = shot
+            candidate.renamePlacedScenes(for: shot)
+        }
+    }
+
+    func makeEpisodeFree(_ episodeID: UUID) throws {
+        try persist { candidate in
+            guard let location = candidate.episodeLocation(id: episodeID) else {
+                throw SceneLibraryError.inaccessible("El Episodio ya no existe.")
+            }
+            candidate.productions[location.production].episodes[location.episode]
+                .associationState = .free
+            for shot in candidate.productions[location.production].episodes[location.episode].shots.indices {
+                candidate.productions[location.production].episodes[location.episode]
+                    .shots[shot].associationState = .free
+            }
+        }
+    }
+
+    func makeShotFree(_ shotID: UUID) throws {
+        try persist { candidate in
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot].associationState = .free
+        }
+    }
+
+    func deleteProduction(_ productionID: UUID) throws {
+        try persist { candidate in
+            guard let index = candidate.productions.firstIndex(where: { $0.id == productionID }) else {
+                throw SceneLibraryError.inaccessible("La Producción ya no existe.")
+            }
+            guard candidate.productions[index].episodes.isEmpty else {
+                throw SceneLibraryError.invalidDocument("Elimina primero los Episodios de la Producción.")
+            }
+            candidate.productions.remove(at: index)
+        }
+    }
+
+    func deleteEpisode(_ episodeID: UUID) throws {
+        try persist { candidate in
+            guard let location = candidate.episodeLocation(id: episodeID) else {
+                throw SceneLibraryError.inaccessible("El Episodio ya no existe.")
+            }
+            guard candidate.productions[location.production].episodes[location.episode].shots.isEmpty else {
+                throw SceneLibraryError.invalidDocument("Elimina primero los Planos del Episodio.")
+            }
+            candidate.productions[location.production].episodes.remove(at: location.episode)
+        }
+    }
+
+    func deleteShot(_ shotID: UUID) throws {
+        try persist { candidate in
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            guard candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot].scenes.isEmpty else {
+                throw SceneLibraryError.invalidDocument("Mueve primero las escenas fuera del Plano.")
+            }
+            candidate.productions[location.production].episodes[location.episode]
+                .shots.remove(at: location.shot)
+        }
     }
 
     func update(
@@ -1245,6 +1846,19 @@ final class SceneLibraryController: ObservableObject {
         try store.writeThumbnail(thumbnail, for: duplicate)
         var candidate = document
         candidate.scenes.insert(duplicate, at: 0)
+        if let containing = candidate.shotContaining(sceneID: scene.id),
+           let location = candidate.shotLocation(id: containing.shot.id),
+           candidate.productions[location.production].episodes[location.episode]
+            .shots[location.shot].nextSceneOrdinal <= 999 {
+            let ordinal = candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot].nextSceneOrdinal
+            candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot].scenes.append(.init(sceneID: duplicate.id, ordinal: ordinal))
+            candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot].nextSceneOrdinal += 1
+        } else {
+            candidate.unclassifiedSceneIDs.insert(duplicate.id, at: 0)
+        }
         do { try store.save(candidate) }
         catch {
             try? store.removeThumbnail(for: duplicate)
@@ -1274,6 +1888,15 @@ final class SceneLibraryController: ObservableObject {
         )
         var candidate = document
         candidate.scenes.removeAll { $0.id == scene.id }
+        candidate.unclassifiedSceneIDs.removeAll { $0 == scene.id }
+        for production in candidate.productions.indices {
+            for episode in candidate.productions[production].episodes.indices {
+                for shot in candidate.productions[production].episodes[episode].shots.indices {
+                    candidate.productions[production].episodes[episode].shots[shot]
+                        .scenes.removeAll { $0.sceneID == scene.id }
+                }
+            }
+        }
         try store.removeThumbnail(for: scene)
         if scene.snapshot.generatedEnvironment != nil {
             try EnvironmentAssetLibrary.removeSceneGeneratedEXR(
