@@ -108,6 +108,26 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @MainActor
+@Test func creatingSceneInsideShotIsOnePersistedDerivedPlacement() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-direct-shot-scene-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let controller = SceneLibraryController(store: store)
+    let production = try controller.createProduction(name: "Producción")
+    let episode = try controller.createEpisode(in: production.id, name: "Episodio")
+    let shot = try controller.createShot(in: episode.id, name: "PLANO_010")
+
+    let created = try controller.add(capture: sceneCapture(), toShotID: shot.id)
+    let stored = try store.load()
+    let storedShot = try #require(stored.productions.first?.episodes.first?.shots.first)
+    #expect(created.name == "PLANO_010_001")
+    #expect(stored.unclassifiedSceneIDs.isEmpty)
+    #expect(storedShot.scenes == [.init(sceneID: created.id, ordinal: 1)])
+    #expect(storedShot.nextSceneOrdinal == 2)
+}
+
+@MainActor
 @Test func associatedRenderUsesPersistedValuesWithoutReadingProductionJSON() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-shot-manager-offline-\(UUID().uuidString)")

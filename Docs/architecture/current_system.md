@@ -240,8 +240,11 @@ A Fusion movie attempt authorizes each declared Device/Spill path exactly once b
 <!-- decision-ref: scene.library-rename -->
 <!-- decision-ref: scene.library-hierarchy -->
 <!-- decision-ref: scene.shot-manager-association -->
+<!-- decision-ref: scene.settings-clipboard -->
 
 The Scene Library is the same compact hierarchical Production → Episode → Shot → Scene tree on Scene and Render and also exposes the explicit unclassified scene collection. Every level has its own semantic icon and Scene leaves are ordinary text rows rather than thumbnail cards. A contextual inspector beside the tree owns every field and action for the selected level: creation, boundary-committed naming, manual Season editing, external association, safe empty-branch deletion and Scene actions. Production, Episode and Shot association controls are menus whose first option is always the explicit free/manual state; the following options are the valid external identities and an unavailable persisted selection remains visible as unavailable. There is no row-level edit glyph. An associated Episode, associated Shot and Scene placed below a Shot show their derived names as read-only; their inspector name field becomes editable only after returning that item to its free state. Scenes may be dragged atomically between Shots; associated Production, Episode and Shot actions are explicit and never inferred by presentation order or labels.
+
+Every Shot row and inspector exposes `Nueva escena`; it captures the current workspace directly into that Shot in one library transaction, allocates the next immutable ordinal and selects the new Scene. A Scene contextual menu exposes strict settings Copy and, only for a valid current clipboard document, Paste. Both selection sheets show the same Application-owned cards, keep Device and Camera transformations separate, and Paste requires a final replacement confirmation. A double-click on a Scene row has priority over row selection and invokes the same Open intent as the explicit command.
 
 A scene-name field commits its trimmed nonempty shelf label on Return, focus loss, presentation exit and before a contextual scene action. Contextual Render re-resolves that committed record before seeding its output name, and restart reads the same stored label.
 

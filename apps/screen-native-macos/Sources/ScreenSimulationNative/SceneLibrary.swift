@@ -1456,9 +1456,36 @@ final class SceneLibraryController: ObservableObject {
     }
 
     @discardableResult
-    func add(capture: SavedSceneCapture, name: String? = nil) throws -> SavedScene {
+    func add(
+        capture: SavedSceneCapture,
+        name: String? = nil,
+        toShotID shotID: UUID? = nil
+    ) throws -> SavedScene {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let id = UUID()
+        var candidate = document
+        let resolvedName: String
+        if let shotID {
+            guard let location = candidate.shotLocation(id: shotID) else {
+                throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+            }
+            var shot = candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot]
+            guard shot.nextSceneOrdinal <= 999 else {
+                throw SceneLibraryError.invalidDocument(
+                    "El Plano ha agotado sus 999 ordinales de escena."
+                )
+            }
+            let ordinal = shot.nextSceneOrdinal
+            resolvedName = "\(shot.name)_\(String(format: "%03d", ordinal))"
+            shot.scenes.append(.init(sceneID: id, ordinal: ordinal))
+            shot.nextSceneOrdinal += 1
+            candidate.productions[location.production].episodes[location.episode]
+                .shots[location.shot] = shot
+        } else {
+            resolvedName = name ?? "Escena \(document.scenes.count + 1)"
+            candidate.unclassifiedSceneIDs.insert(id, at: 0)
+        }
         let generated = try capture.generatedEnvironmentEXR.map {
             let managed = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
                 $0, sceneID: id, libraryRoot: store.environmentLibraryRoot
@@ -1468,7 +1495,7 @@ final class SceneLibraryController: ObservableObject {
         let snapshot = try capture.snapshot.replacingGeneratedEnvironment(generated?.0, absolutePath: generated?.1)
         let scene = SavedScene(
             id: id,
-            name: name ?? "Escena \(document.scenes.count + 1)",
+            name: resolvedName,
             thumbnailFileName: "\(id.uuidString.lowercased()).png",
             snapshot: snapshot
         )
@@ -1478,9 +1505,7 @@ final class SceneLibraryController: ObservableObject {
             generatedEnvironmentEXR: capture.generatedEnvironmentEXR
         )
         try store.writeThumbnail(capture.thumbnailPNG, for: scene)
-        var candidate = document
         candidate.scenes.insert(scene, at: 0)
-        candidate.unclassifiedSceneIDs.insert(scene.id, at: 0)
         do {
             try store.save(candidate)
             document = candidate
@@ -1494,6 +1519,58 @@ final class SceneLibraryController: ObservableObject {
             }
             throw error
         }
+    }
+
+    func settingsClipboard(
+        for scene: SavedScene,
+        blocks: Set<SceneSettingsBlock>
+    ) throws -> SceneSettingsClipboardDocument {
+        guard let current = self.scene(id: scene.id) else {
+            throw SceneLibraryError.inaccessible("La escena ya no existe.")
+        }
+        let stored = try storedUpdate(sceneID: current.id)
+        return try SceneSettingsClipboardDocument(
+            source: current,
+            includedBlocks: blocks,
+            generatedEnvironmentEXR: blocks.contains(.environment)
+                ? stored.generatedEnvironmentEXR : nil
+        )
+    }
+
+    @discardableResult
+    func applySettingsClipboard(
+        _ clipboard: SceneSettingsClipboardDocument,
+        blocks: Set<SceneSettingsBlock>,
+        to scene: SavedScene,
+        ownership: SceneSettingsOwnership,
+        undoManager: UndoManager? = nil
+    ) throws -> SavedScene {
+        guard blocks.isSubset(of: Set(clipboard.includedBlocks)) else {
+            throw SceneLibraryError.invalidDocument(
+                "Se han seleccionado tarjetas ausentes del portapapeles."
+            )
+        }
+        let target = try storedUpdate(sceneID: scene.id)
+        let snapshot = try target.snapshot.applyingSettings(
+            from: clipboard.snapshot,
+            blocks: blocks,
+            ownership: ownership
+        )
+        let environment = blocks.contains(.environment)
+            ? clipboard.generatedEnvironmentEXR : target.generatedEnvironmentEXR
+        try update(
+            scene,
+            capture: SavedSceneCapture(
+                snapshot: snapshot,
+                thumbnailPNG: target.thumbnailPNG,
+                generatedEnvironmentEXR: environment
+            ),
+            undoManager: undoManager
+        )
+        guard let updated = self.scene(id: scene.id) else {
+            throw SceneLibraryError.inaccessible("La escena pegada ya no existe.")
+        }
+        return updated
     }
 
     func rename(_ scene: SavedScene, to name: String) throws {

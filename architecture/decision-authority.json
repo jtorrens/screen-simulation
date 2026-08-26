@@ -46,6 +46,22 @@
       ]
     },
     {
+      "id": "scene.settings-clipboard",
+      "scope": "selective Saved Scene settings copy and confirmed paste in the native workstation",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneSettingsClipboard.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneSettingsClipboardTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "scene.shot-manager-association",
       "scope": "read-only Shot Manager Production, Episode and Shot association with disconnected output continuity",
       "owner": {

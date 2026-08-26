@@ -58,6 +58,67 @@ private struct CopyableErrorDialog: View {
     }
 }
 
+private struct SceneSettingsSelectionSheet: View {
+    let title: String
+    let explanation: String
+    let available: Set<SceneSettingsBlock>
+    let actionTitle: String
+    let cancel: () -> Void
+    let commit: (Set<SceneSettingsBlock>) -> Void
+
+    @State private var selected: Set<SceneSettingsBlock>
+
+    init(
+        title: String,
+        explanation: String,
+        available: Set<SceneSettingsBlock>,
+        actionTitle: String,
+        cancel: @escaping () -> Void,
+        commit: @escaping (Set<SceneSettingsBlock>) -> Void
+    ) {
+        self.title = title
+        self.explanation = explanation
+        self.available = available
+        self.actionTitle = actionTitle
+        self.cancel = cancel
+        self.commit = commit
+        _selected = State(initialValue: available)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title).font(.headline)
+            Text(explanation).font(.callout).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(SceneSettingsBlock.allCases) { block in
+                    Toggle(
+                        isOn: Binding(
+                            get: { selected.contains(block) },
+                            set: { enabled in
+                                if enabled { selected.insert(block) }
+                                else { selected.remove(block) }
+                            }
+                        )
+                    ) {
+                        Label(block.label, systemImage: block.systemImage)
+                    }
+                    .disabled(!available.contains(block))
+                }
+            }
+            Divider()
+            HStack {
+                Button("Cancelar", action: cancel)
+                Spacer()
+                Button(actionTitle) { commit(selected) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(selected.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+    }
+}
+
 private struct WindowTitleUpdater: NSViewRepresentable {
     let title: String
 
@@ -174,6 +235,27 @@ struct ContentView: View {
     @State private var pendingRenderDraftAfterUpdate: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
     @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
+    @State private var settingsCopyRequest: SceneSettingsCopyRequest?
+    @State private var settingsPasteRequest: SceneSettingsPasteRequest?
+    @State private var pendingSettingsPaste: PendingSettingsPaste?
+
+    private struct SceneSettingsCopyRequest: Identifiable {
+        let scene: SavedScene
+        var id: UUID { scene.id }
+    }
+
+    private struct SceneSettingsPasteRequest: Identifiable {
+        let scene: SavedScene
+        let clipboard: SceneSettingsClipboardDocument
+        var id: UUID { scene.id }
+    }
+
+    private struct PendingSettingsPaste: Identifiable {
+        let scene: SavedScene
+        let clipboard: SceneSettingsClipboardDocument
+        let blocks: Set<SceneSettingsBlock>
+        var id: UUID { scene.id }
+    }
 
     private struct RenderDraft: Identifiable {
         let scene: SavedScene
@@ -265,6 +347,58 @@ struct ContentView: View {
                     } catch { model.errorMessage = error.localizedDescription }
                 }
             )
+        }
+        .sheet(item: $settingsCopyRequest) { request in
+            SceneSettingsSelectionSheet(
+                title: "Copiar settings de ‘\(request.scene.name)’",
+                explanation: "Selecciona las tarjetas que estarán disponibles al pegar.",
+                available: Set(SceneSettingsBlock.allCases),
+                actionTitle: "Copiar settings",
+                cancel: { settingsCopyRequest = nil },
+                commit: { blocks in copySceneSettings(request.scene, blocks: blocks) }
+            )
+        }
+        .sheet(item: $settingsPasteRequest) { request in
+            SceneSettingsSelectionSheet(
+                title: "Pegar settings en ‘\(request.scene.name)’",
+                explanation: "Las tarjetas que no se copiaron permanecen visibles y deshabilitadas.",
+                available: Set(request.clipboard.includedBlocks),
+                actionTitle: "Revisar cambios",
+                cancel: { settingsPasteRequest = nil },
+                commit: { blocks in
+                    settingsPasteRequest = nil
+                    pendingSettingsPaste = PendingSettingsPaste(
+                        scene: request.scene, clipboard: request.clipboard, blocks: blocks
+                    )
+                }
+            )
+        }
+        .confirmationDialog(
+            pendingSettingsPaste.map {
+                "¿Aplicar settings a ‘\($0.scene.name)’?"
+            } ?? "¿Aplicar settings?",
+            isPresented: Binding(
+                get: { pendingSettingsPaste != nil },
+                set: { if !$0 { pendingSettingsPaste = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Aplicar settings", role: .destructive) {
+                if let request = pendingSettingsPaste { applySceneSettings(request) }
+            }
+            Button("Cancelar", role: .cancel) { pendingSettingsPaste = nil }
+        } message: {
+            if let request = pendingSettingsPaste {
+                let labels = SceneSettingsBlock.allCases
+                    .filter(request.blocks.contains).map(\.label).joined(separator: ", ")
+                Text(
+                    "Origen: \(request.clipboard.sourceSceneName). Se reemplazarán: \(labels)."
+                    + (request.clipboard.containsAnimation
+                        && request.blocks.contains(.cameraTransform)
+                        ? " La transformación de Cámara contiene animación y se copiará completa."
+                        : "")
+                )
+            }
         }
         .confirmationDialog(
             activeSceneSavePromptTitle,
@@ -1997,7 +2131,8 @@ struct ContentView: View {
                                                         detail: shot.associationState == .associated
                                                             ? shot.externalReference?.canonicalName
                                                             : "Libre · Salida manual",
-                                                        icon: "camera"
+                                                        icon: "camera",
+                                                        onAdd: { createScene(in: shot) }
                                                     )
                                                 }
                                                 .padding(.leading, 36)
@@ -2105,10 +2240,24 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 4).stroke(NativeTheme.accent, lineWidth: 1)
             }
         }
-        .onTapGesture(count: 2) { requestOpenScene(scene) }
+        .highPriorityGesture(
+            TapGesture(count: 2).onEnded { requestOpenScene(scene) }
+        )
         .onDrag { NSItemProvider(object: scene.id.uuidString as NSString) }
         .contextMenu {
             Button("Abrir escena") { requestOpenScene(scene) }
+            Divider()
+            Button("Copiar settings…") {
+                settingsCopyRequest = SceneSettingsCopyRequest(scene: scene)
+            }
+            if let clipboard = SceneSettingsClipboardDocument.read() {
+                Button("Pegar settings…") {
+                    settingsPasteRequest = SceneSettingsPasteRequest(
+                        scene: scene, clipboard: clipboard
+                    )
+                }
+            }
+            Divider()
             Button("Actualizar con el estado actual") { requestSceneAction(.update, scene: scene) }
             Button("Duplicar escena") {
                 do { _ = try scenes.duplicate(scene) }
@@ -2370,6 +2519,7 @@ struct ContentView: View {
             Divider()
             Text("Arrastra escenas sobre este Plano para asociarlas.")
                 .font(.caption).foregroundStyle(.secondary)
+            Button("Nueva escena") { createScene(in: shot) }
             Button("Eliminar Plano", role: .destructive) {
                 do {
                     try scenes.deleteShot(shot.id)
@@ -2403,6 +2553,16 @@ struct ContentView: View {
             }
             Divider()
             Button("Abrir escena") { requestOpenScene(scene) }
+            Button("Copiar settings…") {
+                settingsCopyRequest = SceneSettingsCopyRequest(scene: scene)
+            }
+            if let clipboard = SceneSettingsClipboardDocument.read() {
+                Button("Pegar settings…") {
+                    settingsPasteRequest = SceneSettingsPasteRequest(
+                        scene: scene, clipboard: clipboard
+                    )
+                }
+            }
             Button("Actualizar con estado actual") { requestSceneAction(.update, scene: scene) }
             Button("Duplicar escena") {
                 do { _ = try scenes.duplicate(scene) }
@@ -2758,6 +2918,48 @@ struct ContentView: View {
             let capture = try model.captureSavedScene()
             let scene = try scenes.add(capture: capture)
             model.markActiveScene(scene.id)
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func createScene(in shot: SceneShot) {
+        do {
+            let capture = try model.captureSavedScene()
+            let scene = try scenes.add(capture: capture, toShotID: shot.id)
+            sceneTreeSelection = .scene(scene.id)
+            model.markActiveScene(scene.id)
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func copySceneSettings(
+        _ scene: SavedScene,
+        blocks: Set<SceneSettingsBlock>
+    ) {
+        do {
+            let clipboard = try scenes.settingsClipboard(for: scene, blocks: blocks)
+            try clipboard.write()
+            settingsCopyRequest = nil
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func applySceneSettings(_ request: PendingSettingsPaste) {
+        pendingSettingsPaste = nil
+        do {
+            guard let presentation = model.testPresentation else {
+                throw SceneLibraryError.inaccessible(
+                    "Application no ha publicado las tarjetas de settings."
+                )
+            }
+            let ownership = try SceneSettingsOwnership(presentation: presentation)
+            let updated = try scenes.applySettingsClipboard(
+                request.clipboard,
+                blocks: request.blocks,
+                to: request.scene,
+                ownership: ownership,
+                undoManager: undoManager
+            )
+            if model.activeSceneID == updated.id {
+                Task { await model.openSavedScene(updated, undoManager: undoManager) }
+            }
         } catch { model.errorMessage = error.localizedDescription }
     }
 
