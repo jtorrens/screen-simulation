@@ -247,12 +247,14 @@ enum FusionProjectionResolver {
     /// samples must include every authored curve evaluation relevant to the job range.
     static func maximumProjectedDensity(
         cameraSamples: [FusionCameraKeyframe],
+        devicePoseSamples: [FusionDevicePoseKeyframe],
         deviceWidthMeters: Double,
         deviceHeightMeters: Double,
         deliveryWidth: Int,
         deliveryHeight: Int
     ) throws -> FusionProjectedRaster {
         guard !cameraSamples.isEmpty,
+              devicePoseSamples.count == cameraSamples.count,
               deviceWidthMeters.isFinite, deviceWidthMeters > 0,
               deviceHeightMeters.isFinite, deviceHeightMeters > 0,
               deliveryWidth > 0, deliveryHeight > 0 else {
@@ -260,17 +262,28 @@ enum FusionProjectionResolver {
         }
         let halfWidth = deviceWidthMeters * 0.5
         let halfHeight = deviceHeightMeters * 0.5
-        let corners = [
+        let localCorners = [
             SIMD3(-halfWidth, -halfHeight, 0),
             SIMD3(halfWidth, -halfHeight, 0),
             SIMD3(halfWidth, halfHeight, 0),
             SIMD3(-halfWidth, halfHeight, 0),
         ]
         var density = 0.0
-        for camera in cameraSamples {
-            let projected = try corners.map {
+        for (camera, devicePose) in zip(cameraSamples, devicePoseSamples) {
+            guard camera.frame == devicePose.frame else {
+                throw FusionScenePackageError.invalidCamera
+            }
+            let deviceQ = simd_quatd(
+                ix: devicePose.quaternionXYZW[0], iy: devicePose.quaternionXYZW[1],
+                iz: devicePose.quaternionXYZW[2], r: devicePose.quaternionXYZW[3]
+            )
+            let devicePosition = SIMD3(
+                devicePose.positionMeters[0], devicePose.positionMeters[1],
+                devicePose.positionMeters[2]
+            )
+            let projected = try localCorners.map {
                 try project(
-                    $0, camera: camera,
+                    deviceQ.act($0) + devicePosition, camera: camera,
                     deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight
                 )
             }
@@ -382,21 +395,26 @@ enum FusionProjectionResolver {
 
     static func depthOfFieldSupportPixels(
         cameraSamples: [FusionCameraKeyframe],
+        devicePoseSamples: [FusionDevicePoseKeyframe],
         deviceWidthMeters: Double,
         deviceHeightMeters: Double,
         pixelsPerMeter: Double
     ) throws -> Int {
-        guard pixelsPerMeter.isFinite, pixelsPerMeter > 0 else {
+        guard pixelsPerMeter.isFinite, pixelsPerMeter > 0,
+              devicePoseSamples.count == cameraSamples.count else {
             throw FusionScenePackageError.invalidCamera
         }
-        let corners = [
+        let localCorners = [
             SIMD3(-deviceWidthMeters * 0.5, -deviceHeightMeters * 0.5, 0),
             SIMD3(deviceWidthMeters * 0.5, -deviceHeightMeters * 0.5, 0),
             SIMD3(deviceWidthMeters * 0.5, deviceHeightMeters * 0.5, 0),
             SIMD3(-deviceWidthMeters * 0.5, deviceHeightMeters * 0.5, 0),
         ]
         var maximumMeters = 0.0
-        for camera in cameraSamples {
+        for (camera, devicePose) in zip(cameraSamples, devicePoseSamples) {
+            guard camera.frame == devicePose.frame else {
+                throw FusionScenePackageError.invalidCamera
+            }
             let q = simd_quatd(
                 ix: camera.quaternionXYZW[0], iy: camera.quaternionXYZW[1],
                 iz: camera.quaternionXYZW[2], r: camera.quaternionXYZW[3]
@@ -407,8 +425,20 @@ enum FusionProjectionResolver {
             let right = q.act(SIMD3(1, 0, 0))
             let up = q.act(SIMD3(0, 1, 0))
             let forward = q.act(SIMD3(0, 0, -1))
+            let deviceQ = simd_quatd(
+                ix: devicePose.quaternionXYZW[0], iy: devicePose.quaternionXYZW[1],
+                iz: devicePose.quaternionXYZW[2], r: devicePose.quaternionXYZW[3]
+            )
+            let devicePosition = SIMD3(
+                devicePose.positionMeters[0], devicePose.positionMeters[1],
+                devicePose.positionMeters[2]
+            )
+            let deviceRight = deviceQ.act(SIMD3(1, 0, 0))
+            let deviceUp = deviceQ.act(SIMD3(0, 1, 0))
+            let deviceNormal = deviceQ.act(SIMD3(0, 0, 1))
             let apertureRadius = camera.focalLengthMillimeters * 0.001 / (2 * camera.fStop)
-            for target in corners {
+            for localTarget in localCorners {
+                let target = deviceQ.act(localTarget) + devicePosition
                 let chief = simd_normalize(target - position)
                 let chiefDenominator = simd_dot(chief, forward)
                 guard chiefDenominator > 1e-9 else {
@@ -422,16 +452,19 @@ enum FusionProjectionResolver {
                     let origin = position + right * (cos(angle) * apertureRadius)
                         + up * (sin(angle) * apertureRadius)
                     let ray = focusPoint - origin
-                    guard abs(ray.z) > 1e-12 else {
+                    let planeDenominator = simd_dot(ray, deviceNormal)
+                    guard abs(planeDenominator) > 1e-12 else {
                         throw FusionScenePackageError.invalidCamera
                     }
-                    let distance = -origin.z / ray.z
+                    let distance = simd_dot(devicePosition - origin, deviceNormal)
+                        / planeDenominator
                     guard distance > 0 else { throw FusionScenePackageError.invalidCamera }
                     let intersection = origin + ray * distance
+                    let delta = intersection - target
                     maximumMeters = max(
                         maximumMeters,
-                        abs(intersection.x - target.x),
-                        abs(intersection.y - target.y)
+                        abs(simd_dot(delta, deviceRight)),
+                        abs(simd_dot(delta, deviceUp))
                     )
                 }
             }
@@ -1469,6 +1502,13 @@ enum FusionScenePackageWriter {
         let lensBrownP2 = fusionSpline(request.lens.map { ($0.frame, $0.tangentialP1P2[1]) })
         let apertureWidthInches = firstCamera.sensorWidthMillimeters / 25.4
         let apertureHeightInches = firstCamera.sensorHeightMillimeters / 25.4
+        let resolutionGateFit = try fusionResolutionGateFit(
+            deliveryPlacementID: configuration.raster.placementID,
+            sensorWidthMillimeters: firstCamera.sensorWidthMillimeters,
+            sensorHeightMillimeters: firstCamera.sensorHeightMillimeters,
+            deliveryWidth: request.deliveryWidth,
+            deliveryHeight: request.deliveryHeight
+        )
         let lensCurveTools: String
         let lensDistortionTool: String
         switch request.lensReconstruction {
@@ -1480,7 +1520,7 @@ enum FusionScenePackageWriter {
             lensDistortionTool = """
             DeviceLensDistortion = LensDistort {
               Inputs = {
-                Mode = Input { Value = 1 },
+                Mode = Input { Value = 0 },
                 ClippingMode = Input { Value = FuID { "Domain" } },
                 LensDistortionModel = Input { Value = 1 },
                 Model = Input { Value = FuID { "DE4RadialStandardDegree4" } },
@@ -1490,6 +1530,7 @@ enum FusionScenePackageWriter {
                 PixelAspect = Input { Value = { 1, 1 } },
                 FLength = Input { SourceOp = "CameraFocal", Source = "Value" },
                 FilmGate = Input { Value = FuID { "User" } },
+                ResolutionGateFit = Input { Value = FuID { "\(resolutionGateFit)" } },
                 ApertureW = Input { Value = \(apertureWidthInches) },
                 ApertureH = Input { Value = \(apertureHeightInches) },
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
@@ -1511,7 +1552,7 @@ enum FusionScenePackageWriter {
             lensDistortionTool = """
             DeviceLensDistortion = LensDistort {
               Inputs = {
-                Mode = Input { Value = 1 },
+                Mode = Input { Value = 0 },
                 ClippingMode = Input { Value = FuID { "Domain" } },
                 LensDistortionModel = Input { Value = 1 },
                 Model = Input { Value = FuID { "FusionRadial" } },
@@ -1524,6 +1565,7 @@ enum FusionScenePackageWriter {
                 UseSourcePixelAspect = Input { Value = 0 },
                 PixelAspect = Input { Value = { 1, 1 } },
                 FilmGate = Input { Value = FuID { "User" } },
+                ResolutionGateFit = Input { Value = FuID { "\(resolutionGateFit)" } },
                 ApertureW = Input { Value = \(apertureWidthInches) },
                 ApertureH = Input { Value = \(apertureHeightInches) },
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
@@ -1713,6 +1755,7 @@ enum FusionScenePackageWriter {
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
                 LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
                 FilmGate = Input { Value = FuID { "User" } },
+                ResolutionGateFit = Input { Value = FuID { "\(resolutionGateFit)" } },
                 AovType = Input { Value = 1 },
                 AoV = Input { SourceOp = "CameraHorizontalFOV", Source = "Value" },
                 ApertureW = Input { Value = \(apertureWidthInches) },
@@ -1764,6 +1807,7 @@ enum FusionScenePackageWriter {
                 SceneInput = Input { SourceOp = "DeviceRGBAScene3D", Source = "Output" },
                 Width = Input { Value = \(request.deliveryWidth) },
                 Height = Input { Value = \(request.deliveryHeight) },
+                Depth = Input { Value = 4 },
                 PixelAspect = Input { Value = { 1, 1 } },
                 CameraSelector = Input { Value = FuID { "Camera3D_Device" } },
                 RendererType = Input { Value = FuID { "RendererOpenGL" } },
@@ -1784,6 +1828,7 @@ enum FusionScenePackageWriter {
                 SceneInput = Input { SourceOp = "SpillRGBScene3D", Source = "Output" },
                 Width = Input { Value = \(request.deliveryWidth) },
                 Height = Input { Value = \(request.deliveryHeight) },
+                Depth = Input { Value = 4 },
                 PixelAspect = Input { Value = { 1, 1 } },
                 CameraSelector = Input { Value = FuID { "Camera3D_Device" } },
                 RendererType = Input { Value = FuID { "RendererOpenGL" } },
@@ -1982,6 +2027,31 @@ enum FusionScenePackageWriter {
         let yaw = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
         let degrees = 180 / Double.pi
         return SIMD3(roll * degrees, pitch * degrees, yaw * degrees)
+    }
+
+    static func fusionResolutionGateFit(
+        deliveryPlacementID: String,
+        sensorWidthMillimeters: Double,
+        sensorHeightMillimeters: Double,
+        deliveryWidth: Int,
+        deliveryHeight: Int
+    ) throws -> String {
+        guard sensorWidthMillimeters.isFinite, sensorWidthMillimeters > 0,
+              sensorHeightMillimeters.isFinite, sensorHeightMillimeters > 0,
+              deliveryWidth > 0, deliveryHeight > 0
+        else { throw FusionScenePackageError.invalidRaster }
+        let sensorAspect = sensorWidthMillimeters / sensorHeightMillimeters
+        let deliveryAspect = Double(deliveryWidth) / Double(deliveryHeight)
+        return switch deliveryPlacementID {
+        case "fit":
+            sensorAspect > deliveryAspect ? "Width" : "Height"
+        case "fill-crop":
+            sensorAspect > deliveryAspect ? "Height" : "Width"
+        case "one-to-one":
+            throw FusionScenePackageError.invalidRaster
+        default:
+            throw FusionScenePackageError.invalidRaster
+        }
     }
 
 }

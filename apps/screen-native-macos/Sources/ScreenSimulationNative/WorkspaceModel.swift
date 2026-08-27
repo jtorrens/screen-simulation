@@ -5219,7 +5219,7 @@ final class WorkspaceModel: ObservableObject {
     ) throws -> (request: FusionScenePackageRequest, sourceOverscan: Int) {
         guard let options = job.configuration.fusionScene,
               let device = resolvedDevice?.definition,
-              let selection = testAuthoringSelection else {
+              testAuthoringSelection != nil else {
             throw DeviceDomainError.invalidPhysicalProfile(
                 "Fusion Scene Package requiere Device, cámara y Test resueltos."
             )
@@ -5306,10 +5306,11 @@ final class WorkspaceModel: ObservableObject {
         case .maximumProjectedDensity:
             activeRaster = try FusionProjectionResolver.maximumProjectedDensity(
                 cameraSamples: cameras,
+                devicePoseSamples: devicePoses,
                 deviceWidthMeters: device.activeWidthMeters,
                 deviceHeightMeters: device.activeHeightMeters,
-                deliveryWidth: Int(selection.deliveryWidth),
-                deliveryHeight: Int(selection.deliveryHeight)
+                deliveryWidth: Int(job.configuration.raster.width),
+                deliveryHeight: Int(job.configuration.raster.height)
             )
         case .nativeDevice:
             activeRaster = try FusionProjectionResolver.nativeDevice(
@@ -5337,6 +5338,7 @@ final class WorkspaceModel: ObservableObject {
         let dofSupport = options.dofMode == .baked
             ? try FusionProjectionResolver.depthOfFieldSupportPixels(
                 cameraSamples: cameras,
+                devicePoseSamples: devicePoses,
                 deviceWidthMeters: device.activeWidthMeters,
                 deviceHeightMeters: device.activeHeightMeters,
                 pixelsPerMeter: activeRaster.pixelsPerMeter
@@ -5390,8 +5392,8 @@ final class WorkspaceModel: ObservableObject {
                 deviceHeightMeters: device.activeHeightMeters,
                 activeRaster: activeRaster,
                 sourceOverscanPixels: sourceOverscan,
-                deliveryWidth: Int(selection.deliveryWidth),
-                deliveryHeight: Int(selection.deliveryHeight),
+                deliveryWidth: Int(job.configuration.raster.width),
+                deliveryHeight: Int(job.configuration.raster.height),
                 camera: cameras,
                 devicePose: devicePoses,
                 lens: lenses,
@@ -8538,7 +8540,8 @@ final class WorkspaceModel: ObservableObject {
             authored.cameraLookAt = .init(target: authored.screenPose.position)
             authored.cameraPose.quaternion = PoseRotationProjection.quaternionLooking(
                 from: authored.cameraPose.position,
-                to: authored.screenPose.position
+                to: authored.screenPose.position,
+                rollDegrees: selection.cameraRotationZDegrees
             )
         case "free":
             authored.cameraPose.position = [

@@ -235,6 +235,7 @@ struct ContentView: View {
     @State private var pendingRenderDraftAfterUpdate: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
     @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
+    @State private var expandedSceneTreeBranches: Set<SceneTreeSelection> = []
     @State private var settingsCopyRequest: SceneSettingsCopyRequest?
     @State private var settingsPasteRequest: SceneSettingsPasteRequest?
     @State private var pendingSettingsPaste: PendingSettingsPaste?
@@ -497,7 +498,7 @@ struct ContentView: View {
             if sidebarIsVisible {
                 VSplitView {
                     sceneLibraryPanel
-                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                        .frame(minHeight: 170, idealHeight: 360, maxHeight: 720)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                     Group {
                         if let renderDraft {
@@ -605,7 +606,7 @@ struct ContentView: View {
             if sidebarIsVisible {
                 VSplitView {
                     sceneLibraryPanel
-                        .frame(minHeight: 170, idealHeight: 230, maxHeight: 360)
+                        .frame(minHeight: 170, idealHeight: 360, maxHeight: 720)
                     testSetupPanel
                 }
                 .frame(minWidth: 560, idealWidth: 680, maxWidth: 900)
@@ -2109,7 +2110,7 @@ struct ContentView: View {
                         Divider()
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 2) {
-                            DisclosureGroup {
+                            DisclosureGroup(isExpanded: sceneTreeExpansionBinding(.unclassified)) {
                                 ForEach(scenes.sortedScenes(scenes.document.unclassifiedSceneIDs)) { scene in
                                     compactSceneTreeRow(scene).padding(.leading, 18)
                                 }
@@ -2118,18 +2119,25 @@ struct ContentView: View {
                                     .unclassified,
                                     title: "Sin clasificar",
                                     detail: "\(scenes.document.unclassifiedSceneIDs.count) escenas libres",
-                                    icon: "tray"
+                                    icon: "tray",
+                                    onOpen: { toggleSceneTreeBranch(.unclassified) }
                                 )
                             }
                             .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in
                                 acceptSceneDrop(providers, shotID: nil)
                             }
                             ForEach(scenes.document.productions) { production in
-                                DisclosureGroup {
+                                DisclosureGroup(
+                                    isExpanded: sceneTreeExpansionBinding(.production(production.id))
+                                ) {
                                     ForEach(production.episodes) { episode in
-                                        DisclosureGroup {
+                                        DisclosureGroup(
+                                            isExpanded: sceneTreeExpansionBinding(.episode(episode.id))
+                                        ) {
                                             ForEach(episode.shots) { shot in
-                                                DisclosureGroup {
+                                                DisclosureGroup(
+                                                    isExpanded: sceneTreeExpansionBinding(.shot(shot.id))
+                                                ) {
                                                     ForEach(scenes.sortedScenes(shot.scenes.map(\.sceneID))) { scene in
                                                         compactSceneTreeRow(scene).padding(.leading, 54)
                                                     }
@@ -2140,7 +2148,8 @@ struct ContentView: View {
                                                             ? shot.externalReference?.canonicalName
                                                             : "Libre · Salida manual",
                                                         icon: "camera",
-                                                        onAdd: { createScene(in: shot) }
+                                                        onAdd: { createScene(in: shot) },
+                                                        onOpen: { toggleSceneTreeBranch(.shot(shot.id)) }
                                                     )
                                                 }
                                                 .padding(.leading, 36)
@@ -2157,7 +2166,8 @@ struct ContentView: View {
                                                     }
                                                     : "Libre · Salida manual",
                                                 icon: "rectangle.stack",
-                                                onAdd: { createShot(in: episode) }
+                                                onAdd: { createShot(in: episode) },
+                                                onOpen: { toggleSceneTreeBranch(.episode(episode.id)) }
                                             )
                                         }
                                         .padding(.leading, 18)
@@ -2169,7 +2179,8 @@ struct ContentView: View {
                                             ? "Manual\(production.seasonSlug.isEmpty ? "" : " · \(production.seasonSlug)")"
                                             : "Shot Manager · \(production.seasonSlug)",
                                         icon: "building.2",
-                                        onAdd: { createEpisode(in: production) }
+                                        onAdd: { createEpisode(in: production) },
+                                        onOpen: { toggleSceneTreeBranch(.production(production.id)) }
                                     )
                                 }
                             }
@@ -2207,7 +2218,8 @@ struct ContentView: View {
 
     private func sceneTreeRow(
         _ selection: SceneTreeSelection, title: String, detail: String?, icon: String,
-        onAdd: (() -> Void)? = nil, imported3DScene: SavedScene? = nil
+        onAdd: (() -> Void)? = nil, imported3DScene: SavedScene? = nil,
+        onOpen: (() -> Void)? = nil
     ) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
@@ -2252,7 +2264,30 @@ struct ContentView: View {
             sceneTreeSelection == selection ? Color.accentColor : .clear,
             in: RoundedRectangle(cornerRadius: 5)
         )
-        .onTapGesture { sceneTreeSelection = selection }
+        .onTapGesture {
+            sceneTreeSelection = selection
+            onOpen?()
+        }
+    }
+
+    private func sceneTreeExpansionBinding(
+        _ selection: SceneTreeSelection
+    ) -> Binding<Bool> {
+        Binding(
+            get: { expandedSceneTreeBranches.contains(selection) },
+            set: { expanded in
+                if expanded { expandedSceneTreeBranches.insert(selection) }
+                else { expandedSceneTreeBranches.remove(selection) }
+            }
+        )
+    }
+
+    private func toggleSceneTreeBranch(_ selection: SceneTreeSelection) {
+        if expandedSceneTreeBranches.contains(selection) {
+            expandedSceneTreeBranches.remove(selection)
+        } else {
+            expandedSceneTreeBranches.insert(selection)
+        }
     }
 
     private func compactSceneTreeRow(_ scene: SavedScene) -> some View {

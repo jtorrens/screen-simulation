@@ -306,6 +306,32 @@ private func movedDevicePose(frame: Int) -> FusionDevicePoseKeyframe {
     )
 }
 
+private func translatedDevicePose(frame: Int = 1) -> FusionDevicePoseKeyframe {
+    FusionDevicePoseKeyframe(
+        frame: frame,
+        positionMeters: [0.2, -0.1, 0.3],
+        quaternionXYZW: [0, 0, 0, 1]
+    )
+}
+
+private func translatedCamera(frame: Int = 1) -> FusionCameraKeyframe {
+    let source = camera(frame: frame)
+    return FusionCameraKeyframe(
+        frame: frame,
+        positionMeters: [0.2, -0.1, 1.3],
+        quaternionXYZW: source.quaternionXYZW,
+        focalLengthMillimeters: source.focalLengthMillimeters,
+        horizontalFOVDegrees: source.horizontalFOVDegrees,
+        sensorWidthMillimeters: source.sensorWidthMillimeters,
+        sensorHeightMillimeters: source.sensorHeightMillimeters,
+        lensShiftXY: source.lensShiftXY,
+        focusDistanceMeters: source.focusDistanceMeters,
+        fStop: source.fStop,
+        nearClipMeters: source.nearClipMeters,
+        farClipMeters: source.farClipMeters
+    )
+}
+
 private func lens(frame: Int = 1) -> FusionLensKeyframe {
     FusionLensKeyframe(
         frame: frame,
@@ -442,6 +468,11 @@ private func temporaryDirectory() throws -> URL {
     #expect(comp.contains("[\"Transform3DOp.Translate.X\"] = Input { SourceOp = \"DeviceX\""))
     #expect(comp.contains("[\"Transform3DOp.Rotate.Y\"] = Input { SourceOp = \"DeviceRY\""))
     #expect(comp.contains("DeviceX = BezierSpline { KeyFrames = { [1] = { 0.12"))
+    #expect(comp.contains("ResolutionGateFit = Input { Value = FuID { \"Height\" } }"))
+    #expect(comp.components(
+        separatedBy: "ResolutionGateFit = Input { Value = FuID { \"Height\" } }"
+    ).count - 1 == 2)
+    #expect(comp.contains("Mode = Input { Value = 0 }"))
     #expect(!comp.contains("DE4RadialStandardDegree4"))
     #expect(!comp.contains("STMap"))
     let metadata = try FusionScenePackageWriter.metadata(request: request, prepared: prepared)
@@ -486,6 +517,7 @@ private func temporaryDirectory() throws -> URL {
 @Test func frontalProjectionUsesCompleteUnclippedDevice() throws {
     let raster = try FusionProjectionResolver.maximumProjectedDensity(
         cameraSamples: [camera()],
+        devicePoseSamples: [devicePose()],
         deviceWidthMeters: 0.36,
         deviceHeightMeters: 0.24,
         deliveryWidth: 1920,
@@ -498,6 +530,7 @@ private func temporaryDirectory() throws -> URL {
 
     let projectedOutsideFrame = try FusionProjectionResolver.maximumProjectedDensity(
         cameraSamples: [camera(z: 0.1)],
+        devicePoseSamples: [devicePose()],
         deviceWidthMeters: 0.36,
         deviceHeightMeters: 0.24,
         deliveryWidth: 1920,
@@ -507,6 +540,16 @@ private func temporaryDirectory() throws -> URL {
     #expect((6_400 ... 6_402).contains(projectedOutsideFrame.activeHeight))
     #expect(projectedOutsideFrame.activeWidth.isMultiple(of: 2))
     #expect(projectedOutsideFrame.activeHeight.isMultiple(of: 2))
+
+    let jointlyTranslated = try FusionProjectionResolver.maximumProjectedDensity(
+        cameraSamples: [translatedCamera()],
+        devicePoseSamples: [translatedDevicePose()],
+        deviceWidthMeters: 0.36,
+        deviceHeightMeters: 0.24,
+        deliveryWidth: 1920,
+        deliveryHeight: 1080
+    )
+    #expect(jointlyTranslated == raster)
 }
 
 @Test @MainActor func fusionEulerRoundTripsTheSynthEyesImporterConvention() {
@@ -523,6 +566,101 @@ private func temporaryDirectory() throws -> URL {
     let exportedQZ = simd_quatd(angle: exported.z * .pi / 180, axis: SIMD3(0, 0, 1))
     let roundTrip = simd_normalize(exportedQZ * exportedQY * exportedQX)
     #expect(abs(simd_dot(canonical.vector, roundTrip.vector)) > 1 - 1e-12)
+}
+
+@Test @MainActor func fusionResolutionGateFitMatchesTheAuthoredDeliveryPlacement() throws {
+    #expect(try FusionScenePackageWriter.fusionResolutionGateFit(
+        deliveryPlacementID: "fit",
+        sensorWidthMillimeters: 27.99, sensorHeightMillimeters: 19.22,
+        deliveryWidth: 3840, deliveryHeight: 2160
+    ) == "Height")
+    #expect(try FusionScenePackageWriter.fusionResolutionGateFit(
+        deliveryPlacementID: "fill-crop",
+        sensorWidthMillimeters: 27.99, sensorHeightMillimeters: 19.22,
+        deliveryWidth: 3840, deliveryHeight: 2160
+    ) == "Width")
+    #expect(try FusionScenePackageWriter.fusionResolutionGateFit(
+        deliveryPlacementID: "fit",
+        sensorWidthMillimeters: 36, sensorHeightMillimeters: 18,
+        deliveryWidth: 1440, deliveryHeight: 1080
+    ) == "Width")
+    #expect(try FusionScenePackageWriter.fusionResolutionGateFit(
+        deliveryPlacementID: "fill-crop",
+        sensorWidthMillimeters: 36, sensorHeightMillimeters: 18,
+        deliveryWidth: 1440, deliveryHeight: 1080
+    ) == "Height")
+    #expect(throws: FusionScenePackageError.invalidRaster) {
+        try FusionScenePackageWriter.fusionResolutionGateFit(
+            deliveryPlacementID: "one-to-one",
+            sensorWidthMillimeters: 27.99, sensorHeightMillimeters: 19.22,
+            deliveryWidth: 3840, deliveryHeight: 2160
+        )
+    }
+}
+
+@Test @MainActor func lookAtAuthoringResolvesToTheExactFusionCameraOrientation() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+    workspace.handleTestIntent(.setChoice(
+        controlID: "geometry-mode", optionID: "look-at"
+    ))
+    workspace.handleTestIntent(.setScalar(
+        controlID: "camera-distance-meters", value: 0.8
+    ))
+    workspace.handleTestIntent(.setScalar(
+        controlID: "camera-orbit-x-degrees", value: 12
+    ))
+    workspace.handleTestIntent(.setScalar(
+        controlID: "camera-orbit-y-degrees", value: -20
+    ))
+    workspace.handleTestIntent(.setScalar(
+        controlID: "camera-rotation-z-degrees", value: 7
+    ))
+    let capture = try workspace.captureSavedScene()
+    let sceneID = UUID()
+    let scene = SavedScene(
+        id: sceneID,
+        name: "LookAtFusion",
+        thumbnailFileName: "\(sceneID.uuidString.lowercased()).png",
+        snapshot: capture.snapshot
+    )
+    let configuration = fusionConfiguration(frames: 1 ... 2)
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: temporaryDirectory()
+    )
+    let job = NativeOutputQueueController.RenderJob(
+        scene: scene,
+        generatedEnvironmentEXR: capture.generatedEnvironmentEXR,
+        outputPlan: plan,
+        configuration: configuration
+    )
+    let package = try workspace.makeFusionPackageRequest(job: job)
+    let exported = try #require(package.request.camera.first)
+    let devicePose = try #require(package.request.devicePose.first)
+    let position = exported.positionMeters
+    let target = devicePose.positionMeters
+    let expected = PoseRotationProjection.quaternionLooking(
+        from: position, to: target, rollDegrees: 7
+    )
+    let exportedQ = simd_quatd(
+        ix: exported.quaternionXYZW[0], iy: exported.quaternionXYZW[1],
+        iz: exported.quaternionXYZW[2], r: exported.quaternionXYZW[3]
+    )
+    let expectedQ = simd_quatd(
+        ix: expected[0], iy: expected[1], iz: expected[2], r: expected[3]
+    )
+    #expect(abs(simd_dot(exportedQ.vector, expectedQ.vector)) > 1 - 1e-6)
+
+    let euler = FusionScenePackageWriter.fusionEulerDegrees(exported.quaternionXYZW)
+    let qx = simd_quatd(angle: euler.x * .pi / 180, axis: SIMD3(1, 0, 0))
+    let qy = simd_quatd(angle: euler.y * .pi / 180, axis: SIMD3(0, 1, 0))
+    let qz = simd_quatd(angle: euler.z * .pi / 180, axis: SIMD3(0, 0, 1))
+    let fusionQ = simd_normalize(qz * qy * qx)
+    #expect(abs(simd_dot(exportedQ.vector, fusionQ.vector)) > 1 - 1e-8)
 }
 
 @Test func spillPaddingPreservesRGBAtZeroAlphaAndIndependentMatte() throws {
@@ -753,6 +891,8 @@ private func temporaryDirectory() throws -> URL {
         let spillBlock = String(comp[spillRenderer.lowerBound ..< addNode.lowerBound])
         #expect(rgbaBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
         #expect(spillBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
+        #expect(rgbaBlock.contains("Depth = Input { Value = 4 }"))
+        #expect(spillBlock.contains("Depth = Input { Value = 4 }"))
         #expect(comp.contains("DeviceRGBAPlane = ImagePlane3D"))
         #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceAssociateAlpha\", Source = \"Output\" }"))
         #expect(comp.contains("SpillRGBPlane = ImagePlane3D"))
