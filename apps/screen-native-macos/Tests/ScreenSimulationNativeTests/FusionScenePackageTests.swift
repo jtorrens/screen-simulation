@@ -67,7 +67,9 @@ private func fusionConfiguration(
         activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
         sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
         camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
         lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false, enabledInFusion: true,
             shutterAngleDegrees: 180, shutterPhaseDegrees: 0
@@ -287,6 +289,23 @@ private func camera(frame: Int = 1, z: Double = 1) -> FusionCameraKeyframe {
     )
 }
 
+private func devicePose(frame: Int = 1) -> FusionDevicePoseKeyframe {
+    FusionDevicePoseKeyframe(
+        frame: frame,
+        positionMeters: [0, 0, 0],
+        quaternionXYZW: [0, 0, 0, 1]
+    )
+}
+
+private func movedDevicePose(frame: Int) -> FusionDevicePoseKeyframe {
+    let q = simd_quatd(angle: 15 * .pi / 180, axis: SIMD3(0, 1, 0))
+    return FusionDevicePoseKeyframe(
+        frame: frame,
+        positionMeters: [0.12, -0.03, 0.4],
+        quaternionXYZW: [q.imag.x, q.imag.y, q.imag.z, q.real]
+    )
+}
+
 private func lens(frame: Int = 1) -> FusionLensKeyframe {
     FusionLensKeyframe(
         frame: frame,
@@ -296,11 +315,172 @@ private func lens(frame: Int = 1) -> FusionLensKeyframe {
     )
 }
 
+private func applicationBrownLens(frame: Int = 1) -> FusionLensKeyframe {
+    FusionLensKeyframe(
+        frame: frame,
+        radialK1K2K3: [-0.035, 0.008, 0.001],
+        tangentialP1P2: [0.0004, -0.0003],
+        opticalCenterXY: [0, 0]
+    )
+}
+
 private func temporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("fusion-package-tests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+@Test @MainActor func completedFusionCompositionIsReadFromItsExactManifestPath() throws {
+    let configuration = fusionConfiguration()
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: temporaryDirectory()
+    )
+    try plan.prepareDirectories()
+    let composition = """
+    { Tools = ordered() {
+      Device = Loader { Clips = { Clip { Filename = "Comp:/../media/Shot010_Device00000001.exr" } } },
+      Note = Underlay { Comments = "Comp:/../metadata/Shot010_FusionScene.json" }
+    } }
+
+    """
+    let compositionURL = plan.destination.appendingPathComponent("fusion/Shot010.comp")
+    try composition.write(to: compositionURL, atomically: true, encoding: .utf8)
+    for relativePath in [
+        "media/Shot010_Device00000001.exr",
+        "metadata/Shot010_FusionScene.json",
+    ] {
+        try Data().write(to: plan.destination.appendingPathComponent(relativePath))
+    }
+
+    #expect(try FusionScenePackageWriter.compositionURL(
+        configuration: configuration, outputPlan: plan
+    ) == compositionURL)
+    #expect(try FusionScenePackageWriter.compositionText(
+        configuration: configuration, outputPlan: plan
+    ) == composition)
+    let clipboardText = try FusionScenePackageWriter.resolvedClipboardPaths(
+        in: composition, outputPlan: plan
+    )
+    #expect(clipboardText.contains(
+        plan.destination.appendingPathComponent(
+            "media/Shot010_Device00000001.exr"
+        ).standardizedFileURL.path
+    ))
+    #expect(clipboardText.contains(
+        plan.destination.appendingPathComponent(
+            "metadata/Shot010_FusionScene.json"
+        ).standardizedFileURL.path
+    ))
+    #expect(!clipboardText.contains("Comp:/../"))
+
+    let wrongManifest = RenderOutputPlan(
+        kind: .fusionScenePackage,
+        destination: plan.destination,
+        generatedRelativePaths: ["fusion/Another.comp"]
+    )
+    #expect(throws: FusionScenePackageError.invalidOutputManifest) {
+        try FusionScenePackageWriter.compositionText(
+            configuration: configuration, outputPlan: wrongManifest
+        )
+    }
+
+    try "{ Filename = \"Comp:/../media/not-declared.exr\" }".write(
+        to: compositionURL, atomically: true, encoding: .utf8
+    )
+    #expect(throws: FusionScenePackageError.invalidOutputManifest) {
+        try FusionScenePackageWriter.resolvedClipboardPaths(
+            in: "{ Filename = \"Comp:/../media/not-declared.exr\" }",
+            outputPlan: plan
+        )
+    }
+
+    try "".write(to: compositionURL, atomically: true, encoding: .utf8)
+    #expect(throws: FusionScenePackageError.invalidOutputManifest) {
+        try FusionScenePackageWriter.compositionText(
+            configuration: configuration, outputPlan: plan
+        )
+    }
+}
+
+@Test @MainActor func applicationAuthoredBrownLensUsesFusionRadialWithoutSynthEyesInference() throws {
+    let configuration = fusionConfiguration()
+    let request = FusionScenePackageRequest(
+        configuration: configuration,
+        outputPlan: try RenderOutputPlan.prepare(
+            configuration: configuration, selectedDestination: temporaryDirectory()
+        ),
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
+        sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
+        camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [movedDevicePose(frame: 1), movedDevicePose(frame: 2)],
+        lens: [applicationBrownLens(frame: 1), applicationBrownLens(frame: 2)],
+        lensReconstruction: .applicationBrownConrady,
+        motionBlur: .init(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: 180, shutterPhaseDegrees: 0
+        ),
+        referencePlate: nil
+    )
+    try request.validate()
+    let prepared = FusionPreparedPhysicalFrame(
+        width: 12, height: 8,
+        activeRect: .init(x: 2, y: 2, width: 8, height: 4),
+        uniformPaddingPixels: 2, thresholdSupportPixels: 1,
+        deviceRGBA: [], spillRGBA: []
+    )
+    let comp = try FusionScenePackageWriter.fusionComp(request: request, prepared: prepared)
+    #expect(comp.contains("Model = Input { Value = FuID { \"FusionRadial\" } }"))
+    #expect(comp.contains("[\"FusionRadial.LowOrderDistortion\"] = Input { SourceOp = \"LensBrownK1\""))
+    #expect(comp.contains("[\"FusionRadial.HighOrderDistortion\"] = Input { SourceOp = \"LensBrownK2\""))
+    #expect(comp.contains("[\"FusionRadial.FishEyeDistortion\"] = Input { SourceOp = \"LensBrownK3\""))
+    #expect(comp.contains("[\"FusionRadial.TangentialDistortion.X\"] = Input { SourceOp = \"LensBrownP1\""))
+    #expect(comp.contains("[\"FusionRadial.TangentialDistortion.Y\"] = Input { SourceOp = \"LensBrownP2\""))
+    #expect(comp.contains("[\"FusionRadial.FocalLength\"] = Input { SourceOp = \"CameraFocal\""))
+    #expect(comp.contains("TransformContract = \"canonical-world-device-pose\""))
+    #expect(comp.contains("[\"Transform3DOp.Translate.X\"] = Input { SourceOp = \"DeviceX\""))
+    #expect(comp.contains("[\"Transform3DOp.Rotate.Y\"] = Input { SourceOp = \"DeviceRY\""))
+    #expect(comp.contains("DeviceX = BezierSpline { KeyFrames = { [1] = { 0.12"))
+    #expect(!comp.contains("DE4RadialStandardDegree4"))
+    #expect(!comp.contains("STMap"))
+    let metadata = try FusionScenePackageWriter.metadata(request: request, prepared: prepared)
+    #expect(metadata.schemaVersion == 4)
+    #expect(metadata.devicePose == request.devicePose)
+    #expect(metadata.lensReconstruction.kind == .applicationBrownConrady)
+    #expect(metadata.lensReconstruction.fusionModel == "FusionRadial")
+
+    try request.outputPlan.prepareDirectories()
+    for relativePath in request.outputPlan.generatedRelativePaths where
+        relativePath.hasPrefix("media/") || relativePath.hasPrefix("metadata/")
+    {
+        try Data().write(to: request.outputPlan.destination.appendingPathComponent(relativePath))
+    }
+    let clipboardComp = try FusionScenePackageWriter.clipboardCompositionText(
+        request: request
+    )
+    #expect(clipboardComp.contains("DeviceX = BezierSpline { KeyFrames = { [1] = { 0.12"))
+    #expect(!clipboardComp.contains("Comp:/../"))
+
+    let contradictoryImportedRequest = FusionScenePackageRequest(
+        configuration: request.configuration,
+        outputPlan: request.outputPlan,
+        deviceWidthMeters: request.deviceWidthMeters,
+        deviceHeightMeters: request.deviceHeightMeters,
+        activeRaster: request.activeRaster,
+        sourceOverscanPixels: request.sourceOverscanPixels,
+        deliveryWidth: request.deliveryWidth,
+        deliveryHeight: request.deliveryHeight,
+        camera: request.camera,
+        devicePose: request.devicePose,
+        lens: request.lens,
+        lensReconstruction: .importedSynthEyesDE4,
+        motionBlur: request.motionBlur,
+        referencePlate: request.referencePlate
+    )
+    #expect(throws: FusionScenePackageError.lensNotRepresentableBySynthEyesDE4) {
+        try contradictoryImportedRequest.validate()
+    }
 }
 
 @Test func frontalProjectionUsesCompleteUnclippedDevice() throws {
@@ -514,7 +694,9 @@ private func temporaryDirectory() throws -> URL {
             deliveryWidth: 1920,
             deliveryHeight: 1080,
             camera: [camera(frame: 1), camera(frame: 2, z: 1.1)],
+            devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
             lens: [lens(frame: 1), lens(frame: 2)],
+            lensReconstruction: .importedSynthEyesDE4,
             motionBlur: .init(
                 bakedInEXR: false,
                 enabledInFusion: true,
@@ -646,7 +828,10 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
         activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
         sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
-        camera: [camera(frame: 1), camera(frame: 2)], lens: [lens(frame: 1), lens(frame: 2)],
+        camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
+        lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
             sourceURL: URL(fileURLWithPath: "/reference.mov"),
@@ -706,7 +891,10 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
         activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
         sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
-        camera: [camera(frame: 1), camera(frame: 2)], lens: [lens(frame: 1), lens(frame: 2)],
+        camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
+        lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(bakedInEXR: false, enabledInFusion: true, shutterAngleDegrees: 180, shutterPhaseDegrees: 0),
         referencePlate: .init(
             sourceURL: URL(fileURLWithPath: "/reference.mov"),
@@ -766,7 +954,9 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 8,
         deliveryHeight: 8,
         camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
         lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false,
             enabledInFusion: true,
@@ -851,7 +1041,9 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 8,
         deliveryHeight: 8,
         camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
         lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false,
             enabledInFusion: true,
@@ -892,7 +1084,9 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 8,
         deliveryHeight: 8,
         camera: [camera(frame: 1, z: 2), camera(frame: 2, z: 2)],
+        devicePose: originalRequest.devicePose,
         lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: originalRequest.lensReconstruction,
         motionBlur: originalRequest.motionBlur,
         referencePlate: nil
     )
@@ -918,7 +1112,9 @@ private func temporaryDirectory() throws -> URL {
         deliveryWidth: 8,
         deliveryHeight: 8,
         camera: [camera(frame: 1)],
+        devicePose: [devicePose(frame: 1)],
         lens: [lens(frame: 1)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false,
             enabledInFusion: true,
@@ -1001,7 +1197,8 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.2, deviceHeightMeters: 0.2,
         activeRaster: .init(activeWidth: 2, activeHeight: 2, pixelsPerMeter: 10),
         sourceOverscanPixels: 2, deliveryWidth: 8, deliveryHeight: 8,
-        camera: [camera()], lens: [lens()],
+        camera: [camera()], devicePose: [devicePose()], lens: [lens()],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false, enabledInFusion: true,
             shutterAngleDegrees: 180, shutterPhaseDegrees: 0
@@ -1054,7 +1251,9 @@ private func temporaryDirectory() throws -> URL {
         activeRaster: .init(activeWidth: 2, activeHeight: 2, pixelsPerMeter: 10),
         sourceOverscanPixels: 2, deliveryWidth: 8, deliveryHeight: 8,
         camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
         lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
         motionBlur: .init(
             bakedInEXR: false, enabledInFusion: true,
             shutterAngleDegrees: 180, shutterPhaseDegrees: 0
@@ -1151,6 +1350,7 @@ private func temporaryDirectory() throws -> URL {
     )
     let job = try #require(queue.jobs.first)
     let package = try executor.makeFusionPackageRequest(job: job)
+    #expect(package.request.lensReconstruction == .importedSynthEyesDE4)
     #expect(package.request.camera.count == trackedCamera.samples.count)
     #expect(package.request.camera.first?.positionMeters != package.request.camera.last?.positionMeters)
     let destination = try await FusionScenePackageWriter.render(

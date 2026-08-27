@@ -58,6 +58,47 @@ import Testing
     #expect(camera.sample(atTimelineFrame: 1, timelineFrameRate: 50)?.sourcePosition.x == 0.5)
 }
 
+@Test func freezingTrackingCameraKeepsIntrinsicsAndAllOtherImportedAuthoring() throws {
+    let camera = TrackingCamera(
+        id: "camera", label: "Camera", frameRateNumerator: 25, frameRateDenominator: 1,
+        focalLengthMillimeters: 40, gateWidthMillimeters: 24, gateHeightMillimeters: 13.5,
+        plateWidth: 1920, plateHeight: 1080,
+        distortion: .de4RadialStandardDegree4(degree2: -0.01, degree4: 0.002),
+        samples: [
+            .init(frame: 0, sourcePosition: .zero, orientation: .init(0, 0, 0, 1)),
+            .init(frame: 1, sourcePosition: .init(1, 0, 0), orientation: .init(0, 0, 0, 1)),
+        ]
+    )
+    let group = TrackingPointGroup(
+        id: "points", label: "Points",
+        points: [.init(id: "point", label: "Point", sourcePosition: .zero)]
+    )
+    let mesh = TrackingMesh(
+        id: "mesh", label: "Mesh",
+        sourceVertices: [.init(0, 0, 0), .init(1, 0, 0), .init(0, 1, 0)],
+        faceVertexCounts: [3], faceVertexIndices: [0, 1, 2]
+    )
+    let scene = TrackingScene(cameras: [camera], pointGroups: [group], meshes: [mesh])
+    let position = SIMD3<Double>(4, 5, 6)
+    let orientation = SIMD4<Double>(0, 0, 0, 1)
+
+    let frozen = try scene.freezingCamera(
+        id: camera.id,
+        sourcePosition: position,
+        orientation: orientation
+    )
+    let frozenCamera = try #require(frozen.cameras.first)
+    #expect(frozenCamera.samples == [
+        TrackingCameraSample(frame: 0, sourcePosition: position, orientation: orientation),
+    ])
+    #expect(frozenCamera.focalLengthMillimeters == camera.focalLengthMillimeters)
+    #expect(frozenCamera.gateWidthMillimeters == camera.gateWidthMillimeters)
+    #expect(frozenCamera.gateHeightMillimeters == camera.gateHeightMillimeters)
+    #expect(frozenCamera.distortion == camera.distortion)
+    #expect(frozen.pointGroups == scene.pointGroups)
+    #expect(frozen.meshes == scene.meshes)
+}
+
 @Test func quadTrackingGeometryProvidesStableCenterWithoutOverlayDiagonal() throws {
     let plane = TrackingMesh(
         id: "Plane", label: "Plane",

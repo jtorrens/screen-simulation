@@ -200,11 +200,22 @@ struct FusionCameraKeyframe: Codable, Equatable, Sendable {
     let farClipMeters: Double
 }
 
+struct FusionDevicePoseKeyframe: Codable, Equatable, Sendable {
+    let frame: Int
+    let positionMeters: [Double]
+    let quaternionXYZW: [Double]
+}
+
 struct FusionLensKeyframe: Codable, Equatable, Sendable {
     let frame: Int
     let radialK1K2K3: [Double]
     let tangentialP1P2: [Double]
     let opticalCenterXY: [Double]
+}
+
+enum FusionLensReconstructionKind: String, Codable, Equatable, Sendable {
+    case importedSynthEyesDE4 = "imported-syntheyes-de4-radial-standard-degree4-v1"
+    case applicationBrownConrady = "application-brown-conrady-v1"
 }
 
 struct FusionMotionBlurContract: Codable, Equatable, Sendable {
@@ -486,6 +497,7 @@ struct FusionSceneMetadata: Codable, Equatable, Sendable {
     }
     struct LensReconstruction: Codable, Equatable, Sendable {
         let bakedInEXR: Bool
+        let kind: FusionLensReconstructionKind
         let contract: String
         let fusionTool: String
         let fusionModel: String
@@ -513,8 +525,8 @@ struct FusionSceneMetadata: Codable, Equatable, Sendable {
     let motionBlur: FusionMotionBlurContract
     let lensReconstruction: LensReconstruction
     let camera: [FusionCameraKeyframe]
+    let devicePose: [FusionDevicePoseKeyframe]
     let lens: [FusionLensKeyframe]
-    let deviceTransform: String
     let mediaFormat: StudioOutputFormat
     let mediaEncoding: String
     let mediaToACEScgTransform: String
@@ -533,7 +545,9 @@ struct FusionScenePackageRequest: Equatable, Sendable {
     let deliveryWidth: Int
     let deliveryHeight: Int
     let camera: [FusionCameraKeyframe]
+    let devicePose: [FusionDevicePoseKeyframe]
     let lens: [FusionLensKeyframe]
+    let lensReconstruction: FusionLensReconstructionKind
     let motionBlur: FusionMotionBlurContract
     let referencePlate: FusionReferencePlate?
 
@@ -551,7 +565,7 @@ struct FusionScenePackageRequest: Equatable, Sendable {
               activeRaster.pixelsPerMeter.isFinite, activeRaster.pixelsPerMeter > 0,
               sourceOverscanPixels >= 0,
               deliveryWidth > 0, deliveryHeight > 0,
-              !camera.isEmpty, !lens.isEmpty,
+              !camera.isEmpty, !devicePose.isEmpty, !lens.isEmpty,
               motionBlur.bakedInEXR == false,
               motionBlur.enabledInFusion,
               motionBlur.shutterAngleDegrees.isFinite,
@@ -563,10 +577,19 @@ struct FusionScenePackageRequest: Equatable, Sendable {
         }
         let requiredFrames = Set(configuration.frameRange)
         guard Set(camera.map(\.frame)) == requiredFrames,
+              Set(devicePose.map(\.frame)) == requiredFrames,
               Set(lens.map(\.frame)) == requiredFrames,
               camera.count == requiredFrames.count,
+              devicePose.count == requiredFrames.count,
               lens.count == requiredFrames.count else {
             throw FusionScenePackageError.invalidCamera
+        }
+        for key in devicePose {
+            guard key.positionMeters.count == 3,
+                  key.quaternionXYZW.count == 4,
+                  (key.positionMeters + key.quaternionXYZW).allSatisfy(\.isFinite),
+                  abs(sqrt(key.quaternionXYZW.reduce(0) { $0 + $1 * $1 }) - 1) < 1e-5
+            else { throw FusionScenePackageError.invalidCamera }
         }
         for key in camera {
             guard key.positionMeters.count == 3,
@@ -594,10 +617,14 @@ struct FusionScenePackageRequest: Equatable, Sendable {
                     .allSatisfy(\.isFinite) else {
                 throw FusionScenePackageError.invalidLens
             }
-            guard key.radialK1K2K3[2] == 0,
-                  key.tangentialP1P2 == [0, 0],
-                  key.opticalCenterXY == [0, 0] else {
-                throw FusionScenePackageError.lensNotRepresentableBySynthEyesDE4
+            guard key.opticalCenterXY == [0, 0] else {
+                throw FusionScenePackageError.invalidLens
+            }
+            if lensReconstruction == .importedSynthEyesDE4 {
+                guard key.radialK1K2K3[2] == 0,
+                      key.tangentialP1P2 == [0, 0] else {
+                    throw FusionScenePackageError.lensNotRepresentableBySynthEyesDE4
+                }
             }
         }
     }
@@ -791,6 +818,88 @@ struct FusionReferencePlate: Equatable, Sendable {
 
 @MainActor
 enum FusionScenePackageWriter {
+    static func compositionURL(
+        configuration: StudioResolvedRenderConfiguration,
+        outputPlan: RenderOutputPlan
+    ) throws -> URL {
+        guard configuration.fusionScene != nil,
+              outputPlan.kind == .fusionScenePackage else {
+            throw FusionScenePackageError.invalidOutputManifest
+        }
+        let outputStem = configuration.jobName + configuration.versionSuffix
+        let relativePath = "fusion/\(outputStem).comp"
+        guard outputPlan.generatedRelativePaths.contains(relativePath) else {
+            throw FusionScenePackageError.invalidOutputManifest
+        }
+        return outputPlan.destination.appendingPathComponent(relativePath)
+    }
+
+    static func compositionText(
+        configuration: StudioResolvedRenderConfiguration,
+        outputPlan: RenderOutputPlan
+    ) throws -> String {
+        let url = try compositionURL(configuration: configuration, outputPlan: outputPlan)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        guard !text.isEmpty else { throw FusionScenePackageError.invalidOutputManifest }
+        return text
+    }
+
+    static func clipboardCompositionText(
+        request: FusionScenePackageRequest
+    ) throws -> String {
+        try request.validate()
+        guard let options = request.configuration.fusionScene else {
+            throw FusionScenePackageError.invalidOutputManifest
+        }
+        let thresholdSupport = request.sourceOverscanPixels
+            - options.spillFadeWidthPixels
+        guard thresholdSupport >= 0 else {
+            throw FusionScenePackageError.insufficientSpillSupport
+        }
+        let prepared = FusionPreparedPhysicalFrame(
+            width: request.activeRaster.activeWidth + 2 * request.sourceOverscanPixels,
+            height: request.activeRaster.activeHeight + 2 * request.sourceOverscanPixels,
+            activeRect: FusionRasterRect(
+                x: request.sourceOverscanPixels,
+                y: request.sourceOverscanPixels,
+                width: request.activeRaster.activeWidth,
+                height: request.activeRaster.activeHeight
+            ),
+            uniformPaddingPixels: request.sourceOverscanPixels,
+            thresholdSupportPixels: thresholdSupport,
+            deviceRGBA: [],
+            spillRGBA: []
+        )
+        return try resolvedClipboardPaths(
+            in: fusionComp(request: request, prepared: prepared),
+            outputPlan: request.outputPlan
+        )
+    }
+
+    static func resolvedClipboardPaths(
+        in composition: String,
+        outputPlan: RenderOutputPlan
+    ) throws -> String {
+        var text = composition
+        for relativePath in outputPlan.generatedRelativePaths where
+            relativePath.hasPrefix("media/") || relativePath.hasPrefix("metadata/")
+        {
+            let portablePath = "Comp:/../\(relativePath)"
+            guard text.contains(portablePath) else { continue }
+            let absoluteURL = outputPlan.destination.appendingPathComponent(relativePath)
+                .standardizedFileURL
+            guard FileManager.default.fileExists(atPath: absoluteURL.path) else {
+                throw FusionScenePackageError.invalidOutputManifest
+            }
+            let absolutePath = fusionEscapedPath(absoluteURL)
+            text = text.replacingOccurrences(of: portablePath, with: absolutePath)
+        }
+        guard !text.contains("Comp:/../") else {
+            throw FusionScenePackageError.invalidOutputManifest
+        }
+        return text
+    }
+
     typealias FrameProvider = (Int) async throws -> FusionRawPhysicalFrame
     typealias Progress = (Int, Int) -> Void
 
@@ -1124,7 +1233,7 @@ enum FusionScenePackageWriter {
             FusionSceneMetadata.self, from: Data(contentsOf: metadataURL)
         )
         guard metadata.schema == "ScreenSimulation.FusionScenePackage",
-              metadata.schemaVersion == 2,
+              metadata.schemaVersion == 4,
               metadata.jobName == request.configuration.jobName,
               metadata.firstFrame == request.configuration.firstFrame,
               metadata.lastFrame == request.configuration.lastFrame,
@@ -1160,7 +1269,9 @@ enum FusionScenePackageWriter {
             deliveryWidth: request.deliveryWidth,
             deliveryHeight: request.deliveryHeight,
             camera: metadata.camera,
+            devicePose: metadata.devicePose,
             lens: metadata.lens,
+            lensReconstruction: metadata.lensReconstruction.kind,
             motionBlur: metadata.motionBlur,
             referencePlate: request.referencePlate
         )
@@ -1174,8 +1285,8 @@ enum FusionScenePackageWriter {
             deviceRGBA: [],
             spillRGBA: []
         )
-        let compURL = request.outputPlan.destination.appendingPathComponent(
-            "fusion/\(outputStem).comp"
+        let compURL = try compositionURL(
+            configuration: request.configuration, outputPlan: request.outputPlan
         )
         try FileManager.default.createDirectory(
             at: compURL.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -1193,9 +1304,30 @@ enum FusionScenePackageWriter {
         let options = configuration.fusionScene!
         let color = try FusionMediaColorContract.resolve(configuration)
         let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
+        let lensReconstruction: FusionSceneMetadata.LensReconstruction
+        switch request.lensReconstruction {
+        case .importedSynthEyesDE4:
+            lensReconstruction = .init(
+                bakedInEXR: false,
+                kind: .importedSynthEyesDE4,
+                contract: FusionLensReconstructionKind.importedSynthEyesDE4.rawValue,
+                fusionTool: "LensDistort",
+                fusionModel: "DE4RadialStandardDegree4",
+                parameterMapping: "DistortionDegree2 = Brown k1 * 2; QuarticDistortionDegree4 = Brown k2 * 4; k3 and tangential are exactly zero"
+            )
+        case .applicationBrownConrady:
+            lensReconstruction = .init(
+                bakedInEXR: false,
+                kind: .applicationBrownConrady,
+                contract: FusionLensReconstructionKind.applicationBrownConrady.rawValue,
+                fusionTool: "LensDistort",
+                fusionModel: "FusionRadial",
+                parameterMapping: "LowOrderDistortion = Brown k1; HighOrderDistortion = Brown k2; FishEyeDistortion = Brown k3; TangentialDistortion X/Y = Brown p1/p2"
+            )
+        }
         return FusionSceneMetadata(
             schema: "ScreenSimulation.FusionScenePackage",
-            schemaVersion: 2,
+            schemaVersion: 4,
             jobName: configuration.jobName,
             firstFrame: configuration.firstFrame,
             lastFrame: configuration.lastFrame,
@@ -1235,16 +1367,10 @@ enum FusionScenePackageWriter {
             dofBakedInEXR: options.dofMode == .baked,
             cameraCurvesExportedWhenBaked: true,
             motionBlur: request.motionBlur,
-            lensReconstruction: .init(
-                bakedInEXR: false,
-                contract: "syntheyes-de4-radial-standard-degree4-v1",
-                fusionTool: "LensDistort",
-                fusionModel: "DE4RadialStandardDegree4",
-                parameterMapping: "DistortionDegree2 = Brown k1 * 2; QuarticDistortionDegree4 = Brown k2 * 4; k3 and tangential must be exactly zero"
-            ),
+            lensReconstruction: lensReconstruction,
             camera: request.camera,
+            devicePose: request.devicePose,
             lens: request.lens,
-            deviceTransform: "identity-at-origin",
             mediaFormat: configuration.format,
             mediaEncoding: color.encodingDescription,
             mediaToACEScgTransform: color.transformDescription,
@@ -1310,6 +1436,15 @@ enum FusionScenePackageWriter {
         let cameraRX = fusionSpline(euler.map { ($0.0, $0.1.x) })
         let cameraRY = fusionSpline(euler.map { ($0.0, $0.1.y) })
         let cameraRZ = fusionSpline(euler.map { ($0.0, $0.1.z) })
+        let deviceX = fusionSpline(request.devicePose.map { ($0.frame, $0.positionMeters[0]) })
+        let deviceY = fusionSpline(request.devicePose.map { ($0.frame, $0.positionMeters[1]) })
+        let deviceZ = fusionSpline(request.devicePose.map { ($0.frame, $0.positionMeters[2]) })
+        let deviceEuler = request.devicePose.map { pose in
+            (pose.frame, fusionEulerDegrees(pose.quaternionXYZW))
+        }
+        let deviceRX = fusionSpline(deviceEuler.map { ($0.0, $0.1.x) })
+        let deviceRY = fusionSpline(deviceEuler.map { ($0.0, $0.1.y) })
+        let deviceRZ = fusionSpline(deviceEuler.map { ($0.0, $0.1.z) })
         let focal = fusionSpline(request.camera.map { ($0.frame, $0.focalLengthMillimeters) })
         let horizontalFOV = fusionSpline(request.camera.map {
             ($0.frame, $0.horizontalFOVDegrees)
@@ -1327,8 +1462,79 @@ enum FusionScenePackageWriter {
         let lensDegree4 = fusionSpline(request.lens.map {
             ($0.frame, $0.radialK1K2K3[1] * 4)
         })
+        let lensBrownK1 = fusionSpline(request.lens.map { ($0.frame, $0.radialK1K2K3[0]) })
+        let lensBrownK2 = fusionSpline(request.lens.map { ($0.frame, $0.radialK1K2K3[1]) })
+        let lensBrownK3 = fusionSpline(request.lens.map { ($0.frame, $0.radialK1K2K3[2]) })
+        let lensBrownP1 = fusionSpline(request.lens.map { ($0.frame, $0.tangentialP1P2[0]) })
+        let lensBrownP2 = fusionSpline(request.lens.map { ($0.frame, $0.tangentialP1P2[1]) })
         let apertureWidthInches = firstCamera.sensorWidthMillimeters / 25.4
         let apertureHeightInches = firstCamera.sensorHeightMillimeters / 25.4
+        let lensCurveTools: String
+        let lensDistortionTool: String
+        switch request.lensReconstruction {
+        case .importedSynthEyesDE4:
+            lensCurveTools = """
+            LensDE4Degree2 = BezierSpline { KeyFrames = { \(lensDegree2) } },
+            LensDE4Degree4 = BezierSpline { KeyFrames = { \(lensDegree4) } },
+            """
+            lensDistortionTool = """
+            DeviceLensDistortion = LensDistort {
+              Inputs = {
+                Mode = Input { Value = 1 },
+                ClippingMode = Input { Value = FuID { "Domain" } },
+                LensDistortionModel = Input { Value = 1 },
+                Model = Input { Value = FuID { "DE4RadialStandardDegree4" } },
+                ["DE4RadialStandardDegree4.DistortionDegree2"] = Input { SourceOp = "LensDE4Degree2", Source = "Value" },
+                ["DE4RadialStandardDegree4.QuarticDistortionDegree4"] = Input { SourceOp = "LensDE4Degree4", Source = "Value" },
+                UseSourcePixelAspect = Input { Value = 0 },
+                PixelAspect = Input { Value = { 1, 1 } },
+                FLength = Input { SourceOp = "CameraFocal", Source = "Value" },
+                FilmGate = Input { Value = FuID { "User" } },
+                ApertureW = Input { Value = \(apertureWidthInches) },
+                ApertureH = Input { Value = \(apertureHeightInches) },
+                LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
+                LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
+                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
+              },
+              CustomData = { Contract = "\(FusionLensReconstructionKind.importedSynthEyesDE4.rawValue)", LensBakedInEXR = false },
+              ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }
+            },
+            """
+        case .applicationBrownConrady:
+            lensCurveTools = """
+            LensBrownK1 = BezierSpline { KeyFrames = { \(lensBrownK1) } },
+            LensBrownK2 = BezierSpline { KeyFrames = { \(lensBrownK2) } },
+            LensBrownK3 = BezierSpline { KeyFrames = { \(lensBrownK3) } },
+            LensBrownP1 = BezierSpline { KeyFrames = { \(lensBrownP1) } },
+            LensBrownP2 = BezierSpline { KeyFrames = { \(lensBrownP2) } },
+            """
+            lensDistortionTool = """
+            DeviceLensDistortion = LensDistort {
+              Inputs = {
+                Mode = Input { Value = 1 },
+                ClippingMode = Input { Value = FuID { "Domain" } },
+                LensDistortionModel = Input { Value = 1 },
+                Model = Input { Value = FuID { "FusionRadial" } },
+                ["FusionRadial.LowOrderDistortion"] = Input { SourceOp = "LensBrownK1", Source = "Value" },
+                ["FusionRadial.HighOrderDistortion"] = Input { SourceOp = "LensBrownK2", Source = "Value" },
+                ["FusionRadial.FishEyeDistortion"] = Input { SourceOp = "LensBrownK3", Source = "Value" },
+                ["FusionRadial.TangentialDistortion.X"] = Input { SourceOp = "LensBrownP1", Source = "Value" },
+                ["FusionRadial.TangentialDistortion.Y"] = Input { SourceOp = "LensBrownP2", Source = "Value" },
+                ["FusionRadial.FocalLength"] = Input { SourceOp = "CameraFocal", Source = "Value" },
+                UseSourcePixelAspect = Input { Value = 0 },
+                PixelAspect = Input { Value = { 1, 1 } },
+                FilmGate = Input { Value = FuID { "User" } },
+                ApertureW = Input { Value = \(apertureWidthInches) },
+                ApertureH = Input { Value = \(apertureHeightInches) },
+                LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
+                LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
+                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
+              },
+              CustomData = { Contract = "\(FusionLensReconstructionKind.applicationBrownConrady.rawValue)", LensBakedInEXR = false },
+              ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }
+            },
+            """
+        }
         let planeWidth = request.deviceWidthMeters
             * Double(prepared.width) / Double(prepared.activeRect.width)
         let planeHeight = request.deviceHeightMeters
@@ -1466,9 +1672,15 @@ enum FusionScenePackageWriter {
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
-                ["Transform3DOp.Scale.Z"] = Input { Value = 1 }
+                ["Transform3DOp.Scale.Z"] = Input { Value = 1 },
+                ["Transform3DOp.Translate.X"] = Input { SourceOp = "DeviceX", Source = "Value" },
+                ["Transform3DOp.Translate.Y"] = Input { SourceOp = "DeviceY", Source = "Value" },
+                ["Transform3DOp.Translate.Z"] = Input { SourceOp = "DeviceZ", Source = "Value" },
+                ["Transform3DOp.Rotate.X"] = Input { SourceOp = "DeviceRX", Source = "Value" },
+                ["Transform3DOp.Rotate.Y"] = Input { SourceOp = "DeviceRY", Source = "Value" },
+                ["Transform3DOp.Rotate.Z"] = Input { SourceOp = "DeviceRZ", Source = "Value" }
               },
-              CustomData = { TransformContract = "identity-at-origin", WidthMeters = \(planeWidth), HeightMeters = \(planeHeight), TextureAspectAppliedByImagePlane3D = true, ActiveRect = "\(prepared.activeRect.x),\(prepared.activeRect.y),\(prepared.activeRect.width),\(prepared.activeRect.height)" },
+              CustomData = { TransformContract = "canonical-world-device-pose", WidthMeters = \(planeWidth), HeightMeters = \(planeHeight), TextureAspectAppliedByImagePlane3D = true, ActiveRect = "\(prepared.activeRect.x),\(prepared.activeRect.y),\(prepared.activeRect.width),\(prepared.activeRect.height)" },
               ViewInfo = OperatorInfo { Pos = { 440, 148.5 } }
             },
             SpillRGBPlane = ImagePlane3D {
@@ -1477,9 +1689,15 @@ enum FusionScenePackageWriter {
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
-                ["Transform3DOp.Scale.Z"] = Input { Value = 1 }
+                ["Transform3DOp.Scale.Z"] = Input { Value = 1 },
+                ["Transform3DOp.Translate.X"] = Input { SourceOp = "DeviceX", Source = "Value" },
+                ["Transform3DOp.Translate.Y"] = Input { SourceOp = "DeviceY", Source = "Value" },
+                ["Transform3DOp.Translate.Z"] = Input { SourceOp = "DeviceZ", Source = "Value" },
+                ["Transform3DOp.Rotate.X"] = Input { SourceOp = "DeviceRX", Source = "Value" },
+                ["Transform3DOp.Rotate.Y"] = Input { SourceOp = "DeviceRY", Source = "Value" },
+                ["Transform3DOp.Rotate.Z"] = Input { SourceOp = "DeviceRZ", Source = "Value" }
               },
-              CustomData = { TransformContract = "identity-at-origin", Role = "additive-spill" },
+              CustomData = { TransformContract = "canonical-world-device-pose", Role = "additive-spill" },
               ViewInfo = OperatorInfo { Pos = { 605, 346.5 } }
             },
             Camera3D_Device = Camera3D {
@@ -1513,6 +1731,12 @@ enum FusionScenePackageWriter {
             CameraRX = BezierSpline { KeyFrames = { \(cameraRX) } },
             CameraRY = BezierSpline { KeyFrames = { \(cameraRY) } },
             CameraRZ = BezierSpline { KeyFrames = { \(cameraRZ) } },
+            DeviceX = BezierSpline { KeyFrames = { \(deviceX) } },
+            DeviceY = BezierSpline { KeyFrames = { \(deviceY) } },
+            DeviceZ = BezierSpline { KeyFrames = { \(deviceZ) } },
+            DeviceRX = BezierSpline { KeyFrames = { \(deviceRX) } },
+            DeviceRY = BezierSpline { KeyFrames = { \(deviceRY) } },
+            DeviceRZ = BezierSpline { KeyFrames = { \(deviceRZ) } },
             CameraFocal = BezierSpline { KeyFrames = { \(focal) } },
             CameraHorizontalFOV = BezierSpline { KeyFrames = { \(horizontalFOV) } },
             CameraFocus = BezierSpline { KeyFrames = { \(focus) } },
@@ -1520,8 +1744,7 @@ enum FusionScenePackageWriter {
             CameraApertureRadius = BezierSpline { KeyFrames = { \(apertureRadius) } },
             CameraLensShiftX = BezierSpline { KeyFrames = { \(lensShiftX) } },
             CameraLensShiftY = BezierSpline { KeyFrames = { \(lensShiftY) } },
-            LensDE4Degree2 = BezierSpline { KeyFrames = { \(lensDegree2) } },
-            LensDE4Degree4 = BezierSpline { KeyFrames = { \(lensDegree4) } },
+            \(lensCurveTools)
             DeviceRGBAScene3D = Merge3D {
               Inputs = {
                 SceneInput1 = Input { SourceOp = "DeviceRGBAPlane", Source = "Output" },
@@ -1588,27 +1811,7 @@ enum FusionScenePackageWriter {
               CustomData = { Equation = "projectedDeviceRGB + projectedSpillRGB", AlphaSemantics = "preserve-projected-device-alpha" },
               ViewInfo = OperatorInfo { Pos = { 935, 148.5 } }
             },
-            DeviceLensDistortion = LensDistort {
-              Inputs = {
-                Mode = Input { Value = 1 },
-                ClippingMode = Input { Value = FuID { "Domain" } },
-                LensDistortionModel = Input { Value = 1 },
-                Model = Input { Value = FuID { "DE4RadialStandardDegree4" } },
-                ["DE4RadialStandardDegree4.DistortionDegree2"] = Input { SourceOp = "LensDE4Degree2", Source = "Value" },
-                ["DE4RadialStandardDegree4.QuarticDistortionDegree4"] = Input { SourceOp = "LensDE4Degree4", Source = "Value" },
-                UseSourcePixelAspect = Input { Value = 0 },
-                PixelAspect = Input { Value = { 1, 1 } },
-                FLength = Input { SourceOp = "CameraFocal", Source = "Value" },
-                FilmGate = Input { Value = FuID { "User" } },
-                ApertureW = Input { Value = \(apertureWidthInches) },
-                ApertureH = Input { Value = \(apertureHeightInches) },
-                LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
-                LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
-                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
-              },
-              CustomData = { Contract = "syntheyes-de4-radial-standard-degree4-v1", LensBakedInEXR = false },
-              ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }
-            },
+            \(lensDistortionTool)
             \(fusionPlateComp(
                 request.referencePlate,
                 firstFrame: configuration.firstFrame,

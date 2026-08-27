@@ -324,7 +324,16 @@ impl CameraOutputTransform {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OcioInputTransform {
+    AcesCct,
     AcesCg,
+    DisplayRec709Gamma22Aces2Sdr,
+    DisplayRec709Aces2Sdr,
+    DisplaySrgbAces2Sdr,
+    DisplayRec2100PqAces2Hdr1000,
+    DisplayRec709Gamma22Dcm,
+    DisplayRec2100PqDcm,
+    DisplayRec2100HlgAces2Hdr1000,
+    DisplayRec2100HlgDcm,
     SrgbEncodedRec709,
     LinearRec709,
     Rec709Gamma24Display,
@@ -340,12 +349,21 @@ pub enum OcioInputTransform {
 }
 
 impl OcioInputTransform {
-    pub const ALL: [Self; 13] = [
-        Self::AcesCg,
+    pub const ALL: [Self; 22] = [
+        Self::AcesCct,
+        Self::DisplayRec709Gamma22Aces2Sdr,
+        Self::DisplayRec709Aces2Sdr,
+        Self::DisplaySrgbAces2Sdr,
+        Self::DisplayRec2100PqAces2Hdr1000,
+        Self::DisplayRec709Gamma22Dcm,
+        Self::Rec709Gamma24Display,
+        Self::DisplayRec2100PqDcm,
+        Self::DisplayRec2100HlgAces2Hdr1000,
+        Self::DisplayRec2100HlgDcm,
+        Self::CameraRec709,
         Self::SrgbEncodedRec709,
         Self::LinearRec709,
-        Self::Rec709Gamma24Display,
-        Self::CameraRec709,
+        Self::AcesCg,
         Self::ArriLogC3Ei800,
         Self::ArriLogC4,
         Self::BmdFilmWideGamutGen5,
@@ -358,7 +376,18 @@ impl OcioInputTransform {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::AcesCct => "ACEScct / AP1",
             Self::AcesCg => "ACEScg",
+            Self::DisplayRec709Gamma22Aces2Sdr => "Display Rec.709 Gamma 2.2 (ACES 2.0 SDR)",
+            Self::DisplayRec709Aces2Sdr => "Display Rec.709 (ACES 2.0 SDR)",
+            Self::DisplaySrgbAces2Sdr => "Display sRGB (ACES 2.0 SDR)",
+            Self::DisplayRec2100PqAces2Hdr1000 => "Display Rec.2100 PQ (ACES 2.0 HDR 1000)",
+            Self::DisplayRec709Gamma22Dcm => "Display Rec.709 Gamma 2.2 (DCM)",
+            Self::DisplayRec2100PqDcm => "Display Rec.2100 ST2084 (DCM)",
+            Self::DisplayRec2100HlgAces2Hdr1000 => {
+                "Display Rec.2100 HLG (ACES 2.0 HDR 1000 P3-D65)"
+            }
+            Self::DisplayRec2100HlgDcm => "Display Rec.2100 HLG (DCM)",
             Self::SrgbEncodedRec709 => "sRGB encoded Rec.709",
             Self::LinearRec709 => "Linear Rec.709 (sRGB)",
             Self::Rec709Gamma24Display => "Display Rec.709 Gamma 2.4",
@@ -376,18 +405,27 @@ impl OcioInputTransform {
 
     pub const fn stable_id(self) -> &'static str {
         match self {
+            Self::AcesCct => "acescct",
             Self::AcesCg => "acescg",
+            Self::DisplayRec709Gamma22Aces2Sdr => "display-rec709-gamma22-aces2-sdr",
+            Self::DisplayRec709Aces2Sdr => "display-rec709-aces2-sdr",
+            Self::DisplaySrgbAces2Sdr => "display-srgb-aces2-sdr",
+            Self::DisplayRec2100PqAces2Hdr1000 => "display-rec2100-pq-aces2-hdr-1000",
+            Self::DisplayRec709Gamma22Dcm => "display-rec709-gamma22-dcm",
+            Self::DisplayRec2100PqDcm => "display-rec2100-pq-dcm",
+            Self::DisplayRec2100HlgAces2Hdr1000 => "display-rec2100-hlg-aces2-hdr-1000",
+            Self::DisplayRec2100HlgDcm => "display-rec2100-hlg-dcm",
             Self::SrgbEncodedRec709 => "srgb-encoded-rec709",
             Self::LinearRec709 => "linear-rec709",
-            Self::Rec709Gamma24Display => "display-rec709-gamma24",
-            Self::CameraRec709 => "camera-rec709",
+            Self::Rec709Gamma24Display => "display-rec709-gamma24-dcm",
+            Self::CameraRec709 => "input-rec709",
             Self::ArriLogC3Ei800 => "arri-logc3-ei800",
             Self::ArriLogC4 => "arri-logc4",
-            Self::BmdFilmWideGamutGen5 => "bmd-film-wide-gamut-gen5",
-            Self::DavinciIntermediateWideGamut => "davinci-intermediate-wide-gamut",
-            Self::CanonLog3CinemaGamutD55 => "canon-log3-cinema-gamut-d55",
+            Self::BmdFilmWideGamutGen5 => "bmd-film-gen5",
+            Self::DavinciIntermediateWideGamut => "davinci-intermediate",
+            Self::CanonLog3CinemaGamutD55 => "canon-log3",
             Self::VLogVGamut => "vlog-vgamut",
-            Self::Log3G10RedWideGamutRgb => "log3g10-red-wide-gamut-rgb",
+            Self::Log3G10RedWideGamutRgb => "log3g10",
             Self::SLog3SGamut3Cine => "slog3-sgamut3-cine",
         }
     }
@@ -398,30 +436,80 @@ impl OcioInputTransform {
             .find(|candidate| candidate.stable_id() == value)
     }
 
-    const fn ocio_color_space(self) -> &'static str {
+    const fn processor(self) -> OcioInputProcessor {
         match self {
-            Self::AcesCg => ACESCG_COLOR_SPACE,
-            Self::SrgbEncodedRec709 => "sRGB Encoded Rec.709 (sRGB)",
-            Self::LinearRec709 => "Linear Rec.709 (sRGB)",
-            Self::Rec709Gamma24Display => "Gamma 2.4 Encoded Rec.709",
-            Self::CameraRec709 => "Camera Rec.709",
-            Self::ArriLogC3Ei800 => "ARRI LogC3 (EI800)",
-            Self::ArriLogC4 => "ARRI LogC4",
-            Self::BmdFilmWideGamutGen5 => "BMDFilm WideGamut Gen5",
-            Self::DavinciIntermediateWideGamut => "DaVinci Intermediate WideGamut",
-            Self::CanonLog3CinemaGamutD55 => "CanonLog3 CinemaGamut D55",
-            Self::VLogVGamut => "V-Log V-Gamut",
-            Self::Log3G10RedWideGamutRgb => "Log3G10 REDWideGamutRGB",
-            Self::SLog3SGamut3Cine => "S-Log3 S-Gamut3.Cine",
+            Self::DisplayRec709Gamma22Aces2Sdr => OcioInputProcessor::InverseDisplay {
+                display: "Gamma 2.2 Rec.709 - Display",
+                view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+            },
+            Self::DisplayRec709Aces2Sdr => OcioInputProcessor::InverseDisplay {
+                display: "Rec.1886 Rec.709 - Display",
+                view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+            },
+            Self::DisplaySrgbAces2Sdr => OcioInputProcessor::InverseDisplay {
+                display: "sRGB - Display",
+                view: "ACES 2.0 - SDR 100 nits (Rec.709)",
+            },
+            Self::DisplayRec2100PqAces2Hdr1000 => OcioInputProcessor::InverseDisplay {
+                display: "Rec.2100-PQ - Display",
+                view: "ACES 2.0 - HDR 1000 nits (Rec.2020)",
+            },
+            Self::DisplayRec2100PqDcm => OcioInputProcessor::InverseDisplay {
+                display: "Rec.2100-PQ - Display",
+                view: "Video (colorimetric)",
+            },
+            Self::DisplayRec2100HlgAces2Hdr1000 => OcioInputProcessor::InverseDisplay {
+                display: "Rec.2100-HLG - Display",
+                view: "ACES 2.0 - HDR 1000 nits (P3 D65)",
+            },
+            Self::DisplayRec2100HlgDcm => OcioInputProcessor::InverseDisplay {
+                display: "Rec.2100-HLG - Display",
+                view: "Video (colorimetric)",
+            },
+            Self::AcesCct => OcioInputProcessor::ColorSpace("ACEScct"),
+            Self::AcesCg => OcioInputProcessor::ColorSpace(ACESCG_COLOR_SPACE),
+            Self::DisplayRec709Gamma22Dcm => {
+                OcioInputProcessor::ColorSpace("Gamma 2.2 Encoded Rec.709")
+            }
+            Self::SrgbEncodedRec709 => {
+                OcioInputProcessor::ColorSpace("sRGB Encoded Rec.709 (sRGB)")
+            }
+            Self::LinearRec709 => OcioInputProcessor::ColorSpace("Linear Rec.709 (sRGB)"),
+            Self::Rec709Gamma24Display => {
+                OcioInputProcessor::ColorSpace("Gamma 2.4 Encoded Rec.709")
+            }
+            Self::CameraRec709 => OcioInputProcessor::ColorSpace("Camera Rec.709"),
+            Self::ArriLogC3Ei800 => OcioInputProcessor::ColorSpace("ARRI LogC3 (EI800)"),
+            Self::ArriLogC4 => OcioInputProcessor::ColorSpace("ARRI LogC4"),
+            Self::BmdFilmWideGamutGen5 => OcioInputProcessor::ColorSpace("BMDFilm WideGamut Gen5"),
+            Self::DavinciIntermediateWideGamut => {
+                OcioInputProcessor::ColorSpace("DaVinci Intermediate WideGamut")
+            }
+            Self::CanonLog3CinemaGamutD55 => {
+                OcioInputProcessor::ColorSpace("CanonLog3 CinemaGamut D55")
+            }
+            Self::VLogVGamut => OcioInputProcessor::ColorSpace("V-Log V-Gamut"),
+            Self::Log3G10RedWideGamutRgb => {
+                OcioInputProcessor::ColorSpace("Log3G10 REDWideGamutRGB")
+            }
+            Self::SLog3SGamut3Cine => OcioInputProcessor::ColorSpace("S-Log3 S-Gamut3.Cine"),
         }
     }
 
     pub const fn reference_domain(self) -> SourceReferenceDomain {
         match self {
-            Self::SrgbEncodedRec709 | Self::Rec709Gamma24Display => {
-                SourceReferenceDomain::DisplayReferred
-            }
-            Self::AcesCg
+            Self::SrgbEncodedRec709
+            | Self::DisplayRec709Gamma22Dcm
+            | Self::Rec709Gamma24Display
+            | Self::DisplayRec2100PqDcm
+            | Self::DisplayRec2100HlgDcm => SourceReferenceDomain::DisplayReferred,
+            Self::DisplayRec709Gamma22Aces2Sdr
+            | Self::DisplayRec709Aces2Sdr
+            | Self::DisplaySrgbAces2Sdr
+            | Self::DisplayRec2100PqAces2Hdr1000
+            | Self::DisplayRec2100HlgAces2Hdr1000 => SourceReferenceDomain::AcesOutputReferred,
+            Self::AcesCct
+            | Self::AcesCg
             | Self::LinearRec709
             | Self::CameraRec709
             | Self::ArriLogC3Ei800
@@ -437,9 +525,19 @@ impl OcioInputTransform {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OcioInputProcessor {
+    ColorSpace(&'static str),
+    InverseDisplay {
+        display: &'static str,
+        view: &'static str,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceReferenceDomain {
     SceneReferred,
     DisplayReferred,
+    AcesOutputReferred,
 }
 
 impl SourceReferenceDomain {
@@ -447,6 +545,7 @@ impl SourceReferenceDomain {
         match self {
             Self::SceneReferred => "sceneReferred",
             Self::DisplayReferred => "displayReferred",
+            Self::AcesOutputReferred => "acesOutputReferred",
         }
     }
 }
@@ -527,31 +626,38 @@ impl DeviceColorTarget {
             (Self::SrgbDisplay, SourceReferenceDomain::DisplayReferred) => {
                 "device-srgb-colorimetric"
             }
-            (Self::SrgbDisplay, SourceReferenceDomain::SceneReferred) => "aces2-srgb-sdr-100",
+            (
+                Self::SrgbDisplay,
+                SourceReferenceDomain::SceneReferred | SourceReferenceDomain::AcesOutputReferred,
+            ) => "aces2-srgb-sdr-100",
             (Self::Gamma22Rec709Display, SourceReferenceDomain::DisplayReferred) => {
                 "device-rec709-gamma22-colorimetric"
             }
-            (Self::Gamma22Rec709Display, SourceReferenceDomain::SceneReferred) => {
-                "aces2-rec709-gamma22-sdr-100"
-            }
+            (
+                Self::Gamma22Rec709Display,
+                SourceReferenceDomain::SceneReferred | SourceReferenceDomain::AcesOutputReferred,
+            ) => "aces2-rec709-gamma22-sdr-100",
             (Self::Rec1886Rec709Display, SourceReferenceDomain::DisplayReferred) => {
                 "device-rec709-gamma24-colorimetric"
             }
-            (Self::Rec1886Rec709Display, SourceReferenceDomain::SceneReferred) => {
-                "aces2-rec709-sdr-100"
-            }
+            (
+                Self::Rec1886Rec709Display,
+                SourceReferenceDomain::SceneReferred | SourceReferenceDomain::AcesOutputReferred,
+            ) => "aces2-rec709-sdr-100",
             (Self::Rec2100Pq1000Display, SourceReferenceDomain::DisplayReferred) => {
                 "device-rec2100-pq-colorimetric"
             }
-            (Self::Rec2100Pq1000Display, SourceReferenceDomain::SceneReferred) => {
-                "aces2-rec2100-pq-1000"
-            }
+            (
+                Self::Rec2100Pq1000Display,
+                SourceReferenceDomain::SceneReferred | SourceReferenceDomain::AcesOutputReferred,
+            ) => "aces2-rec2100-pq-1000",
             (Self::Rec2100Hlg1000Display, SourceReferenceDomain::DisplayReferred) => {
                 "device-rec2100-hlg-colorimetric"
             }
-            (Self::Rec2100Hlg1000Display, SourceReferenceDomain::SceneReferred) => {
-                "aces2-rec2100-hlg-1000"
-            }
+            (
+                Self::Rec2100Hlg1000Display,
+                SourceReferenceDomain::SceneReferred | SourceReferenceDomain::AcesOutputReferred,
+            ) => "aces2-rec2100-hlg-1000",
         }
     }
 
@@ -646,12 +752,27 @@ impl ColorEngine {
     ) -> Result<SourceToDeviceProcessor, ColorError> {
         match interpretation {
             SourceColorInterpretation::Ocio(input) => {
-                let processor = match input.reference_domain() {
+                let input_to_acescg = match input.processor() {
+                    OcioInputProcessor::ColorSpace(source) => {
+                        self.config.processor(source, ACESCG_COLOR_SPACE)
+                    }
+                    OcioInputProcessor::InverseDisplay { display, view } => {
+                        self.config.processor_display(
+                            ACESCG_COLOR_SPACE,
+                            display,
+                            view,
+                            TransformDirection::Inverse,
+                        )
+                    }
+                }
+                .and_then(|processor| processor.default_cpu_processor())
+                .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+                let acescg_to_output = match input.reference_domain() {
                     SourceReferenceDomain::DisplayReferred
                         if target.uses_display_processor_for_display_referred() =>
                     {
                         self.config.processor_display(
-                            input.ocio_color_space(),
+                            ACESCG_COLOR_SPACE,
                             target.ocio_display(),
                             "Video (colorimetric)",
                             TransformDirection::Forward,
@@ -659,9 +780,10 @@ impl ColorEngine {
                     }
                     SourceReferenceDomain::DisplayReferred => self
                         .config
-                        .processor(input.ocio_color_space(), target.ocio_color_space()),
-                    SourceReferenceDomain::SceneReferred => self.config.processor_display(
-                        input.ocio_color_space(),
+                        .processor(ACESCG_COLOR_SPACE, target.ocio_color_space()),
+                    SourceReferenceDomain::SceneReferred
+                    | SourceReferenceDomain::AcesOutputReferred => self.config.processor_display(
+                        ACESCG_COLOR_SPACE,
                         target.ocio_display(),
                         target.scene_view(),
                         TransformDirection::Forward,
@@ -669,7 +791,10 @@ impl ColorEngine {
                 }
                 .and_then(|processor| processor.default_cpu_processor())
                 .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
-                Ok(SourceToDeviceProcessor::Ocio(processor))
+                Ok(SourceToDeviceProcessor::Ocio(vec![
+                    input_to_acescg,
+                    acescg_to_output,
+                ]))
             }
         }
     }
@@ -956,7 +1081,7 @@ impl CameraOutputProcessor {
 }
 
 pub enum SourceToDeviceProcessor {
-    Ocio(CPUProcessor),
+    Ocio(Vec<CPUProcessor>),
 }
 
 impl SourceToDeviceProcessor {
@@ -965,13 +1090,16 @@ impl SourceToDeviceProcessor {
             return Err(ColorError::InvalidRgbaBufferLength(pixels.len()));
         }
         match self {
-            Self::Ocio(processor) => processor
-                .try_apply_rgba_pixels(
-                    pixels,
-                    i64::try_from(pixels.len() / 4).map_err(|_| ColorError::PixelCountOverflow)?,
-                    4,
-                )
-                .map_err(|error| ColorError::OpenColorIo(error.to_string())),
+            Self::Ocio(processors) => {
+                let pixel_count =
+                    i64::try_from(pixels.len() / 4).map_err(|_| ColorError::PixelCountOverflow)?;
+                for processor in processors {
+                    processor
+                        .try_apply_rgba_pixels(pixels, pixel_count, 4)
+                        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1133,15 +1261,18 @@ mod tests {
     }
 
     #[test]
-    fn catalog_entries_resolve_in_the_bundled_configuration() {
+    fn every_input_transform_resolves_through_every_feeder_output() {
         let engine = ColorEngine::bundled().expect("bundled color engine");
         for input in OcioInputTransform::ALL {
-            engine
-                .source_to_device_processor(
-                    SourceColorInterpretation::Ocio(input),
-                    DeviceColorTarget::SrgbDisplay,
-                )
-                .unwrap_or_else(|error| panic!("{} failed: {error}", input.label()));
+            for target in DeviceColorTarget::ALL {
+                let signal = engine
+                    .source_to_device_processor(SourceColorInterpretation::Ocio(input), target)
+                    .and_then(|processor| processor.apply_rgb([0.18, 0.18, 0.18]))
+                    .unwrap_or_else(|error| {
+                        panic!("{} → {} failed: {error}", input.label(), target.label())
+                    });
+                assert!(signal.r.is_finite() && signal.g.is_finite() && signal.b.is_finite());
+            }
         }
     }
 
@@ -1276,6 +1407,11 @@ mod tests {
             );
         }
         assert_eq!(OcioInputTransform::from_stable_id("ARRI LogC4"), None);
+        assert_eq!(
+            OcioInputTransform::from_stable_id("input-rec709"),
+            Some(OcioInputTransform::CameraRec709)
+        );
+        assert_eq!(OcioInputTransform::from_stable_id("camera-rec709"), None);
     }
 
     #[test]

@@ -56,8 +56,25 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneSettingsClipboard.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneSettingsClipboardTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "scene.default-reset",
+      "scope": "confirmed Saved Scene reset preserving only Source and Reference",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneDefaultResetTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "scripts/check_architecture.py"
       ]
     },
@@ -97,6 +114,7 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/NativeOutputQueueController.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/GlobalLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalPipelineAuthoringTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraNavigationControllerTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/NativeOutputQueueControllerTests.swift",
         "scripts/migrate_global_library_v13_to_v14.py",
@@ -139,8 +157,13 @@
         "anchor": "Workstation Saved Scene authority"
       },
       "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionTrackingScene.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionTrackingSceneTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "scripts/check_architecture.py"
       ]
     },
@@ -240,6 +263,25 @@
         "Packages/StudioMedia/Sources/StudioMedia/InputInterpretation.swift",
         "Packages/StudioMedia/Tests/StudioMediaTests/ContractParityTests.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift"
+      ]
+    },
+    {
+      "id": "color.input-transform-catalog",
+      "scope": "all selectable Input Transform identities and complete Color-to-Application execution",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "Initial import defaults"
+      },
+      "enforcement": [
+        "packages/StudioColor/Sources/StudioColor/StudioColorContracts.swift",
+        "packages/StudioColor/Tests/StudioColorTests/StudioColorTests.swift",
+        "crates/screen-color/src/lib.rs",
+        "crates/screen-application/src/test_authoring.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/TestAuthoringCoordinatorTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/check_architecture.py"
       ]
     },
     {

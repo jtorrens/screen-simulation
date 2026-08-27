@@ -408,6 +408,15 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             generatedEnvironment: asset, tracking: tracking
         )
     }
+
+    func removingImported3D() -> Self {
+        Self(
+            source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
+            viewerPanX: viewerPanX, viewerPanY: viewerPanY,
+            viewerIsFitted: viewerIsFitted, authoring: authoring,
+            generatedEnvironment: generatedEnvironment, tracking: nil
+        )
+    }
 }
 
 struct SavedScene: Codable, Equatable, Identifiable, Sendable {
@@ -432,6 +441,21 @@ struct SavedSceneCapture: Sendable {
     let snapshot: SavedSceneSnapshot
     let thumbnailPNG: Data
     let generatedEnvironmentEXR: Data?
+}
+
+enum SceneSettingsPasteDestination: Sendable {
+    case storedScene
+    case activeScene(SavedSceneCapture)
+}
+
+enum SceneDefaultResetDestination: Sendable {
+    case storedScene
+    case activeScene(SavedSceneCapture)
+}
+
+enum SceneImported3DRemovalDestination: Sendable {
+    case storedScene
+    case activeScene(SavedSceneCapture)
 }
 
 /// A self-contained recovery point. Only source, reference and authored external HDRI media
@@ -1538,10 +1562,93 @@ final class SceneLibraryController: ObservableObject {
     }
 
     @discardableResult
+    func resetToDefaults(
+        _ scene: SavedScene,
+        snapshot: SavedSceneSnapshot,
+        destination: SceneDefaultResetDestination,
+        undoManager: UndoManager? = nil
+    ) throws -> SavedScene {
+        let stored = try storedUpdate(sceneID: scene.id)
+        let base = switch destination {
+        case .storedScene:
+            SavedSceneCapture(
+                snapshot: stored.snapshot,
+                thumbnailPNG: stored.thumbnailPNG,
+                generatedEnvironmentEXR: stored.generatedEnvironmentEXR
+            )
+        case let .activeScene(capture):
+            capture
+        }
+        let source = base.snapshot.authoring.context
+        let reset = snapshot.authoring.context
+        guard snapshot.source == base.snapshot.source,
+              reset.sourceInputTransformID == source.sourceInputTransformID,
+              reset.sourceAlphaMode == source.sourceAlphaMode,
+              reset.sourceColorModel == source.sourceColorModel,
+              reset.sourceYUVMatrix == source.sourceYUVMatrix,
+              reset.sourceSignalRange == source.sourceSignalRange,
+              reset.sourcePlacementID == source.sourcePlacementID,
+              reset.referencePlateID == source.referencePlateID,
+              reset.referenceResource == source.referenceResource,
+              snapshot.generatedEnvironment == nil,
+              snapshot.tracking == nil
+        else {
+            throw SceneLibraryError.invalidDocument(
+                "El reset debe conservar exactamente Source y Reference."
+            )
+        }
+        try update(
+            scene,
+            capture: SavedSceneCapture(
+                snapshot: snapshot,
+                thumbnailPNG: base.thumbnailPNG,
+                generatedEnvironmentEXR: nil
+            ),
+            undoManager: undoManager
+        )
+        guard let updated = self.scene(id: scene.id) else {
+            throw SceneLibraryError.inaccessible("La escena restaurada ya no existe.")
+        }
+        return updated
+    }
+
+    @discardableResult
+    func removeImported3D(
+        _ scene: SavedScene,
+        destination: SceneImported3DRemovalDestination,
+        undoManager: UndoManager? = nil
+    ) throws -> SavedScene {
+        let stored = try storedUpdate(sceneID: scene.id)
+        let base = switch destination {
+        case .storedScene: stored.capture
+        case let .activeScene(capture): capture
+        }
+        guard base.snapshot.tracking != nil else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena no contiene una importación 3D."
+            )
+        }
+        try update(
+            scene,
+            capture: SavedSceneCapture(
+                snapshot: base.snapshot.removingImported3D(),
+                thumbnailPNG: base.thumbnailPNG,
+                generatedEnvironmentEXR: base.generatedEnvironmentEXR
+            ),
+            undoManager: undoManager
+        )
+        guard let updated = self.scene(id: scene.id) else {
+            throw SceneLibraryError.inaccessible("La escena actualizada ya no existe.")
+        }
+        return updated
+    }
+
+    @discardableResult
     func applySettingsClipboard(
         _ clipboard: SceneSettingsClipboardDocument,
         blocks: Set<SceneSettingsBlock>,
         to scene: SavedScene,
+        destination: SceneSettingsPasteDestination,
         ownership: SceneSettingsOwnership,
         undoManager: UndoManager? = nil
     ) throws -> SavedScene {
@@ -1550,7 +1657,17 @@ final class SceneLibraryController: ObservableObject {
                 "Se han seleccionado tarjetas ausentes del portapapeles."
             )
         }
-        let target = try storedUpdate(sceneID: scene.id)
+        let stored = try storedUpdate(sceneID: scene.id)
+        let target = switch destination {
+        case .storedScene:
+            SavedSceneCapture(
+                snapshot: stored.snapshot,
+                thumbnailPNG: stored.thumbnailPNG,
+                generatedEnvironmentEXR: stored.generatedEnvironmentEXR
+            )
+        case let .activeScene(capture):
+            capture
+        }
         let snapshot = try target.snapshot.applyingSettings(
             from: clipboard.snapshot,
             blocks: blocks,

@@ -3834,6 +3834,7 @@ final class WorkspaceModel: ObservableObject {
             visibleTrackingMeshIDs = Set(imported.meshes.map(\.id))
             trackingScalePointAID = nil
             trackingScalePointBID = nil
+            trackingMeasuredDistanceMeters = 1
             trackingMetersPerSourceUnit = nil
             trackingScaleSelectionSlot = nil
             trackingSynthEyesUnitValue = 1
@@ -3869,6 +3870,7 @@ final class WorkspaceModel: ObservableObject {
     func clearTrackingScaleCalibration() {
         trackingScalePointAID = nil
         trackingScalePointBID = nil
+        trackingMeasuredDistanceMeters = 1
         trackingMetersPerSourceUnit = nil
         trackingScaleSelectionSlot = nil
     }
@@ -3968,6 +3970,167 @@ final class WorkspaceModel: ObservableObject {
     private var selectedTrackingCamera: TrackingCamera? {
         guard let id = selectedTrackingCameraID else { return nil }
         return trackingScene?.cameras.first { $0.id == id }
+    }
+
+    var canFreezeTrackingCameraAnimation: Bool {
+        trackingCameraEnabled
+            && trackingMetersPerSourceUnit != nil
+            && (selectedTrackingCamera?.samples.count ?? 0) > 1
+    }
+
+    private struct TrackingAuthoringState {
+        let scene: TrackingScene?
+        let cameraID: String?
+        let pointGroupID: String?
+        let cameraEnabled: Bool
+        let pointsVisible: Bool
+        let geometryVisible: Bool
+        let visibleMeshIDs: Set<String>
+        let scalePointAID: String?
+        let scalePointBID: String?
+        let measuredDistanceMeters: Double
+        let metersPerSourceUnit: Double?
+        let scaleSelectionSlot: Int?
+        let unitValue: Double
+        let unit: String
+        let currentFrame: Int
+        let inFrame: Int
+        let outFrame: Int
+    }
+
+    private var trackingAuthoringState: TrackingAuthoringState {
+        TrackingAuthoringState(
+            scene: trackingScene,
+            cameraID: selectedTrackingCameraID,
+            pointGroupID: selectedTrackingPointGroupID,
+            cameraEnabled: trackingCameraEnabled,
+            pointsVisible: trackingPointsVisible,
+            geometryVisible: trackingGeometryVisible,
+            visibleMeshIDs: visibleTrackingMeshIDs,
+            scalePointAID: trackingScalePointAID,
+            scalePointBID: trackingScalePointBID,
+            measuredDistanceMeters: trackingMeasuredDistanceMeters,
+            metersPerSourceUnit: trackingMetersPerSourceUnit,
+            scaleSelectionSlot: trackingScaleSelectionSlot,
+            unitValue: trackingSynthEyesUnitValue,
+            unit: trackingSynthEyesUnit,
+            currentFrame: currentFrame,
+            inFrame: inFrame,
+            outFrame: outFrame
+        )
+    }
+
+    func freezeTrackingCameraAnimation(undoManager: UndoManager?) {
+        guard canFreezeTrackingCameraAnimation,
+              let scene = trackingScene,
+              let cameraID = selectedTrackingCameraID,
+              let scale = trackingMetersPerSourceUnit,
+              scale.isFinite, scale > 0
+        else {
+            errorMessage = "Activa una cámara tracking animada y resuelve su escala antes de congelarla."
+            return
+        }
+        do {
+            let prior = trackingAuthoringState
+            let resolved = try resolveSceneFrame(currentFrame).authored
+            let sourcePosition = SIMD3(
+                resolved.cameraPose.position[0] / scale,
+                resolved.cameraPose.position[1] / scale,
+                resolved.cameraPose.position[2] / scale
+            )
+            let orientation = simd_normalize(SIMD4(
+                resolved.cameraPose.quaternion[0], resolved.cameraPose.quaternion[1],
+                resolved.cameraPose.quaternion[2], resolved.cameraPose.quaternion[3]
+            ))
+            trackingScene = try scene.freezingCamera(
+                id: cameraID,
+                sourcePosition: sourcePosition,
+                orientation: orientation
+            )
+            applyTimelineAuthority(resetRange: true)
+            physicalModel.invalidateExternalParameters()
+            registerTrackingAuthoringUndo(
+                prior,
+                undoManager: undoManager,
+                actionName: "Eliminar animación de cámara"
+            )
+            status = "Cámara congelada en el frame actual · animación eliminada"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeImportedTrackingScene(undoManager: UndoManager?) {
+        guard trackingScene != nil else { return }
+        let prior = trackingAuthoringState
+        trackingScene = nil
+        selectedTrackingCameraID = nil
+        selectedTrackingPointGroupID = nil
+        trackingCameraEnabled = true
+        trackingPointsVisible = true
+        trackingGeometryVisible = true
+        visibleTrackingMeshIDs = []
+        trackingScalePointAID = nil
+        trackingScalePointBID = nil
+        trackingMeasuredDistanceMeters = 1
+        trackingMetersPerSourceUnit = nil
+        trackingScaleSelectionSlot = nil
+        trackingSynthEyesUnitValue = 1
+        trackingSynthEyesUnit = "m"
+        applyTimelineAuthority(resetRange: true)
+        physicalModel.invalidateExternalParameters()
+        registerTrackingAuthoringUndo(
+            prior,
+            undoManager: undoManager,
+            actionName: "Eliminar importación 3D"
+        )
+        status = "Importación 3D eliminada"
+    }
+
+    private func registerTrackingAuthoringUndo(
+        _ state: TrackingAuthoringState,
+        undoManager: UndoManager?,
+        actionName: String
+    ) {
+        registerUndo(with: undoManager, actionName: actionName) { target, manager in
+            target.restoreTrackingAuthoring(
+                state,
+                undoManager: manager,
+                actionName: actionName
+            )
+        }
+    }
+
+    private func restoreTrackingAuthoring(
+        _ state: TrackingAuthoringState,
+        undoManager: UndoManager?,
+        actionName: String
+    ) {
+        let inverse = trackingAuthoringState
+        trackingScene = state.scene
+        selectedTrackingCameraID = state.cameraID
+        selectedTrackingPointGroupID = state.pointGroupID
+        trackingCameraEnabled = state.cameraEnabled
+        trackingPointsVisible = state.pointsVisible
+        trackingGeometryVisible = state.geometryVisible
+        visibleTrackingMeshIDs = state.visibleMeshIDs
+        trackingScalePointAID = state.scalePointAID
+        trackingScalePointBID = state.scalePointBID
+        trackingMeasuredDistanceMeters = state.measuredDistanceMeters
+        trackingMetersPerSourceUnit = state.metersPerSourceUnit
+        trackingScaleSelectionSlot = state.scaleSelectionSlot
+        trackingSynthEyesUnitValue = state.unitValue
+        trackingSynthEyesUnit = state.unit
+        applyTimelineAuthority(resetRange: true)
+        currentFrame = min(max(0, state.currentFrame), frameCount - 1)
+        inFrame = min(max(0, state.inFrame), frameCount - 1)
+        outFrame = min(max(inFrame, state.outFrame), frameCount - 1)
+        physicalModel.invalidateExternalParameters()
+        registerTrackingAuthoringUndo(
+            inverse,
+            undoManager: undoManager,
+            actionName: actionName
+        )
     }
 
     private var trackingTimelineInfo: NativeVideoTimelineInfo? {
@@ -5067,8 +5230,13 @@ final class WorkspaceModel: ObservableObject {
             throw FusionScenePackageError.incompletePhysicalDeviceContribution
         }
         var cameras: [FusionCameraKeyframe] = []
+        var devicePoses: [FusionDevicePoseKeyframe] = []
         var lenses: [FusionLensKeyframe] = []
         var shutter: PhysicalPipelineAuthoringState.ShutterMotion?
+        let lensReconstruction: FusionLensReconstructionKind =
+            trackingCameraEnabled && selectedTrackingCamera != nil
+                ? .importedSynthEyesDE4
+                : .applicationBrownConrady
         for frame in job.configuration.frameRange {
             currentFrame = frame
             let resolved = try resolveSceneFrame(frame)
@@ -5097,17 +5265,15 @@ final class WorkspaceModel: ObservableObject {
                 iz: Double(orchestration.screenPose.rotation.z),
                 r: Double(orchestration.screenPose.rotation.w)
             )
-            let localCameraPosition = screenQ.inverse.act(cameraPosition - screenPosition)
-            let localCameraQ = screenQ.inverse * cameraQ
             let lens = authored.sceneLens
             cameras.append(FusionCameraKeyframe(
                 frame: frame,
                 positionMeters: [
-                    localCameraPosition.x, localCameraPosition.y, localCameraPosition.z,
+                    cameraPosition.x, cameraPosition.y, cameraPosition.z,
                 ],
                 quaternionXYZW: [
-                    localCameraQ.imag.x, localCameraQ.imag.y,
-                    localCameraQ.imag.z, localCameraQ.real,
+                    cameraQ.imag.x, cameraQ.imag.y,
+                    cameraQ.imag.z, cameraQ.real,
                 ],
                 focalLengthMillimeters: lens.focalLengthMillimeters,
                 horizontalFOVDegrees: 2 * atan(
@@ -5120,6 +5286,13 @@ final class WorkspaceModel: ObservableObject {
                 fStop: lens.fStop,
                 nearClipMeters: lens.nearClipMeters,
                 farClipMeters: lens.farClipMeters
+            ))
+            devicePoses.append(FusionDevicePoseKeyframe(
+                frame: frame,
+                positionMeters: [screenPosition.x, screenPosition.y, screenPosition.z],
+                quaternionXYZW: [
+                    screenQ.imag.x, screenQ.imag.y, screenQ.imag.z, screenQ.real,
+                ]
             ))
             lenses.append(FusionLensKeyframe(
                 frame: frame,
@@ -5220,7 +5393,9 @@ final class WorkspaceModel: ObservableObject {
                 deliveryWidth: Int(selection.deliveryWidth),
                 deliveryHeight: Int(selection.deliveryHeight),
                 camera: cameras,
+                devicePose: devicePoses,
                 lens: lenses,
+                lensReconstruction: lensReconstruction,
                 motionBlur: .init(
                     bakedInEXR: false,
                     enabledInFusion: true,
@@ -5404,6 +5579,36 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func copyFusionComposition(
+        _ job: NativeOutputQueueController.RenderJob,
+        to pasteboard: NSPasteboard = .general
+    ) {
+        guard job.state == .completed,
+              job.configuration.fusionScene != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let executor = WorkspaceModel()
+                let materialized = try executor.materializeQueuedScene(
+                    job.scene, generatedEnvironmentEXR: job.generatedEnvironmentEXR
+                )
+                defer { materialized.cleanup() }
+                try await executor.prepareQueuedScene(materialized.scene)
+                let package = try executor.makeFusionPackageRequest(job: job)
+                let text = try FusionScenePackageWriter.clipboardCompositionText(
+                    request: package.request
+                )
+                pasteboard.clearContents()
+                guard pasteboard.setString(text, forType: .string) else {
+                    throw FusionScenePackageError.invalidOutputManifest
+                }
+                status = "Comp Fusion copiada · \(job.scene.name)"
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func renderCurrentFrame() {
         guard let metalFrame else { return }
         let panel = NSSavePanel()
@@ -5516,6 +5721,81 @@ final class WorkspaceModel: ObservableObject {
             thumbnailPNG: thumbnail,
             generatedEnvironmentEXR: generatedReflectionEnvironmentData
         )
+    }
+
+    func defaultSceneSnapshot(
+        preserving sourceAndReference: SavedSceneSnapshot
+    ) throws -> SavedSceneSnapshot {
+        try Self.defaultSceneSnapshot(
+            preserving: sourceAndReference,
+            library: globalLibraryStore.load()
+        )
+    }
+
+    static func defaultSceneSnapshot(
+        preserving sourceAndReference: SavedSceneSnapshot,
+        library: GlobalLibraryDocument
+    ) throws -> SavedSceneSnapshot {
+        try library.validate()
+        guard let defaultDevice = library.devices.first?.value else {
+            throw SceneLibraryError.invalidDocument(
+                "La biblioteca global no contiene el Device inicial de una escena nueva."
+            )
+        }
+        let sourceContext = sourceAndReference.authoring.context
+        let frameRate = try sourceAndReference.source.missingMedia?.exactFrameRate ?? .fps24
+        let profileContext = try RustTestAuthoringProfileContext(library: library)
+        let defaults = try RustTestAuthoringCoordinator.defaultSelection(
+            profileContext: profileContext,
+            inputTransformID: sourceContext.sourceInputTransformID,
+            deviceID: defaultDevice.id,
+            frameRate: frameRate
+        )
+        let authoring = SceneAuthoringDocument(
+            profiles: .init(
+                deviceID: defaults.deviceID,
+                coverGlassID: defaults.coverGlassPresetID,
+                captureID: defaults.capturePresetID,
+                lensID: defaults.lensPresetID,
+                environmentID: defaults.environmentSourceID,
+                deliveryID: defaults.deliveryPresetID,
+                recordingID: defaults.recordingProfileID
+            ),
+            overrides: [],
+            modelOverrides: .init(screen: nil, stages: []),
+            context: .init(
+                sourceInputTransformID: sourceContext.sourceInputTransformID,
+                sourceAlphaMode: sourceContext.sourceAlphaMode,
+                sourceColorModel: sourceContext.sourceColorModel,
+                sourceYUVMatrix: sourceContext.sourceYUVMatrix,
+                sourceSignalRange: sourceContext.sourceSignalRange,
+                sourcePlacementID: sourceContext.sourcePlacementID,
+                previewOutputTransformID: "aces2-srgb-sdr-100",
+                previewPhaseID: "recording-codec",
+                referencePlateID: sourceContext.referencePlateID,
+                environmentResource: .init(
+                    kind: .procedural,
+                    fileName: nil,
+                    absolutePath: nil,
+                    inputTransformID: nil
+                ),
+                referenceResource: sourceContext.referenceResource
+            ),
+            environmentCalibration: nil
+        )
+        let reset = SavedSceneSnapshot(
+            source: sourceAndReference.source,
+            currentFrame: 0,
+            viewerZoom: 1,
+            viewerPanX: 0,
+            viewerPanY: 0,
+            viewerIsFitted: true,
+            authoring: authoring,
+            generatedEnvironment: nil,
+            tracking: nil
+        )
+        try reset.validate()
+        return reset
     }
 
     private static let sceneProfileControlIDs: Set<String> = [
@@ -6397,16 +6677,30 @@ final class WorkspaceModel: ObservableObject {
         _ authoring: SceneAuthoringDocument,
         profileContext: RustTestAuthoringProfileContext
     ) throws -> TestAuthoringResolvedSelection {
-        var selection = try RustTestAuthoringCoordinator.defaultSelection(
+        try Self.materializeSceneSelection(
+            authoring,
             profileContext: profileContext,
             inputTransformID: inputTransform.id,
-            deviceID: authoring.profiles.deviceID,
             frameRate: ReferenceTimelineAuthority.resolve(
                 source: sourceTimelineInfo,
                 reference: referenceTimelineInfo,
                 referenceVisible: referenceControlsTimeline,
                 tracking: trackingTimelineInfo
             ).exactFrameRate
+        )
+    }
+
+    private static func materializeSceneSelection(
+        _ authoring: SceneAuthoringDocument,
+        profileContext: RustTestAuthoringProfileContext,
+        inputTransformID: String,
+        frameRate: ExactFrameRate
+    ) throws -> TestAuthoringResolvedSelection {
+        var selection = try RustTestAuthoringCoordinator.defaultSelection(
+            profileContext: profileContext,
+            inputTransformID: inputTransformID,
+            deviceID: authoring.profiles.deviceID,
+            frameRate: frameRate
         )
         let profileIntents: [TestControlIntent] = [
             .setChoice(controlID: "capture-preset", optionID: authoring.profiles.captureID),
@@ -6423,13 +6717,45 @@ final class WorkspaceModel: ObservableObject {
             )
         }
 
-        for override in authoring.overrides {
+        // Geometry mode owns the representation of the camera pose. Entering Free derives
+        // an initial pose from Look At, so it must be materialized before the persisted Free
+        // position and rotation values; persisted lexical order has no semantic authority.
+        let orderedOverrides = authoring.overrides.sorted { lhs, rhs in
+            let lhsPriority = lhs.controlID == "geometry-mode" ? 0 : 1
+            let rhsPriority = rhs.controlID == "geometry-mode" ? 0 : 1
+            if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+            return lhs.controlID < rhs.controlID
+        }
+        for override in orderedOverrides {
             selection = try RustTestAuthoringCoordinator.apply(
                 override.intent, to: selection,
                 profileContext: profileContext
             )
         }
         return selection
+    }
+
+    func sceneSettingsOwnership(
+        source: SavedSceneSnapshot,
+        destination: SavedSceneSnapshot
+    ) throws -> SceneSettingsOwnership {
+        let library = try globalLibraryStore.load()
+        let profileContext = try RustTestAuthoringProfileContext(library: library)
+        let presentations = try [source, destination].map { snapshot in
+            let frameRate = try snapshot.source.missingMedia?.exactFrameRate ?? .fps24
+            let selection = try Self.materializeSceneSelection(
+                snapshot.authoring,
+                profileContext: profileContext,
+                inputTransformID: snapshot.authoring.context.sourceInputTransformID,
+                frameRate: frameRate
+            )
+            return try RustTestAuthoringCoordinator.snapshot(
+                profileContext: profileContext,
+                selection: selection,
+                selectedPreviewPhaseID: snapshot.authoring.context.previewPhaseID
+            ).presentation
+        }
+        return try SceneSettingsOwnership(presentations: presentations)
     }
 
     private func sceneProfileBaselines(

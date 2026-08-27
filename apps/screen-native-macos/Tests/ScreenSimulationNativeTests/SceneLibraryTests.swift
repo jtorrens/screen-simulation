@@ -943,6 +943,89 @@ private func sceneCapture() throws -> SavedSceneCapture {
     #expect(restored.snapshot.tracking?.scene.cameras.first?.samples.count == 2)
 }
 
+@MainActor
+@Test func removingImported3DTargetsOneStoredSceneAndIsOneUndoableShelfMutation() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-remove-tracking-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let controller = SceneLibraryController(store: store)
+    let trackingScene = TrackingScene(
+        cameras: [.init(
+            id: "/Camera01", label: "Camera01",
+            frameRateNumerator: 24, frameRateDenominator: 1,
+            focalLengthMillimeters: 35,
+            gateWidthMillimeters: 36, gateHeightMillimeters: 20.25,
+            plateWidth: 1920, plateHeight: 1080,
+            distortion: .pinhole,
+            samples: [.init(
+                frame: 7, sourcePosition: .init(1, 2, 3),
+                orientation: .init(0, 0, 0, 1)
+            )]
+        )],
+        pointGroups: [.init(
+            id: "/Trackers", label: "Trackers",
+            points: [.init(id: "point-1", label: "Point 1", sourcePosition: .zero)]
+        )],
+        meshes: []
+    )
+    let tracking = SavedTrackingScene(
+        scene: trackingScene, cameraID: "/Camera01", pointGroupID: "/Trackers",
+        visibleMeshIDs: [], pointsVisible: true, geometryVisible: false,
+        cameraEnabled: true,
+        calibration: .init(unitValue: 1, unit: "m", metersPerSourceUnit: 0.01)
+    )
+    let snapshot = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 7, viewerZoom: 1.75, viewerPanX: 12, viewerPanY: -4,
+        viewerIsFitted: false, authoring: try sceneAuthoring(), tracking: tracking
+    )
+    let scene = try controller.add(capture: .init(
+        snapshot: snapshot, thumbnailPNG: Data([4, 5, 6]),
+        generatedEnvironmentEXR: nil
+    ))
+    let undo = UndoManager()
+
+    let updated = try controller.removeImported3D(
+        scene, destination: .storedScene, undoManager: undo
+    )
+
+    #expect(updated.snapshot == snapshot.removingImported3D())
+    #expect(updated.id == scene.id)
+    #expect(updated.name == scene.name)
+    #expect(undo.canUndo)
+    undo.undo()
+    #expect(controller.scene(id: scene.id)?.snapshot == snapshot)
+    #expect(undo.canRedo)
+    undo.redo()
+    #expect(controller.scene(id: scene.id)?.snapshot == snapshot.removingImported3D())
+
+    let activeSnapshot = SavedSceneSnapshot(
+        source: snapshot.source,
+        currentFrame: 41,
+        viewerZoom: snapshot.viewerZoom,
+        viewerPanX: snapshot.viewerPanX,
+        viewerPanY: snapshot.viewerPanY,
+        viewerIsFitted: snapshot.viewerIsFitted,
+        authoring: snapshot.authoring,
+        tracking: tracking
+    )
+    let activeUpdated = try controller.removeImported3D(
+        scene,
+        destination: .activeScene(.init(
+            snapshot: activeSnapshot,
+            thumbnailPNG: Data([7, 8, 9]),
+            generatedEnvironmentEXR: nil
+        ))
+    )
+    #expect(activeUpdated.snapshot == activeSnapshot.removingImported3D())
+    #expect(try Data(contentsOf: store.thumbnailURL(for: activeUpdated)) == Data([7, 8, 9]))
+}
+
 @Test func sourceAssetsPreserveTheirAuthoredAbsolutePath() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-source-\(UUID().uuidString)")

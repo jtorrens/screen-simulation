@@ -49,37 +49,50 @@ struct SceneSettingsOwnership: Sendable {
     }
 
     init(presentation: TestPagePresentation) throws {
+        try self.init(presentations: [presentation])
+    }
+
+    init(presentations: [TestPagePresentation]) throws {
+        guard !presentations.isEmpty else {
+            throw SceneLibraryError.invalidDocument(
+                "Application no publicó tarjetas para el portapapeles."
+            )
+        }
         var ownership: [String: SceneSettingsBlock] = [:]
-        for group in presentation.inspectorGroups {
-            for section in group.sections {
-                let block: SceneSettingsBlock? = switch (group.id, section.id) {
-                case ("device", "device.geometry"): .deviceTransform
-                case ("camera", "camera.geometry"): .cameraTransform
-                case ("device", _): .device
-                case ("environment", _): .environment
-                case ("camera", _): .camera
-                case ("delivery", _): .delivery
-                default: nil
-                }
-                guard let block else {
-                    throw SceneLibraryError.invalidDocument(
-                        "Application publicó una tarjeta sin contrato de portapapeles: \(group.id)/\(section.id)."
-                    )
-                }
-                for control in section.controls {
-                    guard ownership.updateValue(block, forKey: control.id) == nil else {
+        for presentation in presentations {
+            for group in presentation.inspectorGroups {
+                for section in group.sections {
+                    let block: SceneSettingsBlock? = switch (group.id, section.id) {
+                    case ("device", "device.geometry"): .deviceTransform
+                    case ("camera", "camera.geometry"): .cameraTransform
+                    case ("device", _): .device
+                    case ("environment", _): .environment
+                    case ("camera", _): .camera
+                    case ("delivery", _): .delivery
+                    default: nil
+                    }
+                    guard let block else {
                         throw SceneLibraryError.invalidDocument(
-                            "Application publicó dos propietarios para \(control.id)."
+                            "Application publicó una tarjeta sin contrato de portapapeles: \(group.id)/\(section.id)."
                         )
+                    }
+                    for control in section.controls {
+                        if let existing = ownership[control.id], existing != block {
+                            throw SceneLibraryError.invalidDocument(
+                                "Application publicó dos propietarios para \(control.id)."
+                            )
+                        }
+                        ownership[control.id] = block
                     }
                 }
             }
-        }
-        for control in presentation.previewControls {
-            guard ownership.updateValue(.general, forKey: control.id) == nil else {
-                throw SceneLibraryError.invalidDocument(
-                    "Application publicó dos propietarios para \(control.id)."
-                )
+            for control in presentation.previewControls {
+                if let existing = ownership[control.id], existing != .general {
+                    throw SceneLibraryError.invalidDocument(
+                        "Application publicó dos propietarios para \(control.id)."
+                    )
+                }
+                ownership[control.id] = .general
             }
         }
         controlBlocks = ownership

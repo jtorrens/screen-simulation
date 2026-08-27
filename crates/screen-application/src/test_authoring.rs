@@ -1590,8 +1590,24 @@ fn selected_option(
 
 fn default_output_for_input(input: OcioInputTransform) -> DeviceColorTarget {
     match input {
-        OcioInputTransform::SrgbEncodedRec709 => DeviceColorTarget::SrgbDisplay,
-        OcioInputTransform::Rec709Gamma24Display => DeviceColorTarget::Rec1886Rec709Display,
+        OcioInputTransform::SrgbEncodedRec709 | OcioInputTransform::DisplaySrgbAces2Sdr => {
+            DeviceColorTarget::SrgbDisplay
+        }
+        OcioInputTransform::DisplayRec709Gamma22Dcm
+        | OcioInputTransform::DisplayRec709Gamma22Aces2Sdr => {
+            DeviceColorTarget::Gamma22Rec709Display
+        }
+        OcioInputTransform::Rec709Gamma24Display | OcioInputTransform::DisplayRec709Aces2Sdr => {
+            DeviceColorTarget::Rec1886Rec709Display
+        }
+        OcioInputTransform::DisplayRec2100PqDcm
+        | OcioInputTransform::DisplayRec2100PqAces2Hdr1000 => {
+            DeviceColorTarget::Rec2100Pq1000Display
+        }
+        OcioInputTransform::DisplayRec2100HlgDcm
+        | OcioInputTransform::DisplayRec2100HlgAces2Hdr1000 => {
+            DeviceColorTarget::Rec2100Hlg1000Display
+        }
         _ => DeviceColorTarget::SrgbDisplay,
     }
 }
@@ -4652,7 +4668,7 @@ mod tests {
         );
         assert_eq!(
             default_test_authoring_selection(
-                "display-rec709-gamma24",
+                "display-rec709-gamma24-dcm",
                 "lcd-asus-proart-pa329cv",
                 FrameRate::new(24, 1).unwrap()
             )
@@ -4660,6 +4676,35 @@ mod tests {
             .output_signal_id,
             "rec709-gamma24"
         );
+        let camera_rec709 = default_test_authoring_selection(
+            "input-rec709",
+            "lcd-asus-proart-pa329cv",
+            FrameRate::new(25, 1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(camera_rec709.input_transform_id, "input-rec709");
+        assert_eq!(camera_rec709.output_signal_id, "srgb");
+        assert_eq!(
+            default_test_authoring_selection(
+                "camera-rec709",
+                "lcd-asus-proart-pa329cv",
+                FrameRate::new(25, 1).unwrap(),
+            ),
+            Err(TestAuthoringError::UnknownInputTransform)
+        );
+    }
+
+    #[test]
+    fn every_color_owned_input_transform_materializes_without_identity_substitution() {
+        for input in OcioInputTransform::ALL {
+            let selection = default_test_authoring_selection(
+                input.stable_id(),
+                "lcd-asus-proart-pa329cv",
+                FrameRate::new(25, 1).unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{} failed: {error}", input.stable_id()));
+            assert_eq!(selection.input_transform_id, input.stable_id());
+        }
     }
 
     #[test]

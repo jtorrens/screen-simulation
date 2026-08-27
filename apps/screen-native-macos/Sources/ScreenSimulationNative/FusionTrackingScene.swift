@@ -176,6 +176,52 @@ struct TrackingScene: Codable, Equatable, Sendable {
         self.meshes = meshes
     }
 
+    func freezingCamera(
+        id cameraID: String,
+        sourcePosition: SIMD3<Double>,
+        orientation: SIMD4<Double>
+    ) throws -> TrackingScene {
+        guard let index = cameras.firstIndex(where: { $0.id == cameraID }),
+              sourcePosition.x.isFinite, sourcePosition.y.isFinite,
+              sourcePosition.z.isFinite,
+              orientation.x.isFinite, orientation.y.isFinite,
+              orientation.z.isFinite, orientation.w.isFinite,
+              abs(simd_length_squared(orientation) - 1) < 1e-8
+        else {
+            throw FusionTrackingError.invalid(
+                "La cámara seleccionada no puede congelarse en el frame actual."
+            )
+        }
+        let camera = cameras[index]
+        var frozenCameras = cameras
+        frozenCameras[index] = TrackingCamera(
+            id: camera.id,
+            label: camera.label,
+            frameRateNumerator: camera.frameRateNumerator,
+            frameRateDenominator: camera.frameRateDenominator,
+            focalLengthMillimeters: camera.focalLengthMillimeters,
+            gateWidthMillimeters: camera.gateWidthMillimeters,
+            gateHeightMillimeters: camera.gateHeightMillimeters,
+            plateWidth: camera.plateWidth,
+            plateHeight: camera.plateHeight,
+            distortion: camera.distortion,
+            samples: [
+                TrackingCameraSample(
+                    frame: 0,
+                    sourcePosition: sourcePosition,
+                    orientation: orientation
+                ),
+            ]
+        )
+        let frozen = TrackingScene(
+            cameras: frozenCameras,
+            pointGroups: pointGroups,
+            meshes: meshes
+        )
+        try frozen.validate()
+        return frozen
+    }
+
     func validate() throws {
         guard schema == Self.schema,
               !cameras.isEmpty,
@@ -462,6 +508,25 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
 
 private struct TrackingScenePanel: View {
     @ObservedObject var model: WorkspaceModel
+    @Environment(\.undoManager) private var undoManager
+    @State private var pendingRemoval: TrackingRemoval?
+
+    private enum TrackingRemoval {
+        case cameraAnimation
+
+        var title: String {
+            switch self {
+            case .cameraAnimation: "¿Eliminar la animación de cámara?"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .cameraAnimation:
+                "La cámara quedará congelada con el encuadre del frame actual. Se conservarán focal, gate, distorsión, nube de puntos, geometrías y escala."
+            }
+        }
+    }
 
     var body: some View {
         Form {
@@ -484,6 +549,10 @@ private struct TrackingScenePanel: View {
                         .onChange(of: model.trackingCameraEnabled) { _, _ in
                             model.refreshTrackingCamera()
                         }
+                    Button("Eliminar animación de cámara…", role: .destructive) {
+                        pendingRemoval = .cameraAnimation
+                    }
+                    .disabled(!model.canFreezeTrackingCameraAnimation)
                 }
             }
             if let scene = model.trackingScene {
@@ -563,6 +632,27 @@ private struct TrackingScenePanel: View {
         }
         .formStyle(.grouped)
         .frame(width: 440, height: 650)
+        .confirmationDialog(
+            pendingRemoval?.title ?? "Confirmar",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let removal = pendingRemoval {
+                Button("Eliminar", role: .destructive) {
+                    pendingRemoval = nil
+                    switch removal {
+                    case .cameraAnimation:
+                        model.freezeTrackingCameraAnimation(undoManager: undoManager)
+                    }
+                }
+            }
+            Button("Cancelar", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            if let removal = pendingRemoval { Text(removal.message) }
+        }
     }
 
     private func selectedPointGroup(in scene: TrackingScene) -> TrackingPointGroup? {

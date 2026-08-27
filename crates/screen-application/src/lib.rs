@@ -10836,7 +10836,7 @@ mod tests {
                 SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
-            .expect("identity processor");
+            .expect("source-to-feeder processor");
         assert_eq!(
             decoded_frame_to_device_signal(
                 &frame,
@@ -10867,9 +10867,30 @@ mod tests {
             &processor,
         )
         .expect("explicit ignored alpha");
-        assert_eq!(straight.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
-        assert_eq!(premultiplied.pixels[0], DeviceRgb::new(1.6, 0.8, 0.4));
-        assert_eq!(ignored.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        let assert_rgb = |actual: DeviceRgb, expected: DeviceRgb| {
+            const COLOR_ROUND_TRIP_TOLERANCE: f32 = 5.0e-5;
+            assert!(
+                (actual.r - expected.r).abs() < COLOR_ROUND_TRIP_TOLERANCE,
+                "red mismatch: actual={} expected={}",
+                actual.r,
+                expected.r
+            );
+            assert!(
+                (actual.g - expected.g).abs() < COLOR_ROUND_TRIP_TOLERANCE,
+                "green mismatch: actual={} expected={}",
+                actual.g,
+                expected.g
+            );
+            assert!(
+                (actual.b - expected.b).abs() < COLOR_ROUND_TRIP_TOLERANCE,
+                "blue mismatch: actual={} expected={}",
+                actual.b,
+                expected.b
+            );
+        };
+        assert_rgb(straight.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
+        assert_rgb(premultiplied.pixels[0], DeviceRgb::new(1.6, 0.8, 0.4));
+        assert_rgb(ignored.pixels[0], DeviceRgb::new(0.8, 0.4, 0.2));
         assert_eq!(straight.alpha, vec![0.5]);
         assert_eq!(premultiplied.alpha, vec![0.5]);
         assert_eq!(ignored.alpha, vec![1.0]);
@@ -10895,7 +10916,7 @@ mod tests {
                 SourceColorInterpretation::Ocio(OcioInputTransform::SrgbEncodedRec709),
                 DeviceColorTarget::SrgbDisplay,
             )
-            .expect("identity processor");
+            .expect("source-to-feeder processor");
         let ignored = decoded_frame_to_device_signal(
             &frame,
             AlphaPresence::Present,
@@ -10903,7 +10924,10 @@ mod tests {
             &processor,
         )
         .expect("ignored alpha signal");
-        assert_eq!(ignored.pixels[0], DeviceRgb::new(0.7, 0.3, 0.1));
+        let pixel = ignored.pixels[0];
+        assert!((pixel.r - 0.7).abs() < 1.0e-5);
+        assert!((pixel.g - 0.3).abs() < 1.0e-5);
+        assert!((pixel.b - 0.1).abs() < 1.0e-5);
     }
 
     #[test]

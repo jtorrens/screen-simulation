@@ -146,7 +146,7 @@ struct ContentView: View {
         case scene(UUID)
     }
     enum PendingSceneAction {
-        case update, renderAfterUpdate, delete
+        case update, renderAfterUpdate, resetDefaults, removeImported3D, delete
     }
     enum LibraryDeletion: String {
         case pattern = "patrón"
@@ -460,7 +460,11 @@ struct ContentView: View {
             titleVisibility: .visible
         ) {
             if let action = pendingSceneAction, let scene = pendingScene {
-                Button(sceneConfirmationButton(action), role: action == .delete ? .destructive : nil) {
+                Button(
+                    sceneConfirmationButton(action),
+                    role: action == .delete || action == .resetDefaults
+                        || action == .removeImported3D ? .destructive : nil
+                ) {
                     performConfirmedSceneAction(action, scene: scene)
                 }
             }
@@ -473,6 +477,10 @@ struct ContentView: View {
                 Text("Se reemplazarán los datos y la miniatura guardados por el estado activo.")
             } else if pendingSceneAction == .renderAfterUpdate {
                 Text("La escena activa ha cambiado. Se guardará primero y Render Queue conservará una copia inmutable de ese estado.")
+            } else if pendingSceneAction == .resetDefaults {
+                Text("Se conservarán únicamente Source y Reference. El resto quedará como en una escena nueva.")
+            } else if pendingSceneAction == .removeImported3D {
+                Text("Se eliminarán la cámara importada, la nube de puntos, las geometrías, su visibilidad y su escala. Volverá a aplicarse la cámara manual de esta escena.")
             } else {
                 Text("Esta operación elimina la escena de la biblioteca.")
             }
@@ -2191,13 +2199,15 @@ struct ContentView: View {
         return switch action {
         case .update: "¿Actualizar ‘\(scene.name)’?"
         case .renderAfterUpdate: "¿Actualizar ‘\(scene.name)’ antes de renderizar?"
+        case .resetDefaults: "¿Restaurar ‘\(scene.name)’ a sus valores por defecto?"
+        case .removeImported3D: "¿Eliminar el 3D importado de ‘\(scene.name)’?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
         }
     }
 
     private func sceneTreeRow(
         _ selection: SceneTreeSelection, title: String, detail: String?, icon: String,
-        onAdd: (() -> Void)? = nil
+        onAdd: (() -> Void)? = nil, imported3DScene: SavedScene? = nil
     ) -> some View {
         HStack(spacing: 7) {
             Image(systemName: icon)
@@ -2212,6 +2222,22 @@ struct ContentView: View {
                 }
             }
             Spacer(minLength: 4)
+            if let scene = imported3DScene, sceneOwnsImported3D(scene) {
+                Label("3D importado", systemImage: "cube.transparent")
+                    .font(.caption2)
+                    .foregroundStyle(
+                        sceneTreeSelection == selection ? .white.opacity(0.9) : .secondary
+                    )
+                    .fixedSize()
+                Button {
+                    requestSceneAction(.removeImported3D, scene: scene)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(sceneTreeSelection == selection ? .white : .red)
+                .help("Eliminar el 3D importado de esta escena")
+            }
             if let onAdd {
                 Button(action: onAdd) { Image(systemName: "plus") }
                     .buttonStyle(.plain)
@@ -2233,7 +2259,7 @@ struct ContentView: View {
         sceneTreeRow(
             .scene(scene.id), title: scene.name,
             detail: model.activeSceneID == scene.id ? "abierta" : nil,
-            icon: "doc.text"
+            icon: "doc.text", imported3DScene: scene
         )
         .overlay(alignment: .leading) {
             if model.activeSceneID == scene.id {
@@ -2255,6 +2281,14 @@ struct ContentView: View {
                     settingsPasteRequest = SceneSettingsPasteRequest(
                         scene: scene, clipboard: clipboard
                     )
+                }
+            }
+            Button("Restaurar valores por defecto…") {
+                requestSceneAction(.resetDefaults, scene: scene)
+            }
+            if sceneOwnsImported3D(scene) {
+                Button("Eliminar 3D importado…", role: .destructive) {
+                    requestSceneAction(.removeImported3D, scene: scene)
                 }
             }
             Divider()
@@ -2563,6 +2597,14 @@ struct ContentView: View {
                     )
                 }
             }
+            Button("Restaurar valores por defecto…") {
+                requestSceneAction(.resetDefaults, scene: scene)
+            }
+            if sceneOwnsImported3D(scene) {
+                Button("Eliminar 3D importado…", role: .destructive) {
+                    requestSceneAction(.removeImported3D, scene: scene)
+                }
+            }
             Button("Actualizar con estado actual") { requestSceneAction(.update, scene: scene) }
             Button("Duplicar escena") {
                 do { _ = try scenes.duplicate(scene) }
@@ -2615,6 +2657,13 @@ struct ContentView: View {
             }
         }
         return nil
+    }
+
+    private func sceneOwnsImported3D(_ scene: SavedScene) -> Bool {
+        if model.activeSceneID == scene.id {
+            return model.trackingScene != nil
+        }
+        return scene.snapshot.tracking != nil
     }
 
     private func acceptSceneDrop(_ providers: [NSItemProvider], shotID: UUID?) -> Bool {
@@ -2835,6 +2884,8 @@ struct ContentView: View {
         switch action {
         case .update: "Actualizar escena"
         case .renderAfterUpdate: "Actualizar y añadir a cola"
+        case .resetDefaults: "Restaurar valores"
+        case .removeImported3D: "Eliminar 3D importado"
         case .delete: "Eliminar escena"
         }
     }
@@ -2944,16 +2995,25 @@ struct ContentView: View {
     private func applySceneSettings(_ request: PendingSettingsPaste) {
         pendingSettingsPaste = nil
         do {
-            guard let presentation = model.testPresentation else {
-                throw SceneLibraryError.inaccessible(
-                    "Application no ha publicado las tarjetas de settings."
-                )
+            let destination: SceneSettingsPasteDestination
+            let destinationSnapshot: SavedSceneSnapshot
+            if model.activeSceneID == request.scene.id {
+                let capture = try model.captureSavedScene()
+                destination = .activeScene(capture)
+                destinationSnapshot = capture.snapshot
+            } else {
+                destination = .storedScene
+                destinationSnapshot = request.scene.snapshot
             }
-            let ownership = try SceneSettingsOwnership(presentation: presentation)
+            let ownership = try model.sceneSettingsOwnership(
+                source: request.clipboard.snapshot,
+                destination: destinationSnapshot
+            )
             let updated = try scenes.applySettingsClipboard(
                 request.clipboard,
                 blocks: request.blocks,
                 to: request.scene,
+                destination: destination,
                 ownership: ownership,
                 undoManager: undoManager
             )
@@ -2991,6 +3051,46 @@ struct ContentView: View {
                 )
                 renderDraft = updatedDraft
                 enqueueRenderDraft(updatedDraft)
+            } catch { model.errorMessage = error.localizedDescription }
+        case .resetDefaults:
+            do {
+                let isActive = model.activeSceneID == scene.id
+                let destination: SceneDefaultResetDestination
+                let base: SavedSceneSnapshot
+                if isActive {
+                    let capture = try model.captureSavedScene()
+                    destination = .activeScene(capture)
+                    base = capture.snapshot
+                } else {
+                    destination = .storedScene
+                    base = scene.snapshot
+                }
+                let reset = try model.defaultSceneSnapshot(preserving: base)
+                let updated = try scenes.resetToDefaults(
+                    scene,
+                    snapshot: reset,
+                    destination: destination,
+                    undoManager: undoManager
+                )
+                if isActive {
+                    Task { await model.openSavedScene(updated, undoManager: undoManager) }
+                }
+            } catch { model.errorMessage = error.localizedDescription }
+        case .removeImported3D:
+            do {
+                let isActive = model.activeSceneID == scene.id
+                let destination: SceneImported3DRemovalDestination
+                if isActive {
+                    destination = .activeScene(try model.captureSavedScene())
+                } else {
+                    destination = .storedScene
+                }
+                let updated = try scenes.removeImported3D(
+                    scene, destination: destination, undoManager: undoManager
+                )
+                if isActive {
+                    Task { await model.openSavedScene(updated, undoManager: undoManager) }
+                }
             } catch { model.errorMessage = error.localizedDescription }
         case .delete:
             do { try scenes.delete(scene) }
@@ -3777,6 +3877,9 @@ struct ContentView: View {
                         if job.configuration.fusionScene != nil {
                             Button("Actualizar comp Fusion") {
                                 model.refreshFusionComposition(job)
+                            }
+                            Button("Copiar composición Fusion") {
+                                model.copyFusionComposition(job)
                             }
                         }
                     }

@@ -1,5 +1,6 @@
 import Metal
 import ScreenSimulationPresentation
+import StudioColor
 import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
@@ -12,6 +13,19 @@ private func requestPhysicalPreview(_ qualityID: String, in workspace: Workspace
         return
     }
     workspace.handleTestIntent(.setChoice(controlID: quality.id, optionID: qualityID))
+}
+
+@Test func everySelectableInputTransformCrossesTheExactTestAuthoringBridge() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let frameRate = try ExactFrameRate(numerator: 25, denominator: 1)
+    for input in StudioColorInputTransform.catalog {
+        let selection = try RustTestAuthoringCoordinator.defaultSelection(
+            inputTransformID: input.id,
+            deviceID: device.id,
+            frameRate: frameRate
+        )
+        #expect(selection.inputTransformID == input.id)
+    }
 }
 
 private func canonicalTestSelection() -> TestAuthoringResolvedSelection {

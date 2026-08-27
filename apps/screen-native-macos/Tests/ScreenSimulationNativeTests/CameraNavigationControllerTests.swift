@@ -150,6 +150,50 @@ import Testing
     #expect(workspace.physicalModel.quality == .setup)
 }
 
+@Test @MainActor func savedSceneRoundTripPreservesAuthoredFreeCameraPose() async throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+    workspace.togglePreviewTransformationsLock()
+
+    workspace.beginCameraNavigation(.pan, viewportSize: CGSize(width: 1_200, height: 800))
+    workspace.updateCameraNavigation(delta: CGSize(width: 180, height: -70))
+    workspace.endCameraNavigation(undoManager: nil)
+
+    let captured = try workspace.captureSavedScene()
+    let cameraOverrideIDs = Set(captured.snapshot.authoring.overrides.map(\.controlID))
+    #expect(cameraOverrideIDs.contains("geometry-mode"))
+    #expect(cameraOverrideIDs.contains("camera-position-x-meters"))
+    #expect(cameraOverrideIDs.contains("camera-position-y-meters"))
+    #expect(cameraOverrideIDs.contains("camera-position-z-meters"))
+    #expect(cameraOverrideIDs.contains("camera-rotation-x-degrees"))
+    #expect(cameraOverrideIDs.contains("camera-rotation-y-degrees"))
+    #expect(cameraOverrideIDs.contains("camera-rotation-z-degrees"))
+
+    let id = UUID()
+    let scene = SavedScene(
+        id: id,
+        name: "Camera round trip",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: captured.snapshot
+    )
+    let reopened = WorkspaceModel()
+    await reopened.openSavedScene(scene, undoManager: nil)
+
+    #expect(reopened.errorMessage == nil)
+    let originalPose = try #require(workspace.physicalAuthoringState?.cameraPose)
+    let reopenedPose = try #require(reopened.physicalAuthoringState?.cameraPose)
+    for (actual, expected) in zip(reopenedPose.position, originalPose.position) {
+        #expect(abs(actual - expected) < 1e-8)
+    }
+    for (actual, expected) in zip(reopenedPose.quaternion, originalPose.quaternion) {
+        #expect(abs(actual - expected) < 1e-8)
+    }
+}
+
 @Test @MainActor func previewLockRejectsSceneNavigationWithoutBlockingViewerState() throws {
     let workspace = WorkspaceModel()
     let device = try #require(try RustDeviceCatalog.builtIns().first)
