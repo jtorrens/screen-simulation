@@ -6,6 +6,7 @@ Application owns every phase boundary as a `PhysicalArtifactId`: the typed ident
 
 ## Product boundary
 <!-- decision-owner: scene.resolved-frame-owner -->
+<!-- decision-owner: scene.parameter-animation -->
 <!-- decision-owner: output.fusion-scene-package -->
 <!-- decision-owner: output.device-spill-composition -->
 <!-- decision-owner: output.standard-motion-blur -->
@@ -17,7 +18,7 @@ Application owns every phase boundary as a `PhysicalArtifactId`: the typed ident
 
 Approximate-2D Motion Blur derives projected velocity from exact rational neighbor times around the output frame. Times before the first frame or after the last frame reach the canonical terminal camera and Device extrapolation instead of requesting an invalid negative frame identity or clamping continuous scene motion.
 
-In the v24 Saved Scene and v11 Queue contracts below, “tracks” means the separately typed embedded imported-3D record and the separately typed materialized Fusion Tracker pose record. Neither contract contains or claims a generic parameter-track collection; adding one requires a new owner-published typed contract, schema revision, exact-time evaluator and validation together.
+The Saved Scene v26 and Queue v15 contracts own one typed Application-parameter animation document in addition to the separately typed imported-3D and Fusion Tracker pose records. Every scalar track has one stable property id, globally unique keyframe ids, exact rational key times, finite owner-bounded values and outgoing `hold`, `linear` or `smooth` interpolation. Rust Application is the sole evaluator. Continuous terminals follow `time.terminal-extrapolation`; `hold` is the explicit static terminal and an extrapolated value outside the property's bounds fails rather than clamping. The first published property is `simulation-opacity`, bounded to `[0,1]` with default one. It is sampled once at exact output-frame time after physical temporal integration. Values above zero evaluate the unchanged physical model and scale the final additive Device RGB and physical matte together exactly once before Reference or output publication. Exact zero publishes the canonical zero Device contribution, skips Source preparation, physical evaluation and GPU readback, but still writes the requested frame and preserves cadence, range, audio and manifests. Preview therefore reveals only its selected Reference at zero, while transparent Final and Fusion Device media publish exact RGBA zero. No epsilon, near-zero shortcut, shutter-sample interpolation or hidden clamp exists. A future property becomes animatable only when its semantic owner publishes its stable id, type, bounds, allowed interpolation and fixed-value interaction in the same revision.
 
 The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and phase-preserving photosite-footprint sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.
 

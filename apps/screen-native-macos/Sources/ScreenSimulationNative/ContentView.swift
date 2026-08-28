@@ -238,6 +238,7 @@ struct ContentView: View {
     @State private var settingsCopyRequest: SceneSettingsCopyRequest?
     @State private var settingsPasteRequest: SceneSettingsPasteRequest?
     @State private var pendingSettingsPaste: PendingSettingsPaste?
+    @State private var animationPanelExpanded = false
 
     private struct SceneSettingsCopyRequest: Identifiable {
         let scene: SavedScene
@@ -4317,6 +4318,72 @@ struct ContentView: View {
                 onSetOut: { model.setOutFrame($0) }
             )
             .frame(height: 58)
+            DisclosureGroup(isExpanded: $animationPanelExpanded) {
+                HStack(spacing: 10) {
+                    let descriptor = SimulationOpacityResolver.presentation
+                    Text(descriptor.displayName)
+                        .frame(width: 86, alignment: .leading)
+                    CommittedNumberField(
+                        label: "Opacidad de simulación",
+                        value: model.currentSimulationOpacity
+                    ) {
+                        model.setSimulationOpacityKeyframe(value: $0, undoManager: undoManager)
+                    }
+                    .frame(width: 72)
+                    Text("\(descriptor.minimum.formatted())–\(descriptor.maximum.formatted())")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button {
+                        model.setSimulationOpacityKeyframe(
+                            value: model.currentSimulationOpacity,
+                            undoManager: undoManager
+                        )
+                    } label: {
+                        Image(systemName: model.currentSimulationOpacityKeyframe == nil
+                            ? "diamond" : "diamond.fill")
+                    }
+                    .help("Añadir o actualizar keyframe")
+                    Picker(
+                        "Interpolación",
+                        selection: Binding(
+                            get: {
+                                model.currentSimulationOpacityKeyframe?.interpolation
+                                    ?? descriptor.defaultInterpolation
+                            },
+                            set: { interpolation in
+                                model.setCurrentSimulationOpacityInterpolation(
+                                    interpolation, undoManager: undoManager
+                                )
+                            }
+                        )
+                    ) {
+                        ForEach(descriptor.supportedInterpolations, id: \.self) {
+                            Text(descriptor.interpolationLabels[$0]!).tag($0)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 82)
+                    Button(role: .destructive) {
+                        model.removeCurrentSimulationOpacityKeyframe(undoManager: undoManager)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .disabled(
+                        model.currentSimulationOpacityKeyframe == nil
+                            || model.sceneAnimation.simulationOpacityTrack.keyframes.count <= 1
+                    )
+                    SimulationOpacityTrackLane(
+                        frameCount: model.frameCount,
+                        currentFrame: model.currentFrame,
+                        keyframeFrames: model.simulationOpacityKeyframeFrames,
+                        onSeek: { frame in model.seek(toFrame: frame) }
+                    )
+                    .frame(minWidth: 180, maxWidth: .infinity, minHeight: 24)
+                }
+                .padding(.top, 5)
+            } label: {
+                Label("Animación", systemImage: "slider.horizontal.3")
+                    .font(.caption.weight(.semibold))
+            }
             HStack(spacing: 12) {
                 Button("[", action: model.markIn)
                     .help("Marcar entrada (I)")
@@ -4555,6 +4622,47 @@ private struct CommittedZoomField: View {
 /// Global Library persistence run only after Return or focus loss, so values
 /// such as `0.5` can pass through the intermediate text `0` without being
 /// rejected and replaced by the previously committed value.
+private struct SimulationOpacityTrackLane: View {
+    let frameCount: Int
+    let currentFrame: Int
+    let keyframeFrames: [Int]
+    let onSeek: (Int) -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(1, geometry.size.width - 10)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.black.opacity(0.22))
+                    .frame(height: 4)
+                    .offset(x: 5)
+                ForEach(Array(keyframeFrames.enumerated()), id: \.offset) { _, frame in
+                    Button { onSeek(frame) } label: {
+                        Rectangle()
+                            .fill(NativeTheme.accent)
+                            .frame(width: 8, height: 8)
+                            .rotationEffect(.degrees(45))
+                    }
+                    .buttonStyle(.plain)
+                    .position(
+                        x: 5 + width * CGFloat(frame) / CGFloat(max(1, frameCount - 1)),
+                        y: geometry.size.height / 2
+                    )
+                    .accessibilityLabel("Keyframe de opacidad, frame \(frame)")
+                }
+                Rectangle()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 1, height: geometry.size.height)
+                    .position(
+                        x: 5 + width * CGFloat(currentFrame) / CGFloat(max(1, frameCount - 1)),
+                        y: geometry.size.height / 2
+                    )
+            }
+        }
+        .accessibilityLabel("Pista de opacidad de simulación")
+    }
+}
+
 private protocol CommittedNumericValue: Equatable {
     static func parseCommittedDraft(_ text: String) -> Self?
     var committedDraftText: String { get }

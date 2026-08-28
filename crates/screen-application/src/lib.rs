@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod parameter_animation;
 mod physical_pipeline;
 mod recording;
 mod reflection_environment;
@@ -12,6 +13,11 @@ mod temporal_cache;
 mod test_authoring;
 mod tracking_overlay;
 
+pub use parameter_animation::{
+    SIMULATION_OPACITY_DESCRIPTOR, SIMULATION_OPACITY_PROPERTY_ID, ScalarInterpolation,
+    ScalarKeyframe, ScalarPropertyDescriptor, ScalarPropertyTrack, ScalarTrackError,
+    resolve_simulation_opacity_samples,
+};
 pub use physical_pipeline::{
     PHYSICAL_STAGE_DESCRIPTORS, PHYSICAL_STAGE_ORDER, PhysicalDomain, PhysicalIntermediate,
     PhysicalPipelineSnapshot, PhysicalStage, PhysicalStageContributionError, PhysicalStageControl,

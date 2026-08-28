@@ -221,6 +221,36 @@
       ]
     },
     {
+      "id": "scene.parameter-animation",
+      "scope": "workstation scalar property tracks, exact-time simulation opacity and zero-contribution render shortcut",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Product boundary"
+      },
+      "enforcement": [
+        "Docs/architecture/project_and_change_policy.md",
+        "Docs/architecture/validation.md",
+        "crates/screen-application/src/parameter_animation.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneAnimation.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneAnimationTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift",
+        "scripts/migrate_scene_library_v26_to_v27.py",
+        "scripts/migrate_render_queue_v14_to_v15.py",
+        "scripts/migrate_scene_autosaves_v24_to_v25.py",
+        "scripts/test_migrate_scene_library_v26_to_v27.py",
+        "scripts/test_migrate_render_queue_v14_to_v15.py",
+        "scripts/test_migrate_scene_autosaves_v24_to_v25.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "time.terminal-extrapolation",
       "scope": "continuous and discrete tracks outside authored range",
       "owner": {

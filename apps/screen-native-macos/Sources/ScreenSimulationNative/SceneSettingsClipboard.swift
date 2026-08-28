@@ -327,7 +327,8 @@ extension SavedSceneSnapshot {
                 ? source.generatedEnvironment : generatedEnvironment,
             tracking: blocks.contains(.cameraTransform) ? source.tracking : tracking,
             fusionTrackerMotion: mergedFusionTrackerMotion,
-            trackingSceneMethod: mergedTrackingSceneMethod
+            trackingSceneMethod: mergedTrackingSceneMethod,
+            animation: animation
         )
         try result.validate()
         return result

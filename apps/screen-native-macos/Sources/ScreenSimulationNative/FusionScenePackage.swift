@@ -50,22 +50,28 @@ struct FusionRawPhysicalFrame: Equatable, Sendable {
     /// Complete physical Device RGB, including additive exterior light, with the independent
     /// physical occlusion matte embedded in alpha. RGB is deliberately unassociated.
     let deviceRGBA: [Float]
+    /// Final Application-owned contribution opacity. Exact zero permits a sparse neutral frame.
+    let simulationOpacity: Double
     let physicalTiming: FusionPhysicalTiming?
 
     init(
         width: Int, height: Int, activeRect: FusionRasterRect,
-        deviceRGBA: [Float], physicalTiming: FusionPhysicalTiming? = nil
+        deviceRGBA: [Float], simulationOpacity: Double = 1,
+        physicalTiming: FusionPhysicalTiming? = nil
     ) {
         self.width = width
         self.height = height
         self.activeRect = activeRect
         self.deviceRGBA = deviceRGBA
+        self.simulationOpacity = simulationOpacity
         self.physicalTiming = physicalTiming
     }
 
     func validate() throws {
         guard width > 0, height > 0,
-              deviceRGBA.count == width * height * 4 else {
+              simulationOpacity.isFinite, (0 ... 1).contains(simulationOpacity),
+              (deviceRGBA.count == width * height * 4
+                || (simulationOpacity == 0 && deviceRGBA.isEmpty)) else {
             throw FusionScenePackageError.invalidRaster
         }
         guard activeRect.width > 0, activeRect.height > 0,
@@ -951,6 +957,7 @@ enum FusionScenePackageWriter {
         try request.outputPlan.prepareDirectories()
         var firstPrepared: FusionPreparedPhysicalFrame?
         var deviceMovie: MovieWriter?
+        var neutralRGBA: [Float]?
         let frames = Array(configuration.frameRange)
         let fixedThresholdSupport = request.sourceOverscanPixels
             - options.spillFadeWidthPixels
@@ -962,12 +969,37 @@ enum FusionScenePackageWriter {
             let frameStarted = ContinuousClock.now
             let raw = try await frameProvider(frame)
             let supportStarted = ContinuousClock.now
-            let prepared = try FusionDeviceSupport.prepare(
-                raw,
-                thresholdSceneLinear: options.spillThresholdSceneLinear,
-                fadeWidthPixels: options.spillFadeWidthPixels,
-                fixedThresholdSupportPixels: fixedThresholdSupport
-            )
+            try raw.validate()
+            var prepared: FusionPreparedPhysicalFrame
+            if !SimulationOpacityResolver.requiresPhysicalEvaluation(raw.simulationOpacity) {
+                if neutralRGBA == nil {
+                    neutralRGBA = [Float](repeating: 0, count: raw.width * raw.height * 4)
+                }
+                prepared = FusionPreparedPhysicalFrame(
+                    width: raw.width, height: raw.height, activeRect: raw.activeRect,
+                    uniformPaddingPixels: request.sourceOverscanPixels,
+                    thresholdSupportPixels: fixedThresholdSupport,
+                    deviceRGBA: neutralRGBA!
+                )
+            } else {
+                prepared = try FusionDeviceSupport.prepare(
+                    raw,
+                    thresholdSceneLinear: options.spillThresholdSceneLinear,
+                    fadeWidthPixels: options.spillFadeWidthPixels,
+                    fixedThresholdSupportPixels: fixedThresholdSupport
+                )
+                if raw.simulationOpacity != 1 {
+                    var rgba = prepared.deviceRGBA
+                    try SimulationOpacityResolver.apply(raw.simulationOpacity, to: &rgba)
+                    prepared = FusionPreparedPhysicalFrame(
+                        width: prepared.width, height: prepared.height,
+                        activeRect: prepared.activeRect,
+                        uniformPaddingPixels: prepared.uniformPaddingPixels,
+                        thresholdSupportPixels: prepared.thresholdSupportPixels,
+                        deviceRGBA: rgba
+                    )
+                }
+            }
             let supportFinished = ContinuousClock.now
             guard prepared.activeRect.width == request.activeRaster.activeWidth,
                   prepared.activeRect.height == request.activeRaster.activeHeight else {

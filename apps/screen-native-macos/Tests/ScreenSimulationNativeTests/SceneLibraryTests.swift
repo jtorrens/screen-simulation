@@ -246,12 +246,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 26)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 27)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v26.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v27.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,

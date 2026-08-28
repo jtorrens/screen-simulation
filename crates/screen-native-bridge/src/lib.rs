@@ -5,9 +5,9 @@
 // Rust static library is not a separately consumable unsafe Rust API.
 #![allow(clippy::missing_safety_doc)]
 
-use std::ffi::{c_char, c_float, c_void};
+use std::ffi::{CString, c_char, c_float, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -25,23 +25,24 @@ use screen_application::{
     ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
     ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
     ResolvedRateControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolver, SceneRevision,
-    TemporalCacheConfiguration, TestAuthoringError, TestAuthoringProfileSource,
-    TestAuthoringSelection, TestCaptureAuthoringProfile, TestCaptureRasterMode,
-    TestControlRequirement, TestCoverAuthoringProfile, TestDeviceAuthoringProfile,
-    TestEnvironmentAuthoringProfile, TestLensAuthoringProfile, TestOwnedChoiceOption,
-    TestPageDescriptor as ApplicationTestPageDescriptor, WORKSTATION_RESOLVED_SCENE_CACHE_BYTES,
-    apply_test_choice, apply_test_choice_with_profiles, apply_test_scalar,
-    apply_test_scalar_with_profiles, apply_test_toggle, apply_test_toggle_with_profiles,
-    compile_reflection_environment, default_test_authoring_selection,
-    default_test_authoring_selection_with_profiles, device_focus_target_at_preview_pixel,
-    diagnostic_signal, evaluate_delivery_raster_rgba32f,
+    SIMULATION_OPACITY_DESCRIPTOR, ScalarInterpolation, SceneFocusAuthoring, SceneFrameAuthoring,
+    SceneFrameResolver, SceneRevision, TemporalCacheConfiguration, TestAuthoringError,
+    TestAuthoringProfileSource, TestAuthoringSelection, TestCaptureAuthoringProfile,
+    TestCaptureRasterMode, TestControlRequirement, TestCoverAuthoringProfile,
+    TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile, TestLensAuthoringProfile,
+    TestOwnedChoiceOption, TestPageDescriptor as ApplicationTestPageDescriptor,
+    WORKSTATION_RESOLVED_SCENE_CACHE_BYTES, apply_test_choice, apply_test_choice_with_profiles,
+    apply_test_scalar, apply_test_scalar_with_profiles, apply_test_toggle,
+    apply_test_toggle_with_profiles, compile_reflection_environment,
+    default_test_authoring_selection, default_test_authoring_selection_with_profiles,
+    device_focus_target_at_preview_pixel, diagnostic_signal, evaluate_delivery_raster_rgba32f,
     evaluate_delivery_raster_with_physical_matte_rgba32f, evaluate_tracking_overlay,
     prepare_capture_render, prepare_recording_execution_request, prepare_setup_diagnostic,
     project_device_focus_target, publish_device_vfx_passes_rgba32f,
     publish_editorial_device_spill_passes_rgba32f, resolve_physical_stage_contributions,
-    resolve_planar_environment_framing, test_inspector_location, test_page_descriptor,
-    test_page_descriptor_with_profiles, vfx_delivery_stress_sample,
+    resolve_planar_environment_framing, resolve_simulation_opacity_samples,
+    test_inspector_location, test_page_descriptor, test_page_descriptor_with_profiles,
+    vfx_delivery_stress_sample,
 };
 use screen_camera::{CameraDevelopment, CameraRenderingIntent};
 use screen_color::{ColorEngine, RecordingOutputTransform, SceneLinearAdjustment};
@@ -71,6 +72,138 @@ use screen_sensor::SensorRegion;
 pub const SCREEN_REFLECTION_ENVIRONMENT_ABI_VERSION: u32 = 2;
 pub const SCREEN_RECORDING_EXECUTION_PLAN_ABI_VERSION: u32 = 2;
 pub const SCREEN_FFMPEG_MEDIA_ABI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ScreenApplicationScalarKeyframeV1 {
+    pub time_numerator: i64,
+    pub time_denominator: u64,
+    pub value: f64,
+    /// 0 hold, 1 linear, 2 smooth.
+    pub interpolation: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenApplicationScalarPropertyDescriptorV1 {
+    pub property_id: *const c_char,
+    pub display_name: *const c_char,
+    pub hold_label: *const c_char,
+    pub linear_label: *const c_char,
+    pub smooth_label: *const c_char,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub default_value: f64,
+    pub default_interpolation: u32,
+    pub supported_interpolation_mask: u32,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_application_simulation_opacity_descriptor_v1(
+    output: *mut ScreenApplicationScalarPropertyDescriptorV1,
+) -> bool {
+    static PROPERTY_ID: OnceLock<CString> = OnceLock::new();
+    static DISPLAY_NAME: OnceLock<CString> = OnceLock::new();
+    static HOLD_LABEL: OnceLock<CString> = OnceLock::new();
+    static LINEAR_LABEL: OnceLock<CString> = OnceLock::new();
+    static SMOOTH_LABEL: OnceLock<CString> = OnceLock::new();
+    fn stable_c_string(slot: &'static OnceLock<CString>, value: &'static str) -> *const c_char {
+        slot.get_or_init(|| CString::new(value).expect("descriptor strings contain no NUL"))
+            .as_ptr()
+    }
+    if output.is_null() {
+        return false;
+    }
+    unsafe {
+        *output = ScreenApplicationScalarPropertyDescriptorV1 {
+            property_id: stable_c_string(&PROPERTY_ID, SIMULATION_OPACITY_DESCRIPTOR.stable_id),
+            display_name: stable_c_string(
+                &DISPLAY_NAME,
+                SIMULATION_OPACITY_DESCRIPTOR.display_name,
+            ),
+            hold_label: stable_c_string(&HOLD_LABEL, SIMULATION_OPACITY_DESCRIPTOR.hold_label),
+            linear_label: stable_c_string(
+                &LINEAR_LABEL,
+                SIMULATION_OPACITY_DESCRIPTOR.linear_label,
+            ),
+            smooth_label: stable_c_string(
+                &SMOOTH_LABEL,
+                SIMULATION_OPACITY_DESCRIPTOR.smooth_label,
+            ),
+            minimum: SIMULATION_OPACITY_DESCRIPTOR.minimum,
+            maximum: SIMULATION_OPACITY_DESCRIPTOR.maximum,
+            default_value: SIMULATION_OPACITY_DESCRIPTOR.default_value,
+            default_interpolation: match SIMULATION_OPACITY_DESCRIPTOR.default_interpolation {
+                ScalarInterpolation::Hold => 0,
+                ScalarInterpolation::Linear => 1,
+                ScalarInterpolation::Smooth => 2,
+            },
+            supported_interpolation_mask: SIMULATION_OPACITY_DESCRIPTOR
+                .supported_interpolation_mask,
+        };
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_application_resolve_simulation_opacity_v1(
+    keyframes: *const ScreenApplicationScalarKeyframeV1,
+    keyframe_count: usize,
+    time_numerator: i64,
+    time_denominator: u64,
+    output: *mut f64,
+    error_message: *mut *const c_char,
+) -> bool {
+    if keyframes.is_null() || keyframe_count == 0 || output.is_null() {
+        unsafe { set_error(error_message, b"simulation opacity track is incomplete\0") };
+        return false;
+    }
+    let Ok(time_denominator) = u32::try_from(time_denominator) else {
+        unsafe { set_error(error_message, b"simulation opacity time is invalid\0") };
+        return false;
+    };
+    let Ok(time) = RationalTime::new(time_numerator, time_denominator) else {
+        unsafe { set_error(error_message, b"simulation opacity time is invalid\0") };
+        return false;
+    };
+    let raw = unsafe { std::slice::from_raw_parts(keyframes, keyframe_count) };
+    let mut samples = Vec::with_capacity(raw.len());
+    for keyframe in raw {
+        let Ok(key_denominator) = u32::try_from(keyframe.time_denominator) else {
+            unsafe { set_error(error_message, b"simulation opacity key time is invalid\0") };
+            return false;
+        };
+        let Ok(key_time) = RationalTime::new(keyframe.time_numerator, key_denominator) else {
+            unsafe { set_error(error_message, b"simulation opacity key time is invalid\0") };
+            return false;
+        };
+        let interpolation = match keyframe.interpolation {
+            0 => ScalarInterpolation::Hold,
+            1 => ScalarInterpolation::Linear,
+            2 => ScalarInterpolation::Smooth,
+            _ => {
+                unsafe {
+                    set_error(
+                        error_message,
+                        b"simulation opacity interpolation is invalid\0",
+                    )
+                };
+                return false;
+            }
+        };
+        samples.push((key_time, keyframe.value, interpolation));
+    }
+    match resolve_simulation_opacity_samples(&samples, time) {
+        Ok(value) => {
+            unsafe { *output = value };
+            true
+        }
+        Err(_) => {
+            unsafe { set_error(error_message, b"simulation opacity track is invalid\0") };
+            false
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

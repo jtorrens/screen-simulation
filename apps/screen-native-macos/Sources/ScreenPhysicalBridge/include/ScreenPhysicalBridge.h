@@ -450,6 +450,39 @@ typedef enum {
     SCREEN_PHYSICAL_POSE_SMOOTH = 2,
 } ScreenPhysicalPoseInterpolation;
 
+typedef struct {
+    int64_t time_numerator;
+    uint64_t time_denominator;
+    double value;
+    uint32_t interpolation; /* 0 hold, 1 linear, 2 smooth */
+} ScreenApplicationScalarKeyframeV1;
+
+typedef struct {
+    const char *property_id;
+    const char *display_name;
+    const char *hold_label;
+    const char *linear_label;
+    const char *smooth_label;
+    double minimum;
+    double maximum;
+    double default_value;
+    uint32_t default_interpolation;
+    uint32_t supported_interpolation_mask;
+} ScreenApplicationScalarPropertyDescriptorV1;
+
+bool screen_application_simulation_opacity_descriptor_v1(
+    ScreenApplicationScalarPropertyDescriptorV1 *output
+);
+
+bool screen_application_resolve_simulation_opacity_v1(
+    const ScreenApplicationScalarKeyframeV1 *keyframes,
+    size_t keyframe_count,
+    int64_t time_numerator,
+    uint64_t time_denominator,
+    double *output,
+    const char **error_message
+);
+
 typedef enum {
     SCREEN_PHYSICAL_INTERMEDIATE_SOURCE_ACESCG = 0,
     SCREEN_PHYSICAL_INTERMEDIATE_DEVICE_SIGNAL = 1,

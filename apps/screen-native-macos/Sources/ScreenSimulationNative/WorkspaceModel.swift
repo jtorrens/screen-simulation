@@ -408,6 +408,7 @@ final class WorkspaceModel: ObservableObject {
     }
     @Published var frameCount = 1
     @Published var frameRate = 24.0
+    @Published private(set) var sceneAnimation = SceneAnimationDocument()
     @Published var isPlaying = false
     @Published var inFrame = 0
     @Published var outFrame = 0
@@ -522,6 +523,7 @@ final class WorkspaceModel: ObservableObject {
     private var referenceACEScgFrame: StudioColorMetalFrame?
     private var syntheticReferencePlateCache: (plate: ReferencePlate, width: Int, height: Int, frame: StudioColorMetalFrame)?
     private var referenceForegroundFrame: StudioColorMetalFrame?
+    private var transparentSimulationFrames: [String: StudioColorMetalFrame] = [:]
     private var referenceForegroundIsDeliveryAligned = false
     private var referenceSourceURL: URL?
     private var referenceInputTransformID: String?
@@ -4818,6 +4820,151 @@ final class WorkspaceModel: ObservableObject {
         outFrame = max(inFrame, min(max(0, frame), max(0, frameCount - 1)))
     }
 
+    var currentSimulationOpacity: Double {
+        (try? resolvedSimulationOpacity(frame: currentFrame, frameRate: currentTimelineFrameRate))
+            ?? .nan
+    }
+
+    var currentSimulationOpacityKeyframe: SceneScalarKeyframe? {
+        guard let time = try? exactAnimationTime(
+            frame: currentFrame, frameRate: currentTimelineFrameRate
+        ) else { return nil }
+        let track = sceneAnimation.simulationOpacityTrack
+        return track.keyframeIndex(
+            timeNumerator: time.numerator, timeDenominator: time.denominator
+        ).map { track.keyframes[$0] }
+    }
+
+    var simulationOpacityKeyframeFrames: [Int] {
+        let rate = currentTimelineFrameRate
+        return sceneAnimation.simulationOpacityTrack.keyframes.compactMap { keyframe in
+            guard keyframe.timeDenominator != 0 else { return nil }
+            let frame = Double(keyframe.timeNumerator) / Double(keyframe.timeDenominator)
+                * rate.framesPerSecond
+            guard frame.isFinite else { return nil }
+            return Int(frame.rounded())
+        }
+    }
+
+    func setSimulationOpacityKeyframe(
+        value: Double,
+        interpolation: SceneAnimationInterpolation? = nil,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            guard value.isFinite, (0 ... 1).contains(value) else {
+                throw SceneAnimationError.invalidContract("La opacidad debe estar entre 0 y 1.")
+            }
+            let time = try exactAnimationTime(
+                frame: currentFrame, frameRate: currentTimelineFrameRate
+            )
+            var animation = sceneAnimation
+            var track = animation.simulationOpacityTrack
+            if let index = track.keyframeIndex(
+                timeNumerator: time.numerator, timeDenominator: time.denominator
+            ) {
+                track.keyframes[index].value = value
+                if let interpolation {
+                    track.keyframes[index].interpolation = interpolation
+                }
+            } else {
+                track.keyframes.append(.init(
+                    timeNumerator: time.numerator,
+                    timeDenominator: time.denominator,
+                    value: value,
+                    interpolation: interpolation
+                        ?? SimulationOpacityResolver.presentation.defaultInterpolation
+                ))
+                track.keyframes.sort {
+                    Decimal($0.timeNumerator) * Decimal($1.timeDenominator)
+                        < Decimal($1.timeNumerator) * Decimal($0.timeDenominator)
+                }
+            }
+            animation.simulationOpacityTrack = track
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Keyframe de opacidad · frame \(currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeCurrentSimulationOpacityKeyframe(undoManager: UndoManager? = nil) {
+        do {
+            let time = try exactAnimationTime(
+                frame: currentFrame, frameRate: currentTimelineFrameRate
+            )
+            var animation = sceneAnimation
+            var track = animation.simulationOpacityTrack
+            guard track.keyframes.count > 1,
+                  let index = track.keyframeIndex(
+                    timeNumerator: time.numerator, timeDenominator: time.denominator
+                  ) else { return }
+            track.keyframes.remove(at: index)
+            animation.simulationOpacityTrack = track
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Keyframe de opacidad eliminado · frame \(currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func setCurrentSimulationOpacityInterpolation(
+        _ interpolation: SceneAnimationInterpolation,
+        undoManager: UndoManager? = nil
+    ) {
+        setSimulationOpacityKeyframe(
+            value: currentSimulationOpacity,
+            interpolation: interpolation,
+            undoManager: undoManager
+        )
+    }
+
+    private func replaceSceneAnimation(
+        _ animation: SceneAnimationDocument,
+        undoManager: UndoManager?
+    ) {
+        guard animation != sceneAnimation else { return }
+        let prior = sceneAnimation
+        registerUndo(with: undoManager, actionName: "Editar animación") { target, manager in
+            target.replaceSceneAnimation(prior, undoManager: manager)
+        }
+        sceneAnimation = animation
+    }
+
+    private var currentTimelineFrameRate: ExactFrameRate {
+        ReferenceTimelineAuthority.resolve(
+            source: sourceTimelineInfo,
+            reference: referenceTimelineInfo,
+            referenceVisible: referenceControlsTimeline,
+            tracking: trackingTimelineInfo
+        ).exactFrameRate
+    }
+
+    private func exactAnimationTime(
+        frame: Int, frameRate: ExactFrameRate
+    ) throws -> (numerator: Int64, denominator: UInt64) {
+        let (numerator, overflow) = Int64(frame).multipliedReportingOverflow(
+            by: Int64(frameRate.denominator)
+        )
+        guard !overflow, frameRate.numerator > 0 else {
+            throw SceneAnimationError.invalidContract("El tiempo exacto del keyframe no es válido.")
+        }
+        return (numerator, UInt64(frameRate.numerator))
+    }
+
+    private func resolvedSimulationOpacity(
+        frame: Int, frameRate: ExactFrameRate
+    ) throws -> Double {
+        let time = try exactAnimationTime(frame: frame, frameRate: frameRate)
+        return try SimulationOpacityResolver.resolve(
+            track: sceneAnimation.simulationOpacityTrack,
+            timeNumerator: time.numerator,
+            timeDenominator: time.denominator
+        )
+    }
+
     func fitPreview() {
         viewerNavigation.fit()
     }
@@ -5403,6 +5550,15 @@ final class WorkspaceModel: ObservableObject {
         let resolvedSceneFrame = try resolveSceneFrame(
             index, temporalSamplesOverride: temporalSamples
         )
+        let simulationOpacity = try resolvedSimulationOpacity(
+            frame: index, frameRate: configuration.frameRate
+        )
+        if !SimulationOpacityResolver.requiresPhysicalEvaluation(simulationOpacity) {
+            return try await renderZeroOpacityQueuedFrame(
+                configuration: configuration,
+                resolvedSceneFrame: resolvedSceneFrame
+            )
+        }
         let source = try await renderFrame(index)
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
@@ -5442,7 +5598,8 @@ final class WorkspaceModel: ObservableObject {
                 // before Reference. Disabled and physical modes retain the prior route.
                 let deliveryCarrier: StudioColorMetalFrame?
                 if configuration.composition != .fullComposite
-                    || configuration.motionBlurMode == .approximate2D {
+                    || configuration.motionBlurMode == .approximate2D
+                    || simulationOpacity != 1 {
                     let delivery = try RecordingPhaseExecutor.delivery(
                         cameraRendered: camera,
                         width: Int(configuration.raster.width),
@@ -5451,13 +5608,16 @@ final class WorkspaceModel: ObservableObject {
                         backgroundID: "transparent",
                         display: metalDisplay
                     ).compositionFrame
-                    deliveryCarrier = configuration.motionBlurMode == .approximate2D
+                    let motionCarrier = configuration.motionBlurMode == .approximate2D
                         ? try approximate2DMotionBlur(
                             delivery, scene: resolvedSceneFrame,
                             configuration: configuration,
                             deliveryPlacementID: configuration.raster.placementID
                         )
                         : delivery
+                    deliveryCarrier = try applySimulationOpacity(
+                        simulationOpacity, to: motionCarrier
+                    )
                 } else {
                     deliveryCarrier = nil
                 }
@@ -5502,6 +5662,75 @@ final class WorkspaceModel: ObservableObject {
                 ).frame
             }
         }
+    }
+
+    private func renderZeroOpacityQueuedFrame(
+        configuration: StudioResolvedRenderConfiguration,
+        resolvedSceneFrame: ResolvedSceneFrame
+    ) async throws -> StudioColorMetalFrame {
+        let transparent = try transparentSimulationFrame(
+            width: Int(configuration.raster.width),
+            height: Int(configuration.raster.height)
+        )
+        guard configuration.composition == .fullComposite else { return transparent }
+        if referencePlate == .videoReference { try await rebuildReferenceFrame() }
+        guard let reference = try referencePlateFrame(
+            width: transparent.width, height: transparent.height
+        ), let selection = testAuthoringSelection else {
+            throw SceneLibraryError.invalidDocument(
+                "La placa de referencia seleccionada no se pudo resolver."
+            )
+        }
+        if setupFramingRenderer == nil {
+            setupFramingRenderer = try SetupFramingRenderer(device: transparent.texture.device)
+        }
+        let plan = try setupDiagnosticPlan(
+            scene: resolvedSceneFrame,
+            deliveryWidth: transparent.width,
+            deliveryHeight: transparent.height,
+            previewWidth: transparent.width,
+            previewHeight: transparent.height,
+            deliveryPlacementID: configuration.raster.placementID,
+            deliveryBackgroundID: selection.deliveryBackgroundID
+        )
+        return try setupFramingRenderer!.renderCameraComposite(
+            cameraResult: transparent,
+            reference: reference,
+            referencePlacement: referencePlacement,
+            plan: plan,
+            deliveryAligned: true
+        ).frame
+    }
+
+    private func transparentSimulationFrame(
+        width: Int, height: Int
+    ) throws -> StudioColorMetalFrame {
+        let key = "\(width)x\(height)"
+        if let frame = transparentSimulationFrames[key] { return frame }
+        guard width > 0, height > 0 else { throw NativeOutputError.invalidFrame }
+        let frame = try metalDisplay.makeIndependentLinearACEScgFrame(
+            width: width, height: height,
+            rgba: [Float](repeating: 0, count: width * height * 4)
+        )
+        transparentSimulationFrames[key] = frame
+        return frame
+    }
+
+    private func applySimulationOpacity(
+        _ opacity: Double, to frame: StudioColorMetalFrame
+    ) throws -> StudioColorMetalFrame {
+        guard opacity.isFinite, (0 ... 1).contains(opacity) else {
+            throw SceneAnimationError.invalidContract("La opacidad resuelta no es válida.")
+        }
+        if opacity == 1 { return frame }
+        if opacity == 0 {
+            return try transparentSimulationFrame(width: frame.width, height: frame.height)
+        }
+        var rgba = try metalDisplay.readLinearRGBA(frame)
+        try SimulationOpacityResolver.apply(opacity, to: &rgba)
+        return try metalDisplay.makeIndependentLinearACEScgFrame(
+            width: frame.width, height: frame.height, rgba: rgba
+        )
     }
 
     private func approximate2DMotionBlur(
@@ -5796,14 +6025,27 @@ final class WorkspaceModel: ObservableObject {
         sourceOverscan: Int
     ) async throws -> FusionRawPhysicalFrame {
         currentFrame = frameIndex
+        let simulationOpacity = try resolvedSimulationOpacity(
+            frame: frameIndex, frameRate: request.configuration.frameRate
+        )
+        let active = request.activeRaster
+        let width = active.activeWidth + sourceOverscan * 2
+        let height = active.activeHeight + sourceOverscan * 2
+        let activeRect = FusionRasterRect(
+            x: sourceOverscan, y: sourceOverscan,
+            width: active.activeWidth, height: active.activeHeight
+        )
+        if !SimulationOpacityResolver.requiresPhysicalEvaluation(simulationOpacity) {
+            return FusionRawPhysicalFrame(
+                width: width, height: height, activeRect: activeRect,
+                deviceRGBA: [], simulationOpacity: 0
+            )
+        }
         let sourceStarted = ContinuousClock.now
         let source = try await renderFrame(frameIndex)
         let sourceFinished = ContinuousClock.now
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
-        let active = request.activeRaster
-        let width = active.activeWidth + sourceOverscan * 2
-        let height = active.activeHeight + sourceOverscan * 2
         let dimensions = try PhysicalDimensions(width: width, height: height)
         let physicalStarted = ContinuousClock.now
         let submission = try await submitPhysicalJob(
@@ -5843,10 +6085,6 @@ final class WorkspaceModel: ObservableObject {
                       output.width == width, output.height == height else {
                     throw PhysicalMetalFrameEngineError.invalidSnapshot
                 }
-                let activeRect = FusionRasterRect(
-                    x: sourceOverscan, y: sourceOverscan,
-                    width: active.activeWidth, height: active.activeHeight
-                )
                 let readbackStarted = ContinuousClock.now
                 let physicalRGBA = try metalDisplay.readLinearRGBA(output)
                 let readbackFinished = ContinuousClock.now
@@ -5858,6 +6096,7 @@ final class WorkspaceModel: ObservableObject {
                     width: width, height: height,
                     activeRect: activeRect,
                     deviceRGBA: physicalRGBA,
+                    simulationOpacity: simulationOpacity,
                     physicalTiming: .resolve(
                         sourcePreparationSeconds: sourceStarted.duration(to: sourceFinished).seconds,
                         physicalEvaluationSeconds: physicalStarted.duration(to: physicalFinished).seconds,
@@ -6064,7 +6303,8 @@ final class WorkspaceModel: ObservableObject {
             ),
             tracking: savedTracking,
             fusionTrackerMotion: fusionTrackerMotion,
-            trackingSceneMethod: trackingSceneMethod
+            trackingSceneMethod: trackingSceneMethod,
+            animation: sceneAnimation
         )
         try snapshot.validate()
         let thumbnail = try SceneThumbnailRenderer.render(
@@ -6301,6 +6541,7 @@ final class WorkspaceModel: ObservableObject {
         try scene.snapshot.fusionTrackerMotion?.validate()
         fusionTrackerMotion = scene.snapshot.fusionTrackerMotion
         trackingSceneMethod = scene.snapshot.trackingSceneMethod
+        sceneAnimation = scene.snapshot.animation
         cachedSceneResolver = nil
         // Tracking is part of the timeline authority. Establish it before restoring
         // the authored frame so a static Source plus a Tracker pose track cannot

@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v14"
+    static let schema = "ScreenSimulation.RenderQueue.v15"
 
     let schema: String
     let isPaused: Bool
@@ -92,15 +92,15 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v14.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v15.json")
     }
 
     func load() throws -> RenderQueueDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("RenderQueue.v13.json")
+            let prior = directoryURL.appendingPathComponent("RenderQueue.v14.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw RenderQueueStoreError.invalidDocument(
-                    "Existe RenderQueue.v13.json. Elimina la cola histórica antes de abrir el contrato v14."
+                    "Existe RenderQueue.v14.json. Ejecuta la migración de mantenimiento v14→v15 antes de abrir la cola."
                 )
             }
             return RenderQueueDocument()
@@ -137,6 +137,15 @@ struct RenderQueueStore: Sendable {
             return requiredJobKeys.isSubset(of: keys) && keys.isSubset(of: expectedJobKeys)
         }) else {
             throw RenderQueueStoreError.invalidDocument("Un trabajo de Render Queue contiene campos desconocidos.")
+        }
+        guard jobs.allSatisfy({ job in
+            guard let scene = job["scene"] as? [String: Any],
+                  let snapshot = scene["snapshot"] as? [String: Any] else { return false }
+            return SavedSceneSnapshot.hasStrictTopLevelShape(snapshot)
+        }) else {
+            throw RenderQueueStoreError.invalidDocument(
+                "La animación persistida de Render Queue contiene campos desconocidos."
+            )
         }
         guard jobs.allSatisfy({ job in
             guard let timing = job["terminalTiming"] else { return true }

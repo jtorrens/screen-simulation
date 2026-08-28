@@ -48,6 +48,65 @@ private func fusionConfiguration(
     )
 }
 
+@Test @MainActor func zeroOpacityFusionFramesKeepCadenceWithoutPhysicalPhases() async throws {
+    let configuration = fusionConfiguration(frames: 1 ... 2)
+    let root = try temporaryDirectory()
+    let plan = try RenderOutputPlan.prepare(
+        configuration: configuration, selectedDestination: root
+    )
+    let request = FusionScenePackageRequest(
+        configuration: configuration,
+        outputPlan: plan,
+        deviceWidthMeters: 0.2,
+        deviceHeightMeters: 0.2,
+        activeRaster: .init(activeWidth: 2, activeHeight: 2, pixelsPerMeter: 10),
+        sourceOverscanPixels: 2,
+        deliveryWidth: 8,
+        deliveryHeight: 8,
+        camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
+        lens: [lens(frame: 1), lens(frame: 2)],
+        lensReconstruction: .importedSynthEyesDE4,
+        motionBlur: .init(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: 180, shutterPhaseDegrees: 0
+        ),
+        referencePlate: nil
+    )
+    var requestedFrames: [Int] = []
+    var diagnostics: [RenderFramePhaseBreakdown] = []
+    let destination = try await FusionScenePackageWriter.render(
+        request: request,
+        frameProvider: { frame in
+            requestedFrames.append(frame)
+            return FusionRawPhysicalFrame(
+                width: 6, height: 6,
+                activeRect: .init(x: 2, y: 2, width: 2, height: 2),
+                deviceRGBA: [], simulationOpacity: 0
+            )
+        },
+        progress: { _, _ in },
+        diagnostics: { diagnostics.append($0) }
+    )
+    #expect(requestedFrames == [1, 2])
+    #expect(diagnostics.map(\.frame) == [1, 2])
+    #expect(diagnostics.allSatisfy { breakdown in
+        breakdown.phases.allSatisfy {
+            !$0.id.hasPrefix("physical-")
+                && $0.id != "source-preparation"
+                && $0.id != "gpu-readback"
+        }
+    })
+    for frame in 1 ... 2 {
+        let url = destination.appendingPathComponent(
+            String(format: "media/Shot010_Device%08d.exr", frame)
+        )
+        let rgba = try await NativeMediaDecoder.decode(url: url, time: .zero).rgba
+        #expect(!rgba.isEmpty)
+        #expect(rgba.allSatisfy { $0 == 0 })
+    }
+}
+
 @Test func fusionScenePackageRejectsStandardApproximate2DMotionBlur() {
     #expect(throws: StudioOutputContractError.fusionDeliveryConfigurationInvalid) {
         try fusionConfiguration(motionBlurMode: .approximate2D).validate()
