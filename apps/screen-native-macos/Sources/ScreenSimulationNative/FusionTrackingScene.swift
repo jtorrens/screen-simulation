@@ -472,14 +472,28 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
     private var panel: NSPanel?
     private weak var activeModel: WorkspaceModel?
 
-    func toggle(model: WorkspaceModel) {
+    func toggle(
+        model: WorkspaceModel,
+        undoManager: UndoManager?,
+        method: TrackingSceneMethod? = nil
+    ) {
+        let switchesVisibleMethod = method.map { $0 != model.trackingSceneMethod } ?? false
+        if let method { model.trackingSceneMethod = method }
         if let panel, panel.isVisible {
+            if switchesVisibleMethod {
+                model.setReferenceMatchEnabled(model.trackingSceneMethod == .deviceCorners)
+                panel.makeKeyAndOrderFront(nil)
+                isVisible = true
+                return
+            }
+            model.setReferenceMatchEnabled(false)
             panel.orderOut(nil)
             isVisible = false
             return
         }
         activeModel = model
-        let content = TrackingScenePanel(model: model)
+        model.setReferenceMatchEnabled(model.trackingSceneMethod == .deviceCorners)
+        let content = TrackingScenePanel(model: model, undoManager: undoManager)
         if let panel {
             panel.contentView = NSHostingView(rootView: content)
             panel.makeKeyAndOrderFront(nil)
@@ -503,12 +517,15 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
         isVisible = true
     }
 
-    func windowWillClose(_ notification: Notification) { isVisible = false }
+    func windowWillClose(_ notification: Notification) {
+        activeModel?.setReferenceMatchEnabled(false)
+        isVisible = false
+    }
 }
 
 private struct TrackingScenePanel: View {
     @ObservedObject var model: WorkspaceModel
-    @Environment(\.undoManager) private var undoManager
+    let undoManager: UndoManager?
     @State private var pendingRemoval: TrackingRemoval?
 
     private enum TrackingRemoval {
@@ -530,7 +547,55 @@ private struct TrackingScenePanel: View {
 
     var body: some View {
         Form {
-            Section("SynthEyes / Fusion") {
+            Section("Método") {
+                Picker("Generar escena 3D", selection: $model.trackingSceneMethod) {
+                    ForEach(TrackingSceneMethod.allCases) { method in
+                        Text(method.label).tag(method)
+                    }
+                }
+                .onChange(of: model.trackingSceneMethod) { _, method in
+                    model.setReferenceMatchEnabled(method == .deviceCorners)
+                }
+            }
+            if model.trackingSceneMethod == .fusionComposition {
+                fusionCompositionSection
+            } else if model.trackingSceneMethod == .deviceCorners {
+                deviceCornersSection
+            } else {
+                fusionTrackerSection
+            }
+            if model.trackingSceneMethod == .fusionComposition, let scene = model.trackingScene {
+                importedElementsSection(scene)
+                metricScaleSection
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440, height: 650)
+        .confirmationDialog(
+            pendingRemoval?.title ?? "Confirmar",
+            isPresented: Binding(
+                get: { pendingRemoval != nil },
+                set: { if !$0 { pendingRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let removal = pendingRemoval {
+                Button("Eliminar", role: .destructive) {
+                    pendingRemoval = nil
+                    switch removal {
+                    case .cameraAnimation:
+                        model.freezeTrackingCameraAnimation(undoManager: undoManager)
+                    }
+                }
+            }
+            Button("Cancelar", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            if let removal = pendingRemoval { Text(removal.message) }
+        }
+    }
+
+    private var fusionCompositionSection: some View {
+        Section("SynthEyes / Fusion") {
                 Button("Importar .comp…", action: model.importFusionTrackingScene)
                 if let scene = model.trackingScene {
                     LabeledContent("Origen", value: "Autoría 3D de la escena")
@@ -555,8 +620,99 @@ private struct TrackingScenePanel: View {
                     .disabled(!model.canFreezeTrackingCameraAnimation)
                 }
             }
-            if let scene = model.trackingScene {
-                Section("Elementos 3D") {
+    }
+
+    private var deviceCornersSection: some View {
+        Section("Esquinas del Device") {
+            HStack {
+                Label(
+                    "4 objetivos directos",
+                    systemImage: model.referenceMatchCorners.count == 4
+                        ? "checkmark.circle.fill" : "circle.dashed"
+                )
+                .foregroundStyle(model.referenceMatchCorners.count == 4 ? .green : .secondary)
+                Spacer()
+                if let error = model.referenceMatchErrorPixels {
+                    Text("Máx. ±\(error.formatted(.number.precision(.fractionLength(1)))) px")
+                        .font(.caption.monospacedDigit())
+                }
+            }
+            Text("Arrastra los cuatro objetivos amarillos sobre la referencia. La solución conserva el Device rígido y modifica solamente la cámara.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Resolver") { model.solveReferenceMatchTargets(undoManager: undoManager) }
+                Button("Buscar focal") { model.searchReferenceMatchFocalLength(undoManager: undoManager) }
+                    .buttonStyle(.borderedProminent)
+            }
+            .disabled(model.referenceMatchCorners.count != 4)
+            HStack {
+                Button("Reiniciar objetivos", action: model.clearReferenceMatchTargets)
+                    .disabled(model.referenceMatchCorners.count != 4)
+                Spacer()
+                if let focal = model.referenceMatchFocalLengthMillimeters {
+                    Text("Focal \(focal.formatted(.number.precision(.fractionLength(2)))) mm")
+                        .font(.caption.monospacedDigit())
+                }
+            }
+        }
+    }
+
+    private var fusionTrackerSection: some View {
+        Group {
+            Section("Tracker en portapapeles") {
+                Button("Pegar nodo Tracker", action: model.importFusionTrackerFromClipboard)
+                if let tracker = model.fusionTrackerClipboard {
+                    Text("\(tracker.points.count) puntos · frames \(tracker.frameRange.lowerBound)–\(tracker.frameRange.upperBound) · origen \(model.fusionTrackerAnchorFrame ?? 0)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    ForEach(tracker.points) { point in
+                        HStack {
+                            Text(point.label).lineLimit(1)
+                            Spacer()
+                            Picker("Esquina", selection: Binding(
+                                get: { model.fusionTrackerCornerAssignments[point.id] ?? .unassigned },
+                                set: { model.setFusionTrackerCorner($0, for: point.id) }
+                            )) {
+                                ForEach(FusionTrackerCorner.allCases) { corner in
+                                    Text(corner.label).tag(corner)
+                                }
+                            }
+                            .labelsHidden().frame(width: 110)
+                        }
+                    }
+                }
+            }
+            Section("Offset rígido") {
+                Picker("Aplicar a", selection: $model.fusionTrackerTarget) {
+                    ForEach(FusionTrackerTarget.allCases) { target in
+                        Text(target.label).tag(target)
+                    }
+                }
+                Group {
+                    Toggle("Traslación X", isOn: $model.fusionTrackerMovesX)
+                    Toggle("Traslación Y", isOn: $model.fusionTrackerMovesY)
+                    Toggle("Escala mediante profundidad", isOn: $model.fusionTrackerScales)
+                    Toggle("Rotación alrededor de Z local", isOn: $model.fusionTrackerRotates)
+                }
+                .disabled(model.fusionTrackerUsesCornerPin)
+                Toggle("Corner Pin como pose 3D rígida", isOn: $model.fusionTrackerUsesCornerPin)
+            }
+            Section("Suavizado") {
+                Toggle("Savitzky–Golay", isOn: $model.fusionTrackerSmoothingEnabled)
+                if model.fusionTrackerSmoothingEnabled {
+                    Stepper("Ventana · \(model.fusionTrackerSmoothingWindow) frames", value: $model.fusionTrackerSmoothingWindow, in: 3...101, step: 2)
+                    Stepper("Grado · \(model.fusionTrackerSmoothingDegree)", value: $model.fusionTrackerSmoothingDegree, in: 1...5)
+                }
+                Button("Aplicar tracker") {
+                    model.applyFusionTrackerMotion(undoManager: undoManager)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.fusionTrackerClipboard == nil)
+            }
+        }
+    }
+
+    private func importedElementsSection(_ scene: TrackingScene) -> some View {
+        Section("Elementos 3D") {
                     Text("Clic derecho sobre un punto verde para colocar el centro del Device. Clic derecho sobre el centro naranja de un plano para colocarlo y orientarlo.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -607,7 +763,10 @@ private struct TrackingScenePanel: View {
                         .help(mesh.id)
                     }
                 }
-                Section("Escala métrica") {
+    }
+
+    private var metricScaleSection: some View {
+        Section("Escala métrica") {
                     Text("Define directamente cuánto mide una unidad de SynthEyes.")
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("1 unidad SynthEyes") {
@@ -627,31 +786,6 @@ private struct TrackingScenePanel: View {
                         Text("La cámara y la geometría no se aplican hasta resolver la escala.")
                             .font(.caption).foregroundStyle(.orange)
                     }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .frame(width: 440, height: 650)
-        .confirmationDialog(
-            pendingRemoval?.title ?? "Confirmar",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let removal = pendingRemoval {
-                Button("Eliminar", role: .destructive) {
-                    pendingRemoval = nil
-                    switch removal {
-                    case .cameraAnimation:
-                        model.freezeTrackingCameraAnimation(undoManager: undoManager)
-                    }
-                }
-            }
-            Button("Cancelar", role: .cancel) { pendingRemoval = nil }
-        } message: {
-            if let removal = pendingRemoval { Text(removal.message) }
         }
     }
 

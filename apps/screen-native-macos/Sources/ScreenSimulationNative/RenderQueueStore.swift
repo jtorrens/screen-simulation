@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v10"
+    static let schema = "ScreenSimulation.RenderQueue.v11"
 
     let schema: String
     let isPaused: Bool
@@ -78,11 +78,17 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v10.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v11.json")
     }
 
     func load() throws -> RenderQueueDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            let prior = directoryURL.appendingPathComponent("RenderQueue.v10.json")
+            if FileManager.default.fileExists(atPath: prior.path) {
+                throw RenderQueueStoreError.invalidDocument(
+                    "Existe RenderQueue.v10.json. Ejecuta la migración de mantenimiento v10→v11 antes de abrirla."
+                )
+            }
             return RenderQueueDocument()
         }
         let data = try Data(contentsOf: documentURL)

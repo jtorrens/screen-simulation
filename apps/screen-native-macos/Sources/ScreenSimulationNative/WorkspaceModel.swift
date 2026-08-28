@@ -458,6 +458,20 @@ final class WorkspaceModel: ObservableObject {
     private(set) var environmentPresets: [EnvironmentProfileDefinition]
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
     @Published private(set) var trackingScene: TrackingScene?
+    @Published var trackingSceneMethod = TrackingSceneMethod.fusionComposition
+    @Published private(set) var fusionTrackerClipboard: FusionTrackerClipboard?
+    @Published private(set) var fusionTrackerAnchorFrame: Int?
+    @Published private(set) var fusionTrackerMotion: FusionTrackerPoseTrack?
+    @Published var fusionTrackerTarget = FusionTrackerTarget.camera
+    @Published var fusionTrackerMovesX = true
+    @Published var fusionTrackerMovesY = true
+    @Published var fusionTrackerScales = false
+    @Published var fusionTrackerRotates = false
+    @Published var fusionTrackerUsesCornerPin = false
+    @Published var fusionTrackerSmoothingEnabled = false
+    @Published var fusionTrackerSmoothingWindow = 9
+    @Published var fusionTrackerSmoothingDegree = 2
+    @Published var fusionTrackerCornerAssignments: [String: FusionTrackerCorner] = [:]
     @Published var selectedTrackingCameraID: String?
     @Published var selectedTrackingPointGroupID: String?
     @Published var trackingCameraEnabled = true
@@ -3844,6 +3858,300 @@ final class WorkspaceModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func importFusionTrackerFromClipboard() {
+        guard referenceACEScgFrame != nil, referenceTimelineInfo != nil else {
+            errorMessage = "Carga una referencia de vídeo antes de pegar el Tracker de Fusion."
+            return
+        }
+        guard let text = NSPasteboard.general.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            errorMessage = "El portapapeles no contiene texto de un nodo Tracker de Fusion."
+            return
+        }
+        do {
+            let tracker = try FusionTrackerClipboardImporter().parse(text)
+            fusionTrackerClipboard = tracker
+            fusionTrackerAnchorFrame = currentFrame
+            fusionTrackerCornerAssignments = Dictionary(
+                uniqueKeysWithValues: tracker.points.map { ($0.id, .unassigned) }
+            )
+            status = "Tracker Fusion · \(tracker.points.count) puntos · frames \(tracker.frameRange.lowerBound)–\(tracker.frameRange.upperBound) · origen \(currentFrame)"
+        } catch {
+            fusionTrackerClipboard = nil
+            fusionTrackerAnchorFrame = nil
+            fusionTrackerCornerAssignments = [:]
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func setFusionTrackerCorner(_ corner: FusionTrackerCorner, for pointID: String) {
+        guard fusionTrackerClipboard?.points.contains(where: { $0.id == pointID }) == true else { return }
+        if corner != .unassigned,
+           let prior = fusionTrackerCornerAssignments.first(where: {
+               $0.key != pointID && $0.value == corner
+           })?.key {
+            fusionTrackerCornerAssignments[prior] = .unassigned
+        }
+        fusionTrackerCornerAssignments[pointID] = corner
+    }
+
+    func applyFusionTrackerMotion(undoManager: UndoManager?) {
+        guard let tracker = fusionTrackerClipboard else { return }
+        do {
+            let prepared = fusionTrackerSmoothingEnabled
+                ? try tracker.smoothed(
+                    window: fusionTrackerSmoothingWindow,
+                    degree: fusionTrackerSmoothingDegree
+                )
+                : tracker
+            guard fusionTrackerMovesX || fusionTrackerMovesY || fusionTrackerScales
+                    || fusionTrackerRotates || fusionTrackerUsesCornerPin
+            else {
+                throw FusionTrackerClipboardError.invalid("selecciona al menos un componente de movimiento")
+            }
+            if fusionTrackerUsesCornerPin {
+                let assigned = Set(fusionTrackerCornerAssignments.values.filter { $0 != .unassigned })
+                guard prepared.points.count >= 4,
+                      assigned == Set([
+                          FusionTrackerCorner.topLeft, .topRight, .bottomRight, .bottomLeft,
+                      ])
+                else {
+                    throw FusionTrackerClipboardError.invalid(
+                        "Corner Pin requiere una asignación única TL, TR, BR y BL"
+                    )
+                }
+            }
+            guard let reference = referenceACEScgFrame,
+                  let referenceTimelineInfo,
+                  let anchorFrame = fusionTrackerAnchorFrame,
+                  tracker.frameRange.contains(anchorFrame),
+                  testAuthoringSelection != nil
+            else {
+                throw FusionTrackerClipboardError.invalid(
+                    "el frame de origen debe existir en el Tracker y la referencia debe tener cadencia explícita"
+                )
+            }
+            let motionPoints: [FusionTrackerPointCurve]
+            if fusionTrackerUsesCornerPin {
+                let order: [FusionTrackerCorner] = [.topLeft, .topRight, .bottomRight, .bottomLeft]
+                motionPoints = try order.map { corner in
+                    guard let id = fusionTrackerCornerAssignments.first(where: { $0.value == corner })?.key,
+                          let point = prepared.points.first(where: { $0.id == id })
+                    else { throw FusionTrackerClipboardError.invalid("falta la esquina \(corner.label)") }
+                    return point
+                }
+            } else {
+                motionPoints = prepared.points
+            }
+            if fusionTrackerScales || fusionTrackerRotates {
+                guard motionPoints.count >= 2 else {
+                    throw FusionTrackerClipboardError.invalid(
+                        "escala y rotación requieren al menos dos puntos"
+                    )
+                }
+            }
+            let delivery = referenceDeliveryRasterSize
+            let anchorTrackerPoints = try motionPoints.map {
+                try fusionTrackerDeliveryPoint(
+                    curve: $0, frame: anchorFrame,
+                    sourceWidth: reference.width, sourceHeight: reference.height,
+                    deliveryWidth: delivery.width, deliveryHeight: delivery.height
+                )
+            }
+            let priorMotion = fusionTrackerMotion
+            fusionTrackerMotion = nil
+            cachedSceneResolver = nil
+            var materialized: [FusionTrackerPoseSample] = []
+            do {
+                for frame in prepared.frameRange {
+                    let base = try fusionTrackerBaseProjection(frame: frame)
+                    let currentTrackerPoints = try motionPoints.map {
+                        try fusionTrackerDeliveryPoint(
+                            curve: $0, frame: frame,
+                            sourceWidth: reference.width, sourceHeight: reference.height,
+                            deliveryWidth: delivery.width, deliveryHeight: delivery.height
+                        )
+                    }
+                    let targets = try FusionTrackerMotionMath.transformedCorners(
+                        base: base.deliveryCorners,
+                        anchorPoints: anchorTrackerPoints,
+                        currentPoints: currentTrackerPoints,
+                        components: .init(
+                            x: fusionTrackerMovesX, y: fusionTrackerMovesY,
+                            scale: fusionTrackerScales, rotation: fusionTrackerRotates,
+                            cornerPin: fusionTrackerUsesCornerPin
+                        )
+                    )
+                    let solved = try resolvedRigidCameraPose(
+                        deliveryTargets: targets,
+                        focalLengthMillimeters: base.focalLengthMillimeters,
+                        frame: frame
+                    ).pose
+                    let pose = fusionTrackerTarget == .camera
+                        ? solved
+                        : CameraNavigationMath.equivalentDevicePose(
+                            startCamera: base.cameraPose,
+                            movedCamera: solved,
+                            startDevice: base.devicePose
+                        )
+                    materialized.append(FusionTrackerPoseSample(
+                        frame: frame,
+                        position: pose.position,
+                        orientation: SIMD4(
+                            pose.orientation.imag.x, pose.orientation.imag.y,
+                            pose.orientation.imag.z, pose.orientation.real
+                        )
+                    ))
+                }
+                let rate = referenceTimelineInfo.exactFrameRate
+                fusionTrackerMotion = try FusionTrackerPoseTrack(
+                    target: fusionTrackerTarget,
+                    anchorFrame: anchorFrame,
+                    frameRateNumerator: rate.numerator,
+                    frameRateDenominator: rate.denominator,
+                    samples: materialized
+                )
+            } catch {
+                fusionTrackerMotion = priorMotion
+                cachedSceneResolver = nil
+                throw error
+            }
+            cachedSceneResolver = nil
+            physicalModel.invalidateExternalParameters(preservingQuality: true)
+            publishSetupFraming()
+            if priorMotion != fusionTrackerMotion {
+                registerUndo(with: undoManager, actionName: "Aplicar Tracker Fusion") { target, manager in
+                    target.restoreFusionTrackerMotion(priorMotion, undoManager: manager)
+                }
+            }
+            status = "Tracker Fusion aplicado a \(fusionTrackerTarget.label) · \(materialized.count) frames"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func restoreFusionTrackerMotion(
+        _ motion: FusionTrackerPoseTrack?, undoManager: UndoManager?
+    ) {
+        let current = fusionTrackerMotion
+        fusionTrackerMotion = motion
+        cachedSceneResolver = nil
+        physicalModel.invalidateExternalParameters(preservingQuality: true)
+        publishSetupFraming()
+        registerUndo(with: undoManager, actionName: "Aplicar Tracker Fusion") { target, manager in
+            target.restoreFusionTrackerMotion(current, undoManager: manager)
+        }
+    }
+
+    private func fusionTrackerDeliveryPoint(
+        curve: FusionTrackerPointCurve,
+        frame: Int,
+        sourceWidth: Int,
+        sourceHeight: Int,
+        deliveryWidth: Int,
+        deliveryHeight: Int
+    ) throws -> CGPoint {
+        guard let sample = curve.samples.first(where: { $0.frame == frame }),
+              sourceWidth > 0, sourceHeight > 0, deliveryWidth > 0, deliveryHeight > 0
+        else { throw FusionTrackerClipboardError.invalid("falta el frame \(frame) en \(curve.label)") }
+        let scaleX: Double
+        let scaleY: Double
+        switch referencePlacement {
+        case .fit:
+            let scale = min(Double(deliveryWidth) / Double(sourceWidth), Double(deliveryHeight) / Double(sourceHeight))
+            scaleX = scale; scaleY = scale
+        case .fillCrop:
+            let scale = max(Double(deliveryWidth) / Double(sourceWidth), Double(deliveryHeight) / Double(sourceHeight))
+            scaleX = scale; scaleY = scale
+        case .stretch:
+            scaleX = Double(deliveryWidth) / Double(sourceWidth)
+            scaleY = Double(deliveryHeight) / Double(sourceHeight)
+        case .oneToOne:
+            scaleX = 1; scaleY = 1
+        }
+        let offsetX = (Double(deliveryWidth) - Double(sourceWidth) * scaleX) * 0.5
+        let offsetY = (Double(deliveryHeight) - Double(sourceHeight) * scaleY) * 0.5
+        // Fusion uses a normalized, bottom-up composition coordinate system.
+        return CGPoint(
+            x: sample.position.x * Double(sourceWidth) * scaleX + offsetX - 0.5,
+            y: (1 - sample.position.y) * Double(sourceHeight) * scaleY + offsetY - 0.5
+        )
+    }
+
+    private func fusionTrackerBaseProjection(frame: Int) throws -> (
+        deliveryCorners: [CGPoint], cameraPose: CameraNavigationPose,
+        devicePose: CameraNavigationPose, focalLengthMillimeters: Double
+    ) {
+        let scene = try resolveSceneFrame(frame)
+        let delivery = referenceDeliveryRasterSize
+        let placementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
+        let plan = try setupDiagnosticPlan(
+            scene: scene,
+            deliveryWidth: delivery.width, deliveryHeight: delivery.height,
+            previewWidth: delivery.width, previewHeight: delivery.height,
+            deliveryPlacementID: placementID, deliveryBackgroundID: "black"
+        )
+        let cameraPose = CameraNavigationPose(
+            position: SIMD3(
+                Double(plan.camera_position.0), Double(plan.camera_position.1),
+                Double(plan.camera_position.2)
+            ),
+            orientation: simd_quatd(
+                ix: Double(plan.camera_rotation_xyzw.0), iy: Double(plan.camera_rotation_xyzw.1),
+                iz: Double(plan.camera_rotation_xyzw.2), r: Double(plan.camera_rotation_xyzw.3)
+            ).normalized
+        )
+        let devicePose = CameraNavigationPose(
+            position: SIMD3(
+                Double(plan.screen_position.0), Double(plan.screen_position.1),
+                Double(plan.screen_position.2)
+            ),
+            orientation: simd_quatd(
+                ix: Double(plan.screen_rotation_xyzw.0), iy: Double(plan.screen_rotation_xyzw.1),
+                iz: Double(plan.screen_rotation_xyzw.2), r: Double(plan.screen_rotation_xyzw.3)
+            ).normalized
+        )
+        let geometry = CameraNavigationGeometry(
+            center: devicePose.position,
+            right: devicePose.orientation.act(SIMD3(1, 0, 0)),
+            up: devicePose.orientation.act(SIMD3(0, 1, 0)),
+            halfWidth: Double(plan.device_active_width_meters) * 0.5,
+            halfHeight: Double(plan.device_active_height_meters) * 0.5
+        )
+        let gateSize = CGSize(width: Int(plan.active_sensor_width), height: Int(plan.active_sensor_height))
+        let gateCorners = try geometry.corners.map { corner in
+            guard let point = ReferenceAnchorCameraMath.project(
+                pose: cameraPose, point: corner, imageSize: gateSize,
+                focalLengthMillimeters: Double(plan.focal_length_millimeters),
+                sensorSizeMillimeters: CGSize(
+                    width: Double(plan.sensor_width_millimeters),
+                    height: Double(plan.sensor_height_millimeters)
+                ),
+                lensShift: SIMD2(Double(plan.lens_shift.0), Double(plan.lens_shift.1)),
+                radialDistortion: SIMD3(
+                    Double(plan.lens_radial_distortion.0), Double(plan.lens_radial_distortion.1),
+                    Double(plan.lens_radial_distortion.2)
+                ),
+                tangentialDistortion: SIMD2(
+                    Double(plan.lens_tangential_distortion.0),
+                    Double(plan.lens_tangential_distortion.1)
+                )
+            ) else { throw FusionTrackerClipboardError.invalid("el Device sale del dominio de cámara") }
+            return point
+        }
+        let deliveryCorners = try ReferenceMatchRasterMapping.referenceCorners(
+            gateCorners,
+            referenceWidth: delivery.width, referenceHeight: delivery.height,
+            cameraWidth: plan.active_sensor_width, cameraHeight: plan.active_sensor_height,
+            deliveryPlacementID: placementID
+        )
+        return (
+            deliveryCorners, cameraPose, devicePose,
+            Double(plan.focal_length_millimeters)
+        )
+    }
+
     func setTrackingMesh(_ id: String, visible: Bool) {
         if visible { visibleTrackingMeshIDs.insert(id) }
         else { visibleTrackingMeshIDs.remove(id) }
@@ -4134,6 +4442,21 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private var trackingTimelineInfo: NativeVideoTimelineInfo? {
+        if let motion = fusionTrackerMotion {
+            let rate: ExactFrameRate
+            do {
+                rate = try ExactFrameRate(
+                    numerator: motion.frameRateNumerator,
+                    denominator: motion.frameRateDenominator
+                )
+            } catch {
+                preconditionFailure("El Tracker Fusion materializado contiene una cadencia inválida.")
+            }
+            return NativeVideoTimelineInfo(
+                exactFrameRate: rate,
+                frameCount: (motion.samples.map(\.frame).max() ?? 0) + 1
+            )
+        }
         guard trackingCameraEnabled, let camera = selectedTrackingCamera else { return nil }
         let rate: ExactFrameRate
         do {
@@ -4149,7 +4472,8 @@ final class WorkspaceModel: ObservableObject {
 
     static func savedRenderTimeline(
         source: SavedSceneSource,
-        tracking: SavedTrackingScene?
+        tracking: SavedTrackingScene?,
+        fusionTrackerMotion: FusionTrackerPoseTrack? = nil
     ) throws -> NativeVideoTimelineInfo {
         let sourceTimeline: NativeVideoTimelineInfo
         switch source.kind {
@@ -4167,7 +4491,16 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         let trackingTimeline: NativeVideoTimelineInfo?
-        if let tracking, tracking.cameraEnabled {
+        if let fusionTrackerMotion {
+            try fusionTrackerMotion.validate()
+            trackingTimeline = .init(
+                exactFrameRate: try .init(
+                    numerator: fusionTrackerMotion.frameRateNumerator,
+                    denominator: fusionTrackerMotion.frameRateDenominator
+                ),
+                frameCount: (fusionTrackerMotion.samples.map(\.frame).max() ?? 0) + 1
+            )
+        } else if let tracking, tracking.cameraEnabled {
             guard let camera = tracking.scene.cameras.first(where: {
                 $0.id == tracking.cameraID
             }) else {
@@ -4323,6 +4656,7 @@ final class WorkspaceModel: ObservableObject {
                 trackingCamera: trackingCameraEnabled ? selectedTrackingCamera : nil,
                 trackingMetersPerSourceUnit: trackingCameraEnabled
                     ? trackingMetersPerSourceUnit : nil,
+                fusionTrackerMotion: fusionTrackerMotion,
                 autofocusEnabled: authoringSelection.autofocusEnabled,
                 autofocusTargetU: authoringSelection.autofocusTargetU,
                 autofocusTargetV: authoringSelection.autofocusTargetV
@@ -4681,7 +5015,8 @@ final class WorkspaceModel: ObservableObject {
         do {
             savedTimeline = try Self.savedRenderTimeline(
                 source: scene.snapshot.source,
-                tracking: scene.snapshot.tracking
+                tracking: scene.snapshot.tracking,
+                fusionTrackerMotion: scene.snapshot.fusionTrackerMotion
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -5710,7 +6045,8 @@ final class WorkspaceModel: ObservableObject {
                 settingsContext: settingsContext,
                 selection: selection
             ),
-            tracking: savedTracking
+            tracking: savedTracking,
+            fusionTrackerMotion: fusionTrackerMotion
         )
         try snapshot.validate()
         let thumbnail = try SceneThumbnailRenderer.render(
@@ -5794,7 +6130,8 @@ final class WorkspaceModel: ObservableObject {
             viewerIsFitted: true,
             authoring: authoring,
             generatedEnvironment: nil,
-            tracking: nil
+            tracking: nil,
+            fusionTrackerMotion: nil
         )
         try reset.validate()
         return reset
@@ -5941,13 +6278,21 @@ final class WorkspaceModel: ObservableObject {
             }
         }
         try await applySceneAuthoring(authoring, undoManager: nil)
+        try restoreTrackingScene(scene.snapshot.tracking)
+        try scene.snapshot.fusionTrackerMotion?.validate()
+        fusionTrackerMotion = scene.snapshot.fusionTrackerMotion
+        cachedSceneResolver = nil
+        // Tracking is part of the timeline authority. Establish it before restoring
+        // the authored frame so a static Source plus a Tracker pose track cannot
+        // incorrectly clamp the saved frame to zero.
+        applyTimelineAuthority(resetRange: true)
         currentFrame = min(scene.snapshot.currentFrame, max(0, frameCount - 1))
         // `load` intentionally opens media at zero so metadata and raster facts
         // can be established first.  A Saved Scene, however, owns an exact current
         // frame: before the staged scene may be adopted, replace that opening sample
         // and its optional reference sample with the saved rational time.
         try await materializeCurrentFrameForSceneOpen()
-        try restoreTrackingScene(scene.snapshot.tracking)
+        applyTrackingCameraAtCurrentFrame()
         try ensureFiniteEnvironmentEnclosesTimeline()
         viewerNavigation.restore(
             zoom: scene.snapshot.viewerZoom,
@@ -6108,6 +6453,7 @@ final class WorkspaceModel: ObservableObject {
         trackingScalePointAID = staged.trackingScalePointAID
         trackingScalePointBID = staged.trackingScalePointBID
         trackingMeasuredDistanceMeters = staged.trackingMeasuredDistanceMeters
+        fusionTrackerMotion = staged.fusionTrackerMotion
 
         currentFrame = staged.currentFrame
         viewerNavigation.restore(
@@ -7832,7 +8178,24 @@ final class WorkspaceModel: ObservableObject {
         guard referenceACEScgFrame != nil,
               referenceMatchCorners.count == 4
         else { throw NativeMediaError.invalidRaster }
-        let scene = try resolveSceneFrame(currentFrame)
+        return try resolvedRigidCameraPose(
+            deliveryTargets: referenceMatchCorners,
+            focalLengthMillimeters: focalLengthMillimeters,
+            frame: currentFrame
+        )
+    }
+
+    private func resolvedRigidCameraPose(
+        deliveryTargets: [CGPoint],
+        focalLengthMillimeters: Double,
+        frame: Int
+    ) throws -> (
+        pose: CameraNavigationPose, maximumErrorPixels: Double, rmsErrorPixels: Double
+    ) {
+        guard referenceACEScgFrame != nil, deliveryTargets.count == 4 else {
+            throw NativeMediaError.invalidRaster
+        }
+        let scene = try resolveSceneFrame(frame)
         let delivery = referenceDeliveryRasterSize
         let placementID = testAuthoringSelection?.deliveryPlacementID ?? "fit"
         let plan = try setupDiagnosticPlan(
@@ -7845,7 +8208,7 @@ final class WorkspaceModel: ObservableObject {
             deliveryBackgroundID: "black"
         )
         let gateTargets = try ReferenceMatchRasterMapping.cameraGateCorners(
-            referenceMatchCorners,
+            deliveryTargets,
             referenceWidth: delivery.width, referenceHeight: delivery.height,
             cameraWidth: plan.active_sensor_width, cameraHeight: plan.active_sensor_height,
             deliveryPlacementID: placementID

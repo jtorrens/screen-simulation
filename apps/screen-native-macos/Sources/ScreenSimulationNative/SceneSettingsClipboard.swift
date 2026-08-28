@@ -194,7 +194,10 @@ struct SceneSettingsClipboardDocument: Codable, Equatable, Sendable {
     }
 
     var containsAnimation: Bool {
-        includedBlocks.contains(.cameraTransform) && snapshot.tracking != nil
+        (includedBlocks.contains(.cameraTransform) && (
+            snapshot.tracking != nil || snapshot.fusionTrackerMotion?.target == .camera
+        )) || (includedBlocks.contains(.deviceTransform)
+            && snapshot.fusionTrackerMotion?.target == .device)
     }
 }
 
@@ -288,6 +291,16 @@ extension SavedSceneSnapshot {
             environmentCalibration: blocks.contains(.environment)
                 ? source.authoring.environmentCalibration : authoring.environmentCalibration
         )
+        var mergedFusionTrackerMotion = fusionTrackerMotion
+        for (block, target) in [
+            (SceneSettingsBlock.cameraTransform, FusionTrackerTarget.camera),
+            (.deviceTransform, .device),
+        ] where blocks.contains(block) {
+            if mergedFusionTrackerMotion?.target == target { mergedFusionTrackerMotion = nil }
+            if source.fusionTrackerMotion?.target == target {
+                mergedFusionTrackerMotion = source.fusionTrackerMotion
+            }
+        }
         let result = SavedSceneSnapshot(
             source: self.source,
             currentFrame: currentFrame,
@@ -298,7 +311,8 @@ extension SavedSceneSnapshot {
             authoring: mergedAuthoring,
             generatedEnvironment: blocks.contains(.environment)
                 ? source.generatedEnvironment : generatedEnvironment,
-            tracking: blocks.contains(.cameraTransform) ? source.tracking : tracking
+            tracking: blocks.contains(.cameraTransform) ? source.tracking : tracking,
+            fusionTrackerMotion: mergedFusionTrackerMotion
         )
         try result.validate()
         return result

@@ -219,7 +219,6 @@ struct ContentView: View {
     @ObservedObject var model: WorkspaceModel
     @StateObject private var library = GlobalLibraryController()
     @StateObject private var scenes = SceneLibraryController()
-    @StateObject private var referenceMatchPanel = ReferenceMatchPanelController()
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
     @StateObject private var environmentReflectionFramingPanel = EnvironmentReflectionFramingPanelController()
     @StateObject private var trackingScenePanel = TrackingScenePanelController()
@@ -2006,7 +2005,7 @@ struct ContentView: View {
                 .disabled(page != .scene)
                 .help("Abrir un vídeo o una imagen")
             Button {
-                trackingScenePanel.toggle(model: model)
+                trackingScenePanel.toggle(model: model, undoManager: undoManager)
             } label: {
                 Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
             }
@@ -2039,7 +2038,7 @@ struct ContentView: View {
                 }
                 .disabled(scenes.blockedError != nil)
                 Button {
-                    trackingScenePanel.toggle(model: model)
+                    trackingScenePanel.toggle(model: model, undoManager: undoManager)
                 } label: {
                     Label("Tracking 3D", systemImage: "point.3.connected.trianglepath.dotted")
                 }
@@ -3761,7 +3760,7 @@ struct ContentView: View {
                         Button("Seleccionar imagen o vídeo…", action: model.browseReferenceFrame)
                         if model.referenceFrameName != nil {
                             Button("Quitar", role: .destructive) {
-                                referenceMatchPanel.hide(model: model)
+                                model.setReferenceMatchEnabled(false)
                                 model.removeReferenceFrame()
                             }
                         }
@@ -3857,15 +3856,23 @@ struct ContentView: View {
                     }
                     originRow("Match") {
                         Button {
-                            referenceMatchPanel.toggle(model: model, undoManager: undoManager)
+                            trackingScenePanel.toggle(
+                                model: model,
+                                undoManager: undoManager,
+                                method: .deviceCorners
+                            )
                         } label: {
                             Label(
-                                referenceMatchPanel.isVisible ? "Ocultar Match" : "Abrir Match",
-                                systemImage: referenceMatchPanel.isVisible
+                                trackingScenePanel.isVisible && model.trackingSceneMethod == .deviceCorners
+                                    ? "Ocultar Match" : "Abrir Match",
+                                systemImage: trackingScenePanel.isVisible && model.trackingSceneMethod == .deviceCorners
                                     ? "viewfinder.circle.fill" : "viewfinder.circle"
                             )
                         }
-                        .nativeActionState(.init(active: referenceMatchPanel.isVisible))
+                        .nativeActionState(.init(
+                            active: trackingScenePanel.isVisible
+                                && model.trackingSceneMethod == .deviceCorners
+                        ))
                     }
                 }
             }
@@ -4043,7 +4050,7 @@ struct ContentView: View {
                     )
                     if model.physicalModel.quality == .environmentSetup {
                         Button {
-                            referenceMatchPanel.hide(model: model)
+                            model.setReferenceMatchEnabled(false)
                             environmentReflectionFramingPanel.hide(model: model)
                             reflectionEnvironmentPanel.toggle(model: model)
                         } label: {
@@ -4054,7 +4061,7 @@ struct ContentView: View {
                         .help(reflectionEnvironmentPanel.isVisible
                             ? "Ocultar creación de reflejos" : "Crear reflejos")
                         Button {
-                            referenceMatchPanel.hide(model: model)
+                            model.setReferenceMatchEnabled(false)
                             reflectionEnvironmentPanel.hide(model: model)
                             environmentReflectionFramingPanel.toggle(model: model)
                         } label: {

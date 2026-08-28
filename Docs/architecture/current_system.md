@@ -17,7 +17,7 @@ Application owns every phase boundary as a `PhysicalArtifactId`: the typed ident
 
 Approximate-2D Motion Blur derives projected velocity from exact rational neighbor times around the output frame. Times before the first frame or after the last frame reach the canonical terminal camera and Device extrapolation instead of requesting an invalid negative frame identity or clamping continuous scene motion.
 
-In the v23 Saved Scene and Queue contracts below, “tracks” means only the separately typed embedded 3D animation record. v23 does not contain or claim a generic parameter-track collection; adding one requires a new owner-published typed contract, schema revision, exact-time evaluator and validation together.
+In the v24 Saved Scene and v11 Queue contracts below, “tracks” means the separately typed embedded imported-3D record and the separately typed materialized Fusion Tracker pose record. Neither contract contains or claims a generic parameter-track collection; adding one requires a new owner-published typed contract, schema revision, exact-time evaluator and validation together.
 
 The application consumes an explicitly interpreted animated raster and evaluates a physical fixed-pixel LCD through animated screen/camera geometry and phase-preserving photosite-footprint sampling. The FFmpeg adapter accepts the video and still-image formats enabled in the one shipped decoder configuration, including H.264 and ProRes. ProRes 4444 is a recommended high-quality production source, not an input restriction. OpenEXR sequences use the explicit OpenEXR adapter. No codec or container chooses color interpretation.
 

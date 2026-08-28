@@ -245,13 +245,21 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 24)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 25)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v24.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v25.json")
     let id = UUID()
+    let motion = try FusionTrackerPoseTrack(
+        target: .device, anchorFrame: 3,
+        frameRateNumerator: 24, frameRateDenominator: 1,
+        samples: [
+            .init(frame: 3, position: SIMD3(0, 0, 0), orientation: SIMD4(0, 0, 0, 1)),
+            .init(frame: 4, position: SIMD3(0.1, 0, 0), orientation: SIMD4(0, 0, 0, 1)),
+        ]
+    )
     let snapshot = SavedSceneSnapshot(
         source: .init(
             kind: .syntheticPattern,
@@ -264,7 +272,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
         viewerPanX: 12,
         viewerPanY: -8,
         viewerIsFitted: false,
-        authoring: try sceneAuthoring()
+        authoring: try sceneAuthoring(),
+        fusionTrackerMotion: motion
     )
     let scene = SavedScene(
         id: id,
@@ -276,7 +285,9 @@ private func sceneCapture() throws -> SavedSceneCapture {
     try store.writeThumbnail(Data([1, 2, 3]), for: scene)
     try store.save(document)
 
-    #expect(try store.load() == document)
+    let loaded = try store.load()
+    #expect(loaded == document)
+    #expect(loaded.scenes.first?.snapshot.fusionTrackerMotion == motion)
 }
 
 @MainActor

@@ -272,7 +272,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v23"
+    static let schema = "ScreenSimulation.SavedScene.v24"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -283,10 +283,11 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     let authoring: SceneAuthoringDocument
     let generatedEnvironment: SavedSceneAsset?
     let tracking: SavedTrackingScene?
+    let fusionTrackerMotion: FusionTrackerPoseTrack?
 
     private enum CodingKeys: String, CodingKey {
         case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
-        case viewerIsFitted, authoring, generatedEnvironment, tracking
+        case viewerIsFitted, authoring, generatedEnvironment, tracking, fusionTrackerMotion
     }
 
     init(
@@ -298,7 +299,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         viewerIsFitted: Bool,
         authoring: SceneAuthoringDocument,
         generatedEnvironment: SavedSceneAsset? = nil,
-        tracking: SavedTrackingScene? = nil
+        tracking: SavedTrackingScene? = nil,
+        fusionTrackerMotion: FusionTrackerPoseTrack? = nil
     ) {
         schema = Self.schema
         self.source = source
@@ -310,6 +312,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         self.authoring = authoring
         self.generatedEnvironment = generatedEnvironment
         self.tracking = tracking
+        self.fusionTrackerMotion = fusionTrackerMotion
     }
 
     init(from decoder: Decoder) throws {
@@ -326,6 +329,9 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             SavedSceneAsset.self, forKey: .generatedEnvironment
         )
         tracking = try values.decodeIfPresent(SavedTrackingScene.self, forKey: .tracking)
+        fusionTrackerMotion = try values.decodeIfPresent(
+            FusionTrackerPoseTrack.self, forKey: .fusionTrackerMotion
+        )
     }
 
     func encode(to encoder: Encoder) throws {
@@ -345,6 +351,11 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         }
         if let tracking { try values.encode(tracking, forKey: .tracking) }
         else { try values.encodeNil(forKey: .tracking) }
+        if let fusionTrackerMotion {
+            try values.encode(fusionTrackerMotion, forKey: .fusionTrackerMotion)
+        } else {
+            try values.encodeNil(forKey: .fusionTrackerMotion)
+        }
     }
 
     func validate() throws {
@@ -357,6 +368,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         try authoring.validate()
         try generatedEnvironment?.validate()
         try tracking?.validate()
+        try fusionTrackerMotion?.validate()
     }
 
     func replacingGeneratedEnvironment(
@@ -368,7 +380,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
                 viewerPanX: viewerPanX, viewerPanY: viewerPanY,
                 viewerIsFitted: viewerIsFitted, authoring: authoring,
                 generatedEnvironment: nil,
-                tracking: tracking
+                tracking: tracking, fusionTrackerMotion: fusionTrackerMotion
             )
         }
         guard let resolvedAbsolutePath = absolutePath
@@ -405,7 +417,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
                 context: context,
                 environmentCalibration: authoring.environmentCalibration
             ),
-            generatedEnvironment: asset, tracking: tracking
+            generatedEnvironment: asset, tracking: tracking,
+            fusionTrackerMotion: fusionTrackerMotion
         )
     }
 
@@ -414,7 +427,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted, authoring: authoring,
-            generatedEnvironment: generatedEnvironment, tracking: nil
+            generatedEnvironment: generatedEnvironment, tracking: nil,
+            fusionTrackerMotion: fusionTrackerMotion
         )
     }
 }
@@ -572,7 +586,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 24
+    static let currentSchemaVersion = 25
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -794,15 +808,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v24.json")
+        documentURL = directory.appendingPathComponent("Scenes.v25.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v23.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v24.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v23.json. Ejecuta la migración de mantenimiento v23→v24 antes de abrir la biblioteca."
+                    "Existe Scenes.v24.json. Ejecuta la migración de mantenimiento v24→v25 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -991,7 +1005,7 @@ struct SceneLibraryStore: Sendable {
                   Set(snapshot.keys) == [
                       "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
                       "viewerPanY", "viewerIsFitted", "authoring",
-                      "generatedEnvironment", "tracking",
+                      "generatedEnvironment", "tracking", "fusionTrackerMotion",
                   ],
                   let source = snapshot["source"] as? [String: Any],
                   Set(source.keys) == ["kind", "assets", "missingMedia"]
@@ -1112,6 +1126,19 @@ struct SceneLibraryStore: Sendable {
                             Set(calibration.keys) == [
                                 "unitValue", "unit", "metersPerSourceUnit",
                             ] else { return false }
+                      return true
+                  }()),
+                  (snapshot["fusionTrackerMotion"] == nil
+                    || snapshot["fusionTrackerMotion"] is NSNull || {
+                      guard let motion = snapshot["fusionTrackerMotion"] as? [String: Any],
+                            Set(motion.keys) == [
+                                "schema", "target", "anchorFrame", "frameRateNumerator",
+                                "frameRateDenominator", "samples",
+                            ],
+                            let samples = motion["samples"] as? [[String: Any]],
+                            samples.allSatisfy({ sample in
+                                Set(sample.keys) == ["frame", "position", "orientation"]
+                            }) else { return false }
                       return true
                   }())
             else { throw SceneLibraryError.invalidDocument("La escena contiene campos desconocidos.") }

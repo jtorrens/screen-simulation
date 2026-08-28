@@ -193,6 +193,28 @@
       ]
     },
     {
+      "id": "tracking.fusion-2d-offset",
+      "scope": "Fusion Tracker clipboard curves materialized as rigid camera or Device pose authoring",
+      "owner": {
+        "path": "Docs/architecture/camera_time_and_space.md",
+        "anchor": "Time"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionTrackerClipboard.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionTrackingScene.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RustSceneFrameResolver.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionTrackerClipboardTests.swift",
+        "scripts/migrate_scene_library_v24_to_v25.py",
+        "scripts/test_migrate_scene_library_v24_to_v25.py",
+        "scripts/migrate_render_queue_v10_to_v11.py",
+        "scripts/test_migrate_render_queue_v10_to_v11.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "time.terminal-extrapolation",
       "scope": "continuous and discrete tracks outside authored range",
       "owner": {
