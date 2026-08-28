@@ -12,7 +12,7 @@ enum RenderQueueStoreError: LocalizedError {
 }
 
 struct RenderQueueDocument: Codable {
-    static let schema = "ScreenSimulation.RenderQueue.v12"
+    static let schema = "ScreenSimulation.RenderQueue.v14"
 
     let schema: String
     let isPaused: Bool
@@ -41,6 +41,20 @@ struct RenderQueueDocument: Codable {
                   (0 ... 1).contains(job.progress),
                   !job.detail.isEmpty else {
                 throw RenderQueueStoreError.invalidDocument("Un trabajo persistido de Render Queue no es válido.")
+            }
+            if let timing = job.terminalTiming {
+                guard job.state.isTerminal,
+                      timing.totalSeconds.isFinite, timing.totalSeconds >= 0,
+                      timing.averageCompletedFrameSeconds.map({ $0.isFinite && $0 >= 0 }) ?? true
+                else {
+                    throw RenderQueueStoreError.invalidDocument(
+                        "Los tiempos finales de Render Queue no son válidos."
+                    )
+                }
+            } else if job.state.isTerminal {
+                throw RenderQueueStoreError.invalidDocument(
+                    "Un trabajo terminal de Render Queue no contiene sus tiempos finales."
+                )
             }
             let expectedKind: RenderOutputPlan.Kind
             if job.configuration.fusionScene != nil {
@@ -78,15 +92,15 @@ struct RenderQueueStore: Sendable {
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
-        documentURL = directory.appendingPathComponent("RenderQueue.v12.json")
+        documentURL = directory.appendingPathComponent("RenderQueue.v14.json")
     }
 
     func load() throws -> RenderQueueDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("RenderQueue.v11.json")
+            let prior = directoryURL.appendingPathComponent("RenderQueue.v13.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw RenderQueueStoreError.invalidDocument(
-                    "Existe RenderQueue.v11.json. Ejecuta la migración de mantenimiento v11→v12 antes de abrirla."
+                    "Existe RenderQueue.v13.json. Elimina la cola histórica antes de abrir el contrato v14."
                 )
             }
             return RenderQueueDocument()
@@ -113,19 +127,28 @@ struct RenderQueueStore: Sendable {
         }
         let expectedJobKeys: Set<String> = [
             "id", "derivedFromJobID", "scene", "generatedEnvironmentEXR", "outputPlan", "configuration",
-            "state", "progress", "detail",
+            "state", "progress", "detail", "terminalTiming",
         ]
-        let keysWithoutEnvironment = expectedJobKeys.subtracting(["generatedEnvironmentEXR"])
-        let keysWithoutDerived = expectedJobKeys.subtracting(["derivedFromJobID"])
-        let keysWithoutOptional = expectedJobKeys.subtracting([
-            "generatedEnvironmentEXR", "derivedFromJobID",
+        let requiredJobKeys = expectedJobKeys.subtracting([
+            "generatedEnvironmentEXR", "derivedFromJobID", "terminalTiming",
         ])
         guard jobs.allSatisfy({
             let keys = Set($0.keys)
-            return keys == expectedJobKeys || keys == keysWithoutEnvironment
-                || keys == keysWithoutDerived || keys == keysWithoutOptional
+            return requiredJobKeys.isSubset(of: keys) && keys.isSubset(of: expectedJobKeys)
         }) else {
             throw RenderQueueStoreError.invalidDocument("Un trabajo de Render Queue contiene campos desconocidos.")
+        }
+        guard jobs.allSatisfy({ job in
+            guard let timing = job["terminalTiming"] else { return true }
+            guard let object = timing as? [String: Any] else { return false }
+            let required: Set<String> = ["totalSeconds"]
+            let allowed: Set<String> = ["totalSeconds", "averageCompletedFrameSeconds"]
+            let keys = Set(object.keys)
+            return required.isSubset(of: keys) && keys.isSubset(of: allowed)
+        }) else {
+            throw RenderQueueStoreError.invalidDocument(
+                "Los tiempos finales de Render Queue contienen campos desconocidos."
+            )
         }
         let requiredConfigurationKeys: Set<String> = [
             "renderMode", "jobName", "versionSuffix", "overwritePolicy", "composition",

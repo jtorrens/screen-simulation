@@ -213,7 +213,7 @@ import Testing
             dofMode: .disabled, resolutionMode: .nativeDevice,
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 0
-        ), composition: .deviceAndSpillSeparate,
+        ), composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 2, raster: .init(width: 1920, height: 1080, placementID: "fit"), format: .tiff16,
         pipeline: .aces, target: .sdr, peakNits: 100,

@@ -6,6 +6,13 @@ final class NativeOutputQueueController: ObservableObject {
     struct RenderTiming: Equatable, Sendable {
         let elapsedSeconds: TimeInterval
         let approximateRemainingSeconds: TimeInterval?
+        let lastCompletedFrameSeconds: TimeInterval?
+        let averageCompletedFrameSeconds: TimeInterval?
+    }
+
+    struct TerminalTiming: Codable, Equatable, Sendable {
+        let totalSeconds: TimeInterval
+        let averageCompletedFrameSeconds: TimeInterval?
     }
 
     struct RenderJob: Codable, Identifiable {
@@ -29,12 +36,14 @@ final class NativeOutputQueueController: ObservableObject {
         var state: State = .pending
         var progress = 0.0
         var detail = "Pendiente"
+        var terminalTiming: TerminalTiming?
 
         init(
             id: UUID = UUID(), derivedFromJobID: UUID? = nil,
             scene: SavedScene, generatedEnvironmentEXR: Data?,
             outputPlan: RenderOutputPlan, configuration: StudioResolvedRenderConfiguration,
-            state: State = .pending, progress: Double = 0, detail: String = "Pendiente"
+            state: State = .pending, progress: Double = 0, detail: String = "Pendiente",
+            terminalTiming: TerminalTiming? = nil
         ) {
             self.id = id
             self.derivedFromJobID = derivedFromJobID
@@ -45,6 +54,7 @@ final class NativeOutputQueueController: ObservableObject {
             self.state = state
             self.progress = progress
             self.detail = detail
+            self.terminalTiming = terminalTiming
         }
     }
 
@@ -65,6 +75,8 @@ final class NativeOutputQueueController: ObservableObject {
     private var activeTask: Task<Void, Never>?
     private var timingTask: Task<Void, Never>?
     private var activeStartedAt: ContinuousClock.Instant?
+    private var activePreviousFrameAt: ContinuousClock.Instant?
+    private var activeLastFrameSeconds: TimeInterval?
     private var activeCompletedFrames = 0
     private var activeTotalFrames = 0
 
@@ -80,7 +92,7 @@ final class NativeOutputQueueController: ObservableObject {
                 generatedEnvironmentEXR: job.generatedEnvironmentEXR,
                 outputPlan: job.outputPlan, configuration: job.configuration,
                 state: .pending, progress: 0,
-                detail: "Interrumpido al cerrar la aplicación"
+                detail: "Interrumpido al cerrar la aplicación", terminalTiming: nil
             )
         }
         isPaused = document.isPaused
@@ -136,7 +148,7 @@ final class NativeOutputQueueController: ObservableObject {
                         overwritePolicy
                     ),
                     state: pending.state, progress: pending.progress,
-                    detail: pending.detail
+                    detail: pending.detail, terminalTiming: pending.terminalTiming
                 )
                 persist()
             }
@@ -160,32 +172,42 @@ final class NativeOutputQueueController: ObservableObject {
                     else { return }
                     self.jobs[live].progress = min(1, max(0, Double(completed) / Double(total)))
                     self.jobs[live].detail = "\(completed) / \(total)"
+                    let now = ContinuousClock.now
+                    if let previous = self.activePreviousFrameAt {
+                        self.activeLastFrameSeconds = previous.duration(to: now).secondsMagnitude
+                    }
+                    self.activePreviousFrameAt = now
                     self.activeCompletedFrames = completed
                     self.activeTotalFrames = total
                     self.publishTiming(jobID: job.id)
                     self.persist()
                 }
+                let terminalTiming = endTiming(jobID: job.id)
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .completed
                     jobs[live].progress = 1
                     jobs[live].detail = url.lastPathComponent
+                    jobs[live].terminalTiming = terminalTiming
                     persist()
                 }
             } catch is CancellationError {
+                let terminalTiming = endTiming(jobID: job.id)
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .cancelled
                     jobs[live].detail = "Cancelado"
+                    jobs[live].terminalTiming = terminalTiming
                     persist()
                 }
             } catch {
+                let terminalTiming = endTiming(jobID: job.id)
                 if let live = jobs.firstIndex(where: { $0.id == job.id }) {
                     jobs[live].state = .failed
                     jobs[live].detail = error.localizedDescription
+                    jobs[live].terminalTiming = terminalTiming
                     persist()
                 }
                 onFailure(error.localizedDescription)
             }
-            endTiming(jobID: job.id)
             activeTask = nil
             run(preflight: preflight, operation: operation, onFailure: onFailure)
         }
@@ -239,6 +261,8 @@ final class NativeOutputQueueController: ObservableObject {
     private func beginTiming(jobID: UUID) {
         timingTask?.cancel()
         activeStartedAt = .now
+        activePreviousFrameAt = activeStartedAt
+        activeLastFrameSeconds = nil
         activeCompletedFrames = 0
         activeTotalFrames = 0
         publishTiming(jobID: jobID)
@@ -263,15 +287,28 @@ final class NativeOutputQueueController: ObservableObject {
         }
         activeTiming[jobID] = RenderTiming(
             elapsedSeconds: elapsed,
-            approximateRemainingSeconds: remaining
+            approximateRemainingSeconds: remaining,
+            lastCompletedFrameSeconds: activeLastFrameSeconds,
+            averageCompletedFrameSeconds: activeCompletedFrames > 0
+                ? elapsed / Double(activeCompletedFrames) : nil
         )
     }
 
-    private func endTiming(jobID: UUID) {
+    private func endTiming(jobID: UUID) -> TerminalTiming? {
+        guard let activeStartedAt else { return nil }
+        let elapsed = max(0, activeStartedAt.duration(to: .now).secondsMagnitude)
+        let result = TerminalTiming(
+            totalSeconds: elapsed,
+            averageCompletedFrameSeconds: activeCompletedFrames > 0
+                ? elapsed / Double(activeCompletedFrames) : nil
+        )
         timingTask?.cancel()
         timingTask = nil
-        activeStartedAt = nil
+        self.activeStartedAt = nil
+        activePreviousFrameAt = nil
+        activeLastFrameSeconds = nil
         activeTiming.removeValue(forKey: jobID)
+        return result
     }
 }
 

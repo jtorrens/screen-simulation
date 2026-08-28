@@ -338,7 +338,7 @@
     },
     {
       "id": "output.fusion-scene-package",
-      "scope": "optional Final separate Fusion Composition package generation and composition contract",
+      "scope": "optional Final single-Device Fusion Composition package generation and composition contract",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Product boundary"
@@ -465,6 +465,21 @@
         "scripts/test_migrate_render_queue_v3_to_v4.py",
         "scripts/migrate_render_queue_v4_to_v5.py",
         "scripts/test_migrate_render_queue_v4_to_v5.py"
+      ]
+    },
+    {
+      "id": "diagnostics.last-render-log",
+      "scope": "single overwritten active/last render diagnostic document and timing ownership",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "WIP Review and render derivation"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/LastRenderLog.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/LastRenderLogTests.swift",
+        "scripts/check_architecture.py"
       ]
     },
     {

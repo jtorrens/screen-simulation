@@ -4973,7 +4973,8 @@ final class WorkspaceModel: ObservableObject {
             outputAlphaMode = .straight
             if renderComposition == .deviceAndSpillSeparate { includeAudio = false }
             if includeFusionComposition {
-                renderComposition = .deviceAndSpillSeparate
+                renderComposition = .deviceAndSpillTogether
+                renderSpillDeliveryMode = .physicalLinear
                 includeAudio = false
                 renderMotionBlurMode = .disabled
             }
@@ -5268,39 +5269,57 @@ final class WorkspaceModel: ObservableObject {
                     ? .replaceGeneratedFiles : nil
             },
             operation: { job, progress in
-                let executor = WorkspaceModel()
-                let materialized = try executor.materializeQueuedScene(
-                    job.scene,
-                    generatedEnvironmentEXR: job.generatedEnvironmentEXR
-                )
-                defer { materialized.cleanup() }
-                try await executor.prepareQueuedScene(materialized.scene)
-                if job.configuration.fusionScene == nil {
-                    return try await NativeOutputRenderer.render(
-                        configuration: job.configuration,
-                        outputPlan: job.outputPlan,
-                        audioSource: executor.session.sourceURL,
-                        display: executor.metalDisplay,
-                        frameProvider: { frame in
-                            try await executor.renderQueuedSceneFrame(
-                                frame, configuration: job.configuration
-                            )
-                        },
-                        progress: progress
+                let log = try LastRenderLogRecorder(job: job)
+                let loggedProgress: NativeOutputQueueController.Progress = { completed, total in
+                    log.recordProgress(completed: completed, total: total)
+                    progress(completed, total)
+                }
+                do {
+                    let executor = WorkspaceModel()
+                    let materialized = try executor.materializeQueuedScene(
+                        job.scene,
+                        generatedEnvironmentEXR: job.generatedEnvironmentEXR
                     )
-                } else {
-                    let package = try executor.makeFusionPackageRequest(job: job)
-                    return try await FusionScenePackageWriter.render(
-                        request: package.request,
-                        display: executor.metalDisplay,
-                        frameProvider: { frame in
-                            try await executor.renderFusionPhysicalFrame(
-                                frame, request: package.request,
-                                sourceOverscan: package.sourceOverscan
-                            )
-                        },
-                        progress: progress
-                    )
+                    defer { materialized.cleanup() }
+                    try await executor.prepareQueuedScene(materialized.scene)
+                    let url: URL
+                    if job.configuration.fusionScene == nil {
+                        url = try await NativeOutputRenderer.render(
+                            configuration: job.configuration,
+                            outputPlan: job.outputPlan,
+                            audioSource: executor.session.sourceURL,
+                            display: executor.metalDisplay,
+                            frameProvider: { frame in
+                                try await executor.renderQueuedSceneFrame(
+                                    frame, configuration: job.configuration
+                                )
+                            },
+                            progress: loggedProgress
+                        )
+                    } else {
+                        let package = try executor.makeFusionPackageRequest(job: job)
+                        url = try await FusionScenePackageWriter.render(
+                            request: package.request,
+                            display: executor.metalDisplay,
+                            frameProvider: { frame in
+                                try await executor.renderFusionPhysicalFrame(
+                                    frame, request: package.request,
+                                    sourceOverscan: package.sourceOverscan
+                                )
+                            },
+                            progress: loggedProgress,
+                            diagnostics: { log.record($0) }
+                        )
+                    }
+                    try await log.finish(.completed)
+                    return url
+                } catch let cancellation as CancellationError {
+                    try await log.finish(.cancelled)
+                    throw cancellation
+                } catch {
+                    let renderError = error
+                    try await log.finish(.failed, failure: renderError.localizedDescription)
+                    throw renderError
                 }
             },
             onFailure: { [weak self] message in self?.errorMessage = message }
@@ -5777,13 +5796,16 @@ final class WorkspaceModel: ObservableObject {
         sourceOverscan: Int
     ) async throws -> FusionRawPhysicalFrame {
         currentFrame = frameIndex
+        let sourceStarted = ContinuousClock.now
         let source = try await renderFrame(frameIndex)
+        let sourceFinished = ContinuousClock.now
         sourceACEScgFrame = source
         physicalModel.invalidateExternalParameters()
         let active = request.activeRaster
         let width = active.activeWidth + sourceOverscan * 2
         let height = active.activeHeight + sourceOverscan * 2
         let dimensions = try PhysicalDimensions(width: width, height: height)
+        let physicalStarted = ContinuousClock.now
         let submission = try await submitPhysicalJob(
             quality: .high,
             temporalSamplesOverride: 1,
@@ -5815,67 +5837,36 @@ final class WorkspaceModel: ObservableObject {
                     snapshot.diagnostics.last?.message ?? "Falló Device VFX Transparency."
                 )
             case .complete:
+                let physicalFinished = ContinuousClock.now
                 guard snapshot.returnedIntermediate == .deviceVfxTransparency,
                       let output = snapshot.frame,
-                      output.width == width, output.height == height,
-                      let deviceDefinition = resolvedDevice?.definition else {
+                      output.width == width, output.height == height else {
                     throw PhysicalMetalFrameEngineError.invalidSnapshot
                 }
                 let activeRect = FusionRasterRect(
                     x: sourceOverscan, y: sourceOverscan,
                     width: active.activeWidth, height: active.activeHeight
                 )
-                let passes = try publishFusionPasses(
-                    from: metalDisplay.readLinearRGBA(output),
-                    width: width,
-                    height: height,
-                    activeRect: activeRect,
-                    cornerRadiusPixels: Float(
-                        deviceDefinition.cornerRadiusMeters * Double(active.activeWidth)
-                            / deviceDefinition.activeWidthMeters
-                    )
-                )
+                let readbackStarted = ContinuousClock.now
+                let physicalRGBA = try metalDisplay.readLinearRGBA(output)
+                let readbackFinished = ContinuousClock.now
+                guard physicalRGBA.count == width * height * 4,
+                      physicalRGBA.allSatisfy(\.isFinite) else {
+                    throw PhysicalMetalFrameEngineError.invalidSnapshot
+                }
                 return FusionRawPhysicalFrame(
                     width: width, height: height,
                     activeRect: activeRect,
-                    deviceRGBA: passes.device,
-                    spillRGBA: passes.spill
+                    deviceRGBA: physicalRGBA,
+                    physicalTiming: .resolve(
+                        sourcePreparationSeconds: sourceStarted.duration(to: sourceFinished).seconds,
+                        physicalEvaluationSeconds: physicalStarted.duration(to: physicalFinished).seconds,
+                        gpuReadbackSeconds: readbackStarted.duration(to: readbackFinished).seconds,
+                        diagnostics: snapshot.diagnostics
+                    )
                 )
             }
         }
-    }
-
-    private func publishFusionPasses(
-        from physical: [Float],
-        width: Int,
-        height: Int,
-        activeRect: FusionRasterRect,
-        cornerRadiusPixels: Float
-    ) throws -> (device: [Float], spill: [Float]) {
-        var device = [Float](repeating: 0, count: physical.count)
-        var spill = [Float](repeating: 0, count: physical.count)
-        var error: UnsafePointer<CChar>?
-        let accepted = physical.withUnsafeBufferPointer { input in
-            device.withUnsafeMutableBufferPointer { deviceOutput in
-                spill.withUnsafeMutableBufferPointer { spillOutput in
-                    screen_device_vfx_passes_rgba32f(
-                        input.baseAddress,
-                        UInt32(width), UInt32(height),
-                        UInt32(activeRect.x), UInt32(activeRect.y),
-                        UInt32(activeRect.width), UInt32(activeRect.height),
-                        cornerRadiusPixels,
-                        deviceOutput.baseAddress, spillOutput.baseAddress,
-                        &error
-                    )
-                }
-            }
-        }
-        guard accepted else {
-            throw PhysicalMetalFrameEngineError.bridge(
-                error.map(String.init(cString:)) ?? "No se publicaron Device y Spill."
-            )
-        }
-        return (device, spill)
     }
 
     func cancelRender() {

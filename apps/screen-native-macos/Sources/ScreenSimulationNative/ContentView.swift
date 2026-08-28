@@ -3245,14 +3245,14 @@ struct ContentView: View {
                                 Text(mode.label).tag(mode)
                             }
                         }
-                        Toggle("Incluir composición Fusion", isOn: Binding(
+                    }
+                    Toggle("Incluir composición Fusion · Device único", isOn: Binding(
                             get: { model.includeFusionComposition },
                             set: {
                                 model.includeFusionComposition = $0
                                 model.ensureRenderOptionsCompatible()
                             }
                         ))
-                    }
                     } else {
                         Picker("WIP Review", selection: Binding(
                             get: { model.renderWIPReviewPreset },
@@ -3289,7 +3289,7 @@ struct ContentView: View {
                             TextField("px", value: $model.fusionSpillFadeWidthPixels, format: .number)
                                 .frame(width: 90)
                         }
-                        Text("Device y Spill usan el mismo preset de color y formato. El espacio de color y el formato se eligen de forma independiente; la comp aplica el nodo nativo exacto hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
+                        Text("Fusion recibe un único Device con RGB físico completo y alpha de oclusión independiente. La comp aplica el nodo nativo exacto hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -3903,6 +3903,10 @@ struct ContentView: View {
                         Text(renderTimingLabel(timing))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
+                    } else if let timing = job.terminalTiming {
+                        Text(terminalRenderTimingLabel(timing))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -3968,10 +3972,26 @@ struct ContentView: View {
         _ timing: NativeOutputQueueController.RenderTiming
     ) -> String {
         let elapsed = queueDuration(timing.elapsedSeconds)
-        guard let remaining = timing.approximateRemainingSeconds else {
-            return "Transcurrido \(elapsed) · Restante aprox. calculando…"
+        let frame = timing.lastCompletedFrameSeconds.map {
+            "Frame \(queueDuration($0))"
+        } ?? "Frame calculando…"
+        let average = timing.averageCompletedFrameSeconds.map {
+            "Media/frame \(queueDuration($0))"
+        } ?? "Media/frame calculando…"
+        let remaining = timing.approximateRemainingSeconds.map {
+            "Restante aprox. \(queueDuration($0))"
+        } ?? "Restante aprox. calculando…"
+        return "Transcurrido \(elapsed) · \(frame) · \(average) · \(remaining)"
+    }
+
+    private func terminalRenderTimingLabel(
+        _ timing: NativeOutputQueueController.TerminalTiming
+    ) -> String {
+        let total = queueDuration(timing.totalSeconds)
+        guard let average = timing.averageCompletedFrameSeconds else {
+            return "Total \(total) · Media/frame no disponible"
         }
-        return "Transcurrido \(elapsed) · Restante aprox. \(queueDuration(remaining))"
+        return "Total \(total) · Media/frame \(queueDuration(average))"
     }
 
     private func queueDuration(_ seconds: TimeInterval) -> String {

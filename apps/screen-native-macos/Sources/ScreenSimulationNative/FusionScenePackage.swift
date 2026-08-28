@@ -47,15 +47,25 @@ struct FusionRawPhysicalFrame: Equatable, Sendable {
     let width: Int
     let height: Int
     let activeRect: FusionRasterRect
-    /// Surface contribution with the complete physical Device occlusion matte embedded in alpha.
+    /// Complete physical Device RGB, including additive exterior light, with the independent
+    /// physical occlusion matte embedded in alpha. RGB is deliberately unassociated.
     let deviceRGBA: [Float]
-    /// Additive exterior contribution over black. Alpha is opaque and has no matte meaning.
-    let spillRGBA: [Float]
+    let physicalTiming: FusionPhysicalTiming?
+
+    init(
+        width: Int, height: Int, activeRect: FusionRasterRect,
+        deviceRGBA: [Float], physicalTiming: FusionPhysicalTiming? = nil
+    ) {
+        self.width = width
+        self.height = height
+        self.activeRect = activeRect
+        self.deviceRGBA = deviceRGBA
+        self.physicalTiming = physicalTiming
+    }
 
     func validate() throws {
         guard width > 0, height > 0,
-              deviceRGBA.count == width * height * 4,
-              spillRGBA.count == width * height * 4 else {
+              deviceRGBA.count == width * height * 4 else {
             throw FusionScenePackageError.invalidRaster
         }
         guard activeRect.width > 0, activeRect.height > 0,
@@ -64,7 +74,7 @@ struct FusionRawPhysicalFrame: Equatable, Sendable {
               activeRect.y + activeRect.height <= height else {
             throw FusionScenePackageError.activeRectOutsideRaster
         }
-        guard deviceRGBA.allSatisfy(\.isFinite), spillRGBA.allSatisfy(\.isFinite) else {
+        guard deviceRGBA.allSatisfy(\.isFinite) else {
             throw FusionScenePackageError.nonFinitePixel
         }
     }
@@ -77,10 +87,9 @@ struct FusionPreparedPhysicalFrame: Equatable, Sendable {
     let uniformPaddingPixels: Int
     let thresholdSupportPixels: Int
     let deviceRGBA: [Float]
-    let spillRGBA: [Float]
 }
 
-enum FusionSpillSupport {
+enum FusionDeviceSupport {
     // AP1/ACEScg RGB to CIE Y coefficients in the ACES D60 basis.
     static let luminance = SIMD3<Float>(0.272_228_72, 0.674_081_74, 0.053_689_52)
 
@@ -98,8 +107,8 @@ enum FusionSpillSupport {
             for x in 0 ..< source.width {
                 let offset = (y * source.width + x) * 4
                 let rgb = SIMD3<Float>(
-                    source.spillRGBA[offset], source.spillRGBA[offset + 1],
-                    source.spillRGBA[offset + 2]
+                    source.deviceRGBA[offset], source.deviceRGBA[offset + 1],
+                    source.deviceRGBA[offset + 2]
                 )
                 let yScene = max(0, simd_dot(rgb, luminance))
                 let matte = source.deviceRGBA[offset + 3]
@@ -143,7 +152,6 @@ enum FusionSpillSupport {
             throw FusionScenePackageError.insufficientSpillSupport
         }
         var device = [Float](repeating: 0, count: outputWidth * outputHeight * 4)
-        var spill = [Float](repeating: 0, count: outputWidth * outputHeight * 4)
         for y in 0 ..< outputHeight {
             for x in 0 ..< outputWidth {
                 let sourceOffset = ((sourceOriginY + y) * source.width + sourceOriginX + x) * 4
@@ -161,14 +169,10 @@ enum FusionSpillSupport {
                     let clamped = min(1, max(0, t))
                     fade = 1 - clamped * clamped * (3 - 2 * clamped)
                 }
-                device[targetOffset] = source.deviceRGBA[sourceOffset]
-                device[targetOffset + 1] = source.deviceRGBA[sourceOffset + 1]
-                device[targetOffset + 2] = source.deviceRGBA[sourceOffset + 2]
+                device[targetOffset] = source.deviceRGBA[sourceOffset] * fade
+                device[targetOffset + 1] = source.deviceRGBA[sourceOffset + 1] * fade
+                device[targetOffset + 2] = source.deviceRGBA[sourceOffset + 2] * fade
                 device[targetOffset + 3] = source.deviceRGBA[sourceOffset + 3]
-                spill[targetOffset] = source.spillRGBA[sourceOffset] * fade
-                spill[targetOffset + 1] = source.spillRGBA[sourceOffset + 1] * fade
-                spill[targetOffset + 2] = source.spillRGBA[sourceOffset + 2] * fade
-                spill[targetOffset + 3] = 1
             }
         }
         return FusionPreparedPhysicalFrame(
@@ -179,8 +183,7 @@ enum FusionSpillSupport {
             ),
             uniformPaddingPixels: padding,
             thresholdSupportPixels: thresholdSupport,
-            deviceRGBA: device,
-            spillRGBA: spill
+            deviceRGBA: device
         )
     }
 }
@@ -518,7 +521,7 @@ struct FusionSceneMetadata: Codable, Equatable, Sendable {
         let deviceHeightMeters: Double
         let resolutionMode: StudioFusionResolutionMode
     }
-    struct Spill: Codable, Equatable, Sendable {
+    struct ExteriorSupport: Codable, Equatable, Sendable {
         let thresholdSceneLinear: Double
         let fadeWidthPixels: Int
         let thresholdSupportPixels: Int
@@ -551,7 +554,7 @@ struct FusionSceneMetadata: Codable, Equatable, Sendable {
     let alphaAssociation: String
     let physicalCompositeEquation: String
     let raster: Raster
-    let spill: Spill
+    let exteriorSupport: ExteriorSupport
     let dofMode: StudioFusionDOFMode
     let dofBakedInEXR: Bool
     let cameraCurvesExportedWhenBaked: Bool
@@ -564,7 +567,6 @@ struct FusionSceneMetadata: Codable, Equatable, Sendable {
     let mediaEncoding: String
     let mediaToACEScgTransform: String
     let deviceMediaPattern: String
-    let spillMediaPattern: String
     let fusionComp: String
 }
 
@@ -900,8 +902,7 @@ enum FusionScenePackageWriter {
             ),
             uniformPaddingPixels: request.sourceOverscanPixels,
             thresholdSupportPixels: thresholdSupport,
-            deviceRGBA: [],
-            spillRGBA: []
+            deviceRGBA: []
         )
         return try resolvedClipboardPaths(
             in: fusionComp(request: request, prepared: prepared),
@@ -935,12 +936,14 @@ enum FusionScenePackageWriter {
 
     typealias FrameProvider = (Int) async throws -> FusionRawPhysicalFrame
     typealias Progress = (Int, Int) -> Void
+    typealias Diagnostics = (RenderFramePhaseBreakdown) -> Void
 
     static func render(
         request: FusionScenePackageRequest,
         display: StudioColorMetalDisplay? = nil,
         frameProvider: FrameProvider,
-        progress: Progress
+        progress: Progress,
+        diagnostics: Diagnostics? = nil
     ) async throws -> URL {
         try request.validate()
         let configuration = request.configuration
@@ -948,8 +951,6 @@ enum FusionScenePackageWriter {
         try request.outputPlan.prepareDirectories()
         var firstPrepared: FusionPreparedPhysicalFrame?
         var deviceMovie: MovieWriter?
-        var spillMovie: MovieWriter?
-        var editorialEncodedBlack: SIMD3<Float>?
         let frames = Array(configuration.frameRange)
         let fixedThresholdSupport = request.sourceOverscanPixels
             - options.spillFadeWidthPixels
@@ -958,12 +959,16 @@ enum FusionScenePackageWriter {
         }
         for (position, frame) in frames.enumerated() {
             try Task.checkCancellation()
-            let prepared = try FusionSpillSupport.prepare(
-                try await frameProvider(frame),
+            let frameStarted = ContinuousClock.now
+            let raw = try await frameProvider(frame)
+            let supportStarted = ContinuousClock.now
+            let prepared = try FusionDeviceSupport.prepare(
+                raw,
                 thresholdSceneLinear: options.spillThresholdSceneLinear,
                 fadeWidthPixels: options.spillFadeWidthPixels,
                 fixedThresholdSupportPixels: fixedThresholdSupport
             )
+            let supportFinished = ContinuousClock.now
             guard prepared.activeRect.width == request.activeRaster.activeWidth,
                   prepared.activeRect.height == request.activeRaster.activeHeight else {
                 throw FusionScenePackageError.invalidRaster
@@ -978,50 +983,33 @@ enum FusionScenePackageWriter {
             } else {
                 firstPrepared = prepared
             }
-            let manifestOffset = configuration.format.isMovie ? 0 : position * 2
-            guard request.outputPlan.generatedRelativePaths.indices.contains(manifestOffset + 1) else {
+            let manifestOffset = configuration.format.isMovie ? 0 : position
+            guard request.outputPlan.generatedRelativePaths.indices.contains(manifestOffset) else {
                 throw FusionScenePackageError.invalidOutputManifest
             }
             let deviceRelative = request.outputPlan.generatedRelativePaths[manifestOffset]
-            let spillRelative = request.outputPlan.generatedRelativePaths[manifestOffset + 1]
             let deviceURL = request.outputPlan.destination.appendingPathComponent(deviceRelative)
-            let spillURL = request.outputPlan.destination.appendingPathComponent(spillRelative)
             if !configuration.format.isMovie {
                 try request.outputPlan.authorizeWrite(
                     to: deviceURL, policy: configuration.overwritePolicy
                 )
-                try request.outputPlan.authorizeWrite(
-                    to: spillURL, policy: configuration.overwritePolicy
-                )
             }
+            let mediaStarted = ContinuousClock.now
             if configuration.format.isMovie {
                 guard let display else {
                     throw NativeOutputError.unsupported("Fusion movie requiere el writer Metal")
                 }
                 let output = try requiredOutputTransform(configuration)
-                let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
-                let deviceFrame = editorialAdd
-                    ? try display.makeIndependentLinearACEScgFrame(
-                        width: prepared.width, height: prepared.height,
-                        rgba: prepared.deviceRGBA
-                    )
-                    : try makeACEScgFrame(
-                        prepared.deviceRGBA, width: prepared.width, height: prepared.height,
-                        display: display
-                    )
-                let spillFrame = editorialAdd ? nil : try makeACEScgFrame(
-                    prepared.spillRGBA, width: prepared.width, height: prepared.height,
-                    display: display
+                let deviceFrame = try display.makeIndependentLinearACEScgFrame(
+                    width: prepared.width, height: prepared.height,
+                    rgba: prepared.deviceRGBA
                 )
                 if deviceMovie == nil {
                     try request.outputPlan.authorizeWrite(
                         to: deviceURL, policy: configuration.overwritePolicy
                     )
-                    try request.outputPlan.authorizeWrite(
-                        to: spillURL, policy: configuration.overwritePolicy
-                    )
-                    for url in [deviceURL, spillURL] where FileManager.default.fileExists(atPath: url.path) {
-                        try FileManager.default.removeItem(at: url)
+                    if FileManager.default.fileExists(atPath: deviceURL.path) {
+                        try FileManager.default.removeItem(at: deviceURL)
                     }
                     deviceMovie = try MovieWriter(
                         url: deviceURL, width: prepared.width, height: prepared.height,
@@ -1029,106 +1017,60 @@ enum FusionScenePackageWriter {
                         pixelEncoding: configuration.pixelEncoding,
                         peakNits: configuration.peakNits, signalRange: configuration.signalRange,
                         alpha: .straight, output: output,
-                        preservesIndependentRGB: editorialAdd
-                    )
-                    spillMovie = try MovieWriter(
-                        url: spillURL, width: prepared.width, height: prepared.height,
-                        frameRate: configuration.frameRate, format: configuration.format,
-                        pixelEncoding: configuration.pixelEncoding,
-                        peakNits: configuration.peakNits, signalRange: configuration.signalRange,
-                        alpha: editorialAdd ? .straight : .ignore, output: output
+                        preservesIndependentRGB: true
                     )
                 }
                 try await deviceMovie!.append(
                     frame: deviceFrame, presentationFrame: position,
                     display: display, output: output
                 )
-                if editorialAdd {
-                    if editorialEncodedBlack == nil {
-                        let blackFrame = try display.makeIndependentLinearACEScgFrame(
-                            width: 1, height: 1, rgba: [0, 0, 0, 1]
-                        )
-                        let encodedBlack = try display.renderIndependentRGBAFloat(
-                            blackFrame, output: output, alpha: .ignore
-                        )
-                        editorialEncodedBlack = SIMD3(
-                            encodedBlack[0], encodedBlack[1], encodedBlack[2]
-                        )
-                    }
-                    let encodedCarrier = try display.renderIndependentRGBAFloat(
-                        deviceFrame, output: output, alpha: .straight
-                    )
-                    let encodedSpill = try NativeOutputRenderer.editorialEncodedAddSpill(
-                        encodedCarrier: encodedCarrier,
-                        encodedBlack: editorialEncodedBlack!
-                    )
-                    try await spillMovie!.appendEncodedRGBA(
-                        encodedSpill, presentationFrame: position
-                    )
-                } else {
-                    try await spillMovie!.append(
-                        frame: spillFrame!, presentationFrame: position,
-                        display: display, output: output
-                    )
-                }
             } else {
-                if configuration.spillDeliveryMode == .editorialEncodedAdd {
-                    guard let display else {
-                        throw NativeOutputError.unsupported(
-                            "Fusion Editorial still requiere el writer Metal"
-                        )
-                    }
-                    let output = try requiredOutputTransform(configuration)
-                    let deviceFrame = try display.makeIndependentLinearACEScgFrame(
-                        width: prepared.width, height: prepared.height,
-                        rgba: prepared.deviceRGBA
-                    )
-                    let encodedDevice = try display.renderIndependentRGBAFloat(
-                        deviceFrame, output: output, alpha: .straight
-                    )
-                    if editorialEncodedBlack == nil {
-                        let blackFrame = try display.makeIndependentLinearACEScgFrame(
-                            width: 1, height: 1, rgba: [0, 0, 0, 1]
-                        )
-                        let encodedBlack = try display.renderIndependentRGBAFloat(
-                            blackFrame, output: output, alpha: .ignore
-                        )
-                        editorialEncodedBlack = SIMD3(
-                            encodedBlack[0], encodedBlack[1], encodedBlack[2]
-                        )
-                    }
-                    let encodedSpill = try NativeOutputRenderer.editorialEncodedAddSpill(
-                        encodedCarrier: encodedDevice,
-                        encodedBlack: editorialEncodedBlack!
-                    )
-                    try writeEncodedStillPass(
-                        encodedDevice, width: prepared.width, height: prepared.height,
-                        to: deviceURL, configuration: configuration, output: output,
-                        alpha: .straight
-                    )
-                    try writeEncodedStillPass(
-                        encodedSpill, width: prepared.width, height: prepared.height,
-                        to: spillURL, configuration: configuration, output: output,
-                        alpha: .straight
-                    )
-                } else {
-                    try writeStillPass(
-                        prepared.deviceRGBA, width: prepared.width, height: prepared.height,
-                        to: deviceURL, configuration: configuration, display: display,
-                        alpha: .straight
-                    )
-                    try writeStillPass(
-                        prepared.spillRGBA, width: prepared.width, height: prepared.height,
-                        to: spillURL, configuration: configuration, display: display,
-                        alpha: .ignore
-                    )
-                }
+                try writeStillPass(
+                    prepared.deviceRGBA, width: prepared.width, height: prepared.height,
+                    to: deviceURL, configuration: configuration, display: display,
+                    alpha: .straight
+                )
             }
-
+            let frameFinished = ContinuousClock.now
+            var phases: [RenderFramePhaseBreakdown.Phase] = []
+            if let timing = raw.physicalTiming {
+                phases.append(.init(id: "source-preparation", seconds: timing.sourcePreparationSeconds))
+                if let fused = timing.fusedScreenCoverLensSeconds,
+                   let sensor = timing.sensorCaptureDevelopmentSeconds,
+                   let overhead = timing.physicalOrchestrationOverheadSeconds {
+                    phases.append(.init(
+                        id: "physical-fused-screen-cover-lens", seconds: fused
+                    ))
+                    phases.append(.init(
+                        id: "physical-sensor-capture-development", seconds: sensor
+                    ))
+                    phases.append(.init(
+                        id: "physical-orchestration-overhead", seconds: overhead
+                    ))
+                } else {
+                    phases.append(.init(
+                        id: "physical-model-evaluation-unclassified",
+                        seconds: timing.physicalEvaluationSeconds
+                    ))
+                }
+                phases.append(.init(id: "gpu-readback", seconds: timing.gpuReadbackSeconds))
+            }
+            phases.append(.init(
+                id: "device-support-crop-and-fade",
+                seconds: supportStarted.duration(to: supportFinished).seconds
+            ))
+            phases.append(.init(
+                id: "device-color-transform-encode-write",
+                seconds: mediaStarted.duration(to: frameFinished).seconds
+            ))
+            diagnostics?(.init(
+                frame: frame,
+                phases: phases,
+                totalSeconds: frameStarted.duration(to: frameFinished).seconds
+            ))
             progress(position + 1, frames.count)
         }
         try await deviceMovie?.finish()
-        try await spillMovie?.finish()
         guard let prepared = firstPrepared else { throw FusionScenePackageError.invalidRaster }
         guard request.outputPlan.generatedRelativePaths.count >= 2 else {
             throw FusionScenePackageError.invalidOutputManifest
@@ -1266,7 +1208,7 @@ enum FusionScenePackageWriter {
             FusionSceneMetadata.self, from: Data(contentsOf: metadataURL)
         )
         guard metadata.schema == "ScreenSimulation.FusionScenePackage",
-              metadata.schemaVersion == 4,
+              metadata.schemaVersion == 5,
               metadata.jobName == request.configuration.jobName,
               metadata.firstFrame == request.configuration.firstFrame,
               metadata.lastFrame == request.configuration.lastFrame,
@@ -1298,7 +1240,7 @@ enum FusionScenePackageWriter {
                 activeHeight: metadata.raster.activeDeviceRect.height,
                 pixelsPerMeter: pixelsPerMeter
             ),
-            sourceOverscanPixels: metadata.spill.sourceOverscanPixels,
+            sourceOverscanPixels: metadata.exteriorSupport.sourceOverscanPixels,
             deliveryWidth: request.deliveryWidth,
             deliveryHeight: request.deliveryHeight,
             camera: metadata.camera,
@@ -1314,9 +1256,8 @@ enum FusionScenePackageWriter {
             height: metadata.raster.height,
             activeRect: metadata.raster.activeDeviceRect,
             uniformPaddingPixels: metadata.raster.uniformPaddingPixels,
-            thresholdSupportPixels: metadata.spill.thresholdSupportPixels,
-            deviceRGBA: [],
-            spillRGBA: []
+            thresholdSupportPixels: metadata.exteriorSupport.thresholdSupportPixels,
+            deviceRGBA: []
         )
         let compURL = try compositionURL(
             configuration: request.configuration, outputPlan: request.outputPlan
@@ -1336,7 +1277,6 @@ enum FusionScenePackageWriter {
         let outputStem = configuration.jobName + configuration.versionSuffix
         let options = configuration.fusionScene!
         let color = try FusionMediaColorContract.resolve(configuration)
-        let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
         let lensReconstruction: FusionSceneMetadata.LensReconstruction
         switch request.lensReconstruction {
         case .importedSynthEyesDE4:
@@ -1360,7 +1300,7 @@ enum FusionScenePackageWriter {
         }
         return FusionSceneMetadata(
             schema: "ScreenSimulation.FusionScenePackage",
-            schemaVersion: 4,
+            schemaVersion: 5,
             jobName: configuration.jobName,
             firstFrame: configuration.firstFrame,
             lastFrame: configuration.lastFrame,
@@ -1368,14 +1308,10 @@ enum FusionScenePackageWriter {
             colorSpace: "ACEScg",
             transfer: "scene-linear",
             channels: ["R", "G", "B", "A"],
-            rgbMeaning: "two typed media: Device surface RGB and additive Spill RGB",
-            alphaMeaning: editorialAdd
-                ? "Device embeds physical occlusion alpha; Spill carries straight editorial alpha 0.125 and Fusion normalizes it to opaque before additive projection"
-                : "Device media embeds the non-chromatic physical occlusion alpha; Spill is opaque RGB over black",
-            alphaAssociation: editorialAdd
-                ? "device-embedded-physical-alpha-spill-straight-editorial-0.125"
-                : "device-embedded-physical-alpha-spill-opaque-black",
-            physicalCompositeEquation: "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
+            rgbMeaning: "one Device medium containing complete unassociated physical RGB, including additive exterior light",
+            alphaMeaning: "Device embeds the independent non-chromatic physical occlusion alpha",
+            alphaAssociation: "device-complete-rgb-unassociated-with-independent-physical-alpha",
+            physicalCompositeEquation: "resultRGB = deviceRGB + plateRGB * (1 - deviceA)",
             raster: .init(
                 width: prepared.width,
                 height: prepared.height,
@@ -1386,7 +1322,7 @@ enum FusionScenePackageWriter {
                 deviceHeightMeters: request.deviceHeightMeters,
                 resolutionMode: options.resolutionMode
             ),
-            spill: .init(
+            exteriorSupport: .init(
                 thresholdSceneLinear: options.spillThresholdSceneLinear,
                 fadeWidthPixels: options.spillFadeWidthPixels,
                 thresholdSupportPixels: prepared.thresholdSupportPixels,
@@ -1410,9 +1346,6 @@ enum FusionScenePackageWriter {
             deviceMediaPattern: configuration.format.isMovie
                 ? "../media/\(outputStem)_Device.\(configuration.format.fileExtension)"
                 : "../media/\(outputStem)_Device%08d.\(configuration.format.fileExtension)",
-            spillMediaPattern: configuration.format.isMovie
-                ? "../media/\(outputStem)_Spill.\(configuration.format.fileExtension)"
-                : "../media/\(outputStem)_Spill%08d.\(configuration.format.fileExtension)",
             fusionComp: "../fusion/\(outputStem).comp"
         )
     }
@@ -1433,13 +1366,6 @@ enum FusionScenePackageWriter {
                 outputStem, configuration.firstFrame,
                 configuration.format.fileExtension
             )
-        let spillMedia = configuration.format.isMovie
-            ? "Comp:/../media/\(outputStem)_Spill.\(configuration.format.fileExtension)"
-            : String(
-                format: "Comp:/../media/%@_Spill%08d.%@",
-                outputStem, configuration.firstFrame,
-                configuration.format.fileExtension
-            )
         let loaderFormatID = switch configuration.format {
         case .openEXR: "OpenEXRFormat"
         case .tiff16: "TIFFFormat"
@@ -1450,16 +1376,6 @@ enum FusionScenePackageWriter {
         let deviceColorTool = color.fusionTool(
             name: "DeviceToACEScg", source: "DeviceRGBForColor", x: 330, y: 82.5
         )
-        let spillColorTool = color.fusionTool(
-            name: "SpillToACEScg", source: "SpillRGBForColor", x: 330, y: 346.5
-        )
-        let editorialAdd = configuration.spillDeliveryMode == .editorialEncodedAdd
-        let spillAlphaDescription = editorialAdd
-            ? "straight editorial alpha 0.125; applied after the RGB color transform"
-            : "no alpha; opaque RGB already composed over black for Add"
-        let spillLoaderAlphaSemantics = editorialAdd
-            ? "straight-editorial-alpha-0.125"
-            : "no-alpha-additive-over-black"
         let cameraX = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[0]) })
         let cameraY = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[1]) })
         let cameraZ = fusionSpline(request.camera.map { ($0.frame, $0.positionMeters[2]) })
@@ -1535,7 +1451,7 @@ enum FusionScenePackageWriter {
                 ApertureH = Input { Value = \(apertureHeightInches) },
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
                 LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
-                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
+                Input = Input { SourceOp = "RenderDeviceRGBA", Source = "Output" }
               },
               CustomData = { Contract = "\(FusionLensReconstructionKind.importedSynthEyesDE4.rawValue)", LensBakedInEXR = false },
               ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }
@@ -1570,7 +1486,7 @@ enum FusionScenePackageWriter {
                 ApertureH = Input { Value = \(apertureHeightInches) },
                 LensShiftX = Input { SourceOp = "CameraLensShiftX", Source = "Value" },
                 LensShiftY = Input { SourceOp = "CameraLensShiftY", Source = "Value" },
-                Input = Input { SourceOp = "AddProjectedDeviceSpill", Source = "Output" }
+                Input = Input { SourceOp = "RenderDeviceRGBA", Source = "Output" }
               },
               CustomData = { Contract = "\(FusionLensReconstructionKind.applicationBrownConrady.rawValue)", LensBakedInEXR = false },
               ViewInfo = OperatorInfo { Pos = { 1100, 214.5 } }
@@ -1586,11 +1502,9 @@ enum FusionScenePackageWriter {
         // halved or have the texture aspect applied a second time.
         let planeScaleX = planeWidth
         let planeScaleY = planeHeight * Double(prepared.width) / Double(prepared.height)
-        // Each Loader alpha bypasses color conversion. RGB is transformed while temporarily
-        // opaque, then explicitly associated with the original alpha exactly once for Fusion.
-        // Their projected RGB
-        // is added while Device alpha remains unchanged. The final Custom node implements the
-        // physical equation directly; a Merge/Over node is intentionally absent.
+        // Loader alpha bypasses color conversion. RGB is transformed while temporarily opaque,
+        // then the independent physical alpha is restored without associating RGB. The final
+        // Custom node implements the physical equation directly; a Merge/Over node is absent.
         return """
         Composition {
           CurrentTime = \(configuration.firstFrame),
@@ -1599,7 +1513,7 @@ enum FusionScenePackageWriter {
           Tools = ordered() {
             ColorPipelineGuide = Note {
               Inputs = {
-                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: embedded physical occlusion alpha; bypasses color conversion and is associated after RGB reaches ACEScg.\\n- RGB transform to working space: \(mediaTransformDescription).\\n\\nSPILL MEDIA\\n- Path/pattern: ../media/\(outputStem)_Spill\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- Alpha: \(spillAlphaDescription); bypasses color conversion.\\n- RGB transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceDepthFloat16 converts the Loader output to float16 before color processing.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
+                Comments = Input { Value = "SCREEN SIMULATION - COLOR PIPELINE\\n\\nDEVICE MEDIA\\n- Path/pattern: ../media/\(outputStem)_Device\(configuration.format.isMovie ? ".\(configuration.format.fileExtension)" : "%08d.\(configuration.format.fileExtension)")\\n- Encoding: \(mediaEncodingDescription).\\n- RGB: complete unassociated physical Device contribution, including exterior additive light.\\n- Alpha: independent physical occlusion alpha; bypasses color conversion and is restored after RGB reaches ACEScg.\\n- RGB transform to working space: \(mediaTransformDescription).\\n\\nPLATE / REFERENCE\\n- External authored absolute path is retained when present.\\n- ReferenceDepthFloat16 converts the Loader output to float16 before color processing.\\n- ReferenceToACEScg uses IDT_REC709_100_INV_ODT to ODT_ACESCG only for the exact saved ACES 2.0 Rec.709 D65 100 nit contract; otherwise it is explicitly disabled.\\n\\nWORKING SPACE\\n- ACEScg scene-linear.\\n- resultRGB = deviceRGB + plateRGB * (1 - deviceA).\\n\\nVIEWER (select manually)\\n- AcesTransform, ACES_VERSION_2_0_0, IDT_ACESCG to ODT_REC709_100.\\n- Gamut compression: None. Pre-Divide/Post-Multiply: enabled.\\n- Fusion Viewer UI state is not stored by this composition.\\n\\nSIDECAR\\n- ../metadata/\(outputStem)_FusionScene.json records raster, camera, lens, media and pass semantics." }
               },
               ViewInfo = StickyNoteInfo {
                 Pos = { 28, -181.5 },
@@ -1650,67 +1564,21 @@ enum FusionScenePackageWriter {
               ViewInfo = OperatorInfo { Pos = { 220, 214.5 } }
             },
             \(deviceColorTool)
-            DeviceAssociateAlpha = Custom {
+            DeviceRestoreAlpha = Custom {
               Inputs = {
                 Image1 = Input { SourceOp = "DeviceToACEScg", Source = "Output" },
                 Image2 = Input { SourceOp = "DeviceRGBA", Source = "Output" },
-                RedExpression = Input { Value = "r1*a2" },
-                GreenExpression = Input { Value = "g1*a2" },
-                BlueExpression = Input { Value = "b1*a2" },
-                AlphaExpression = Input { Value = "a2" }
-              },
-              CustomData = { Role = "associate-original-alpha-after-color", AlphaSource = "DeviceRGBA.A" },
-              ViewInfo = OperatorInfo { Pos = { 440, 82.5 } }
-            },
-            SpillRGBA = Loader {
-              Clips = { Clip {
-                ID = "Clip1",
-                Filename = "\(spillMedia)",
-                FormatID = "\(loaderFormatID)",
-                StartFrame = \(configuration.firstFrame), Length = \(configuration.frameRange.count), LengthSetManually = true,
-                TrimIn = 0, TrimOut = \(configuration.frameRange.count - 1), ExtendFirst = 0, ExtendLast = 0,
-                Loop = 0, AspectMode = 0, Depth = 0, TimeCode = 0,
-                GlobalStart = \(configuration.firstFrame), GlobalEnd = \(configuration.lastFrame)
-              } },
-              GlobalIn = \(configuration.firstFrame), GlobalOut = \(configuration.lastFrame),
-              Inputs = {
-                PostMultiplyByAlpha = Input { Value = 0 },
-                ["Gamut.PreDividePostMultiply"] = Input { Value = 0 },
-                ["Clip1.OpenEXRFormat.RedName"] = Input { Value = FuID { "R" } },
-                ["Clip1.OpenEXRFormat.GreenName"] = Input { Value = FuID { "G" } },
-                ["Clip1.OpenEXRFormat.BlueName"] = Input { Value = FuID { "B" } },
-                ["Clip1.OpenEXRFormat.AlphaName"] = Input { Value = FuID { "A" } }
-              },
-              CustomData = { AlphaSemantics = "\(spillLoaderAlphaSemantics)" },
-              ViewInfo = OperatorInfo { Pos = { 110, 346.5 } }
-            },
-            SpillRGBForColor = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "SpillRGBA", Source = "Output" },
                 RedExpression = Input { Value = "r1" },
                 GreenExpression = Input { Value = "g1" },
                 BlueExpression = Input { Value = "b1" },
-                AlphaExpression = Input { Value = "1" }
+                AlphaExpression = Input { Value = "a2" }
               },
-              CustomData = { Role = "rgb-only-color-transform-input", OriginalAlpha = "SpillRGBA.A" },
-              ViewInfo = OperatorInfo { Pos = { 220, 346.5 } }
-            },
-            \(spillColorTool)
-            SpillAssociateAlpha = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "SpillToACEScg", Source = "Output" },
-                Image2 = Input { SourceOp = "SpillRGBA", Source = "Output" },
-                RedExpression = Input { Value = "r1*a2" },
-                GreenExpression = Input { Value = "g1*a2" },
-                BlueExpression = Input { Value = "b1*a2" },
-                AlphaExpression = Input { Value = "1" }
-              },
-              CustomData = { Role = "attenuate-additive-rgb-once-after-color", AlphaSource = "SpillRGBA.A", PlaneAlpha = "opaque" },
-              ViewInfo = OperatorInfo { Pos = { 440, 346.5 } }
+              CustomData = { Role = "restore-independent-alpha-after-color", RGB = "complete-unassociated-physical-device", AlphaSource = "DeviceRGBA.A" },
+              ViewInfo = OperatorInfo { Pos = { 440, 82.5 } }
             },
             DeviceRGBAPlane = ImagePlane3D {
               Inputs = {
-                MaterialInput = Input { SourceOp = "DeviceAssociateAlpha", Source = "Output" },
+                MaterialInput = Input { SourceOp = "DeviceRestoreAlpha", Source = "Output" },
                 ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
                 ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
                 ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
@@ -1724,23 +1592,6 @@ enum FusionScenePackageWriter {
               },
               CustomData = { TransformContract = "canonical-world-device-pose", WidthMeters = \(planeWidth), HeightMeters = \(planeHeight), TextureAspectAppliedByImagePlane3D = true, ActiveRect = "\(prepared.activeRect.x),\(prepared.activeRect.y),\(prepared.activeRect.width),\(prepared.activeRect.height)" },
               ViewInfo = OperatorInfo { Pos = { 440, 148.5 } }
-            },
-            SpillRGBPlane = ImagePlane3D {
-              Inputs = {
-                MaterialInput = Input { SourceOp = "SpillAssociateAlpha", Source = "Output" },
-                ["Transform3DOp.ScaleLock"] = Input { Value = 0 },
-                ["Transform3DOp.Scale.X"] = Input { Value = \(planeScaleX) },
-                ["Transform3DOp.Scale.Y"] = Input { Value = \(planeScaleY) },
-                ["Transform3DOp.Scale.Z"] = Input { Value = 1 },
-                ["Transform3DOp.Translate.X"] = Input { SourceOp = "DeviceX", Source = "Value" },
-                ["Transform3DOp.Translate.Y"] = Input { SourceOp = "DeviceY", Source = "Value" },
-                ["Transform3DOp.Translate.Z"] = Input { SourceOp = "DeviceZ", Source = "Value" },
-                ["Transform3DOp.Rotate.X"] = Input { SourceOp = "DeviceRX", Source = "Value" },
-                ["Transform3DOp.Rotate.Y"] = Input { SourceOp = "DeviceRY", Source = "Value" },
-                ["Transform3DOp.Rotate.Z"] = Input { SourceOp = "DeviceRZ", Source = "Value" }
-              },
-              CustomData = { TransformContract = "canonical-world-device-pose", Role = "additive-spill" },
-              ViewInfo = OperatorInfo { Pos = { 605, 346.5 } }
             },
             Camera3D_Device = Camera3D {
               Inputs = {
@@ -1795,13 +1646,6 @@ enum FusionScenePackageWriter {
               },
               ViewInfo = OperatorInfo { Pos = { 605, 148.5 } }
             },
-            SpillRGBScene3D = Merge3D {
-              Inputs = {
-                SceneInput1 = Input { SourceOp = "SpillRGBPlane", Source = "Output" },
-                SceneInput2 = Input { SourceOp = "Camera3D_Device", Source = "Output" }
-              },
-              ViewInfo = OperatorInfo { Pos = { 770, 346.5 } }
-            },
             RenderDeviceRGBA = Renderer3D {
               Inputs = {
                 SceneInput = Input { SourceOp = "DeviceRGBAScene3D", Source = "Output" },
@@ -1823,39 +1667,6 @@ enum FusionScenePackageWriter {
               },
               ViewInfo = OperatorInfo { Pos = { 770, 148.5 } }
             },
-            RenderSpillRGB = Renderer3D {
-              Inputs = {
-                SceneInput = Input { SourceOp = "SpillRGBScene3D", Source = "Output" },
-                Width = Input { Value = \(request.deliveryWidth) },
-                Height = Input { Value = \(request.deliveryHeight) },
-                Depth = Input { Value = 4 },
-                PixelAspect = Input { Value = { 1, 1 } },
-                CameraSelector = Input { Value = FuID { "Camera3D_Device" } },
-                RendererType = Input { Value = FuID { "RendererOpenGL" } },
-                MotionBlur = Input { Value = 1 },
-                Quality = Input { Value = \(configuration.motionSamples) },
-                ShutterAngle = Input { Value = \(request.motionBlur.shutterAngleDegrees) },
-                CenterBias = Input { Value = \(request.motionBlur.fusionCenterBias) },
-                ["RendererOpenGL.EnableAccumEffects"] = Input { Value = \(dofEnabled) },
-                ["RendererOpenGL.EnableAccumDepthOfField"] = Input { Value = \(dofEnabled) },
-                ["RendererOpenGL.AccumQuality"] = Input { Value = 32 },
-                ["RendererOpenGL.DoFBlur"] = Input { SourceOp = "CameraApertureRadius", Source = "Value" },
-                ["RendererOpenGL.MaximumTextureDepth"] = Input { Value = 4 }
-              },
-              ViewInfo = OperatorInfo { Pos = { 935, 346.5 } }
-            },
-            AddProjectedDeviceSpill = Custom {
-              Inputs = {
-                Image1 = Input { SourceOp = "RenderDeviceRGBA", Source = "Output" },
-                Image2 = Input { SourceOp = "RenderSpillRGB", Source = "Output" },
-                RedExpression = Input { Value = "r1+r2" },
-                GreenExpression = Input { Value = "g1+g2" },
-                BlueExpression = Input { Value = "b1+b2" },
-                AlphaExpression = Input { Value = "a1" }
-              },
-              CustomData = { Equation = "projectedDeviceRGB + projectedSpillRGB", AlphaSemantics = "preserve-projected-device-alpha" },
-              ViewInfo = OperatorInfo { Pos = { 935, 148.5 } }
-            },
             \(lensDistortionTool)
             \(fusionPlateComp(
                 request.referencePlate,
@@ -1875,7 +1686,7 @@ enum FusionScenePackageWriter {
               },
               CustomData = {
                 Operation = "DEVICE_PLUS_OCCLUDED_PLATE",
-                Equation = "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
+                Equation = "resultRGB = deviceRGB + plateRGB * (1 - deviceA)",
                 ConventionalOverForbidden = true
               },
               ViewInfo = OperatorInfo { Pos = { 1265, 214.5 } }

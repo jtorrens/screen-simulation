@@ -288,7 +288,7 @@ public enum StudioOutputContractError: Error, LocalizedError, Equatable {
         case .fusionConfigurationForbidden:
             "Preview no puede contener una composición Fusion."
         case .fusionDeliveryConfigurationInvalid:
-            "La composición Fusion requiere Final separado, formato con alpha straight, color resoluble y sin audio."
+            "Fusion requiere Final Device único, formato con alpha straight, color resoluble y sin audio."
         case .separatedDeviceSpillDeliveryInvalid:
             "Preview debe ser opaco con referencia; Final requiere formato con alpha straight y la entrega separada no admite audio."
         case .editorialSpillDeliveryInvalid:
@@ -567,7 +567,8 @@ public struct StudioResolvedRenderConfiguration: Codable, Equatable, Sendable {
                 }
                 guard colorContractIsComplete,
                       format.supportsAlpha,
-                      composition == .deviceAndSpillSeparate,
+                      composition == .deviceAndSpillTogether,
+                      spillDeliveryMode == .physicalLinear,
                       !includeAudio,
                       motionBlurMode == .disabled else {
                     throw StudioOutputContractError.fusionDeliveryConfigurationInvalid

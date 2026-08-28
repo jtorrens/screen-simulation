@@ -352,7 +352,7 @@ import Testing
     #expect(object["outputType"] == nil)
 }
 
-@Test func finalFusionCompositionRequiresSeparateAlphaMedia() throws {
+@Test func finalFusionCompositionRequiresOneCompleteDeviceMedium() throws {
     let fusion = StudioResolvedRenderConfiguration(
         renderMode: .final, jobName: "Fusion", versionSuffix: "",
         overwritePolicy: .failIfExists,
@@ -361,7 +361,7 @@ import Testing
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.001, spillFadeWidthPixels: 4
         ),
-        composition: .deviceAndSpillSeparate, spillDeliveryMode: .physicalLinear,
+        composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 8,
         raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .tiff16, pipeline: .aces, target: .sdr, peakNits: 100,
@@ -375,7 +375,7 @@ import Testing
     let incompatible = StudioResolvedRenderConfiguration(
         renderMode: .final, jobName: "Fusion", versionSuffix: "",
         overwritePolicy: .failIfExists, fusionScene: fusion.fusionScene,
-        composition: .deviceAndSpillTogether, spillDeliveryMode: .physicalLinear,
+        composition: .deviceAndSpillSeparate, spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 8, raster: fusion.raster,
         format: fusion.format, pipeline: fusion.pipeline, target: fusion.target,
         peakNits: fusion.peakNits, display: fusion.display, view: fusion.view,
@@ -398,5 +398,7 @@ import Testing
         signalRange: fusion.signalRange, alpha: .straight, includeAudio: false,
         frameRate: .fps24, firstFrame: 0, lastFrame: 1
     )
-    try editorialAdd.validate()
+    #expect(throws: StudioOutputContractError.fusionDeliveryConfigurationInvalid) {
+        try editorialAdd.validate()
+    }
 }

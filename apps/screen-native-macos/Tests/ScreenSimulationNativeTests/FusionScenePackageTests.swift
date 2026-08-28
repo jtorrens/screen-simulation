@@ -27,8 +27,8 @@ private func fusionConfiguration(
             spillThresholdSceneLinear: 0.1,
             spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: spillDeliveryMode,
+        composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: motionBlurMode,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .openEXR,
@@ -54,8 +54,8 @@ private func fusionConfiguration(
     }
 }
 
-@Test @MainActor func fusionEditorialAddTransformsRGBThenAssociatesTheMediaAlpha() throws {
-    let configuration = fusionConfiguration(spillDeliveryMode: .editorialEncodedAdd)
+@Test @MainActor func fusionDeviceTransformsRGBThenRestoresAlphaWithoutAssociation() throws {
+    let configuration = fusionConfiguration()
     try configuration.validate()
     let root = try temporaryDirectory()
     let request = FusionScenePackageRequest(
@@ -80,33 +80,32 @@ private func fusionConfiguration(
         width: 12, height: 8,
         activeRect: .init(x: 2, y: 2, width: 8, height: 4),
         uniformPaddingPixels: 2, thresholdSupportPixels: 1,
-        deviceRGBA: [], spillRGBA: []
+        deviceRGBA: []
     )
     let comp = try FusionScenePackageWriter.fusionComp(
         request: request, prepared: prepared
     )
-    #expect(comp.contains("straight-editorial-alpha-0.125"))
-    #expect(!comp.contains("SpillOpaqueBlack"))
-    #expect(!comp.contains("SpillOpaque = Merge"))
-    let isolation = try #require(comp.range(of: "SpillRGBForColor = Custom"))
-    let transform = try #require(comp.range(of: "SpillToACEScg = AcesTransform"))
-    let association = try #require(comp.range(of: "SpillAssociateAlpha = Custom"))
-    let plane = try #require(comp.range(of: "SpillRGBPlane = ImagePlane3D"))
+    #expect(!comp.contains("Spill"))
+    let isolation = try #require(comp.range(of: "DeviceRGBForColor = Custom"))
+    let transform = try #require(comp.range(of: "DeviceToACEScg = AcesTransform"))
+    let association = try #require(comp.range(of: "DeviceRestoreAlpha = Custom"))
+    let plane = try #require(comp.range(of: "DeviceRGBAPlane = ImagePlane3D"))
     #expect(isolation.lowerBound < transform.lowerBound)
     #expect(transform.lowerBound < association.lowerBound)
     #expect(association.lowerBound < plane.lowerBound)
     let isolationBlock = String(comp[isolation.lowerBound ..< transform.lowerBound])
     let associationBlock = String(comp[association.lowerBound ..< plane.lowerBound])
     #expect(isolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
-    #expect(associationBlock.contains("Image2 = Input { SourceOp = \"SpillRGBA\", Source = \"Output\" }"))
-    #expect(associationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
-    #expect(associationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
-    #expect(associationBlock.contains("Role = \"attenuate-additive-rgb-once-after-color\""))
-    #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillAssociateAlpha\", Source = \"Output\" }"))
+    #expect(associationBlock.contains("Image2 = Input { SourceOp = \"DeviceRGBA\", Source = \"Output\" }"))
+    #expect(associationBlock.contains("RedExpression = Input { Value = \"r1\" }"))
+    #expect(!associationBlock.contains("r1*a2"))
+    #expect(associationBlock.contains("AlphaExpression = Input { Value = \"a2\" }"))
+    #expect(associationBlock.contains("Role = \"restore-independent-alpha-after-color\""))
+    #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceRestoreAlpha\", Source = \"Output\" }"))
     let metadata = try FusionScenePackageWriter.metadata(
         request: request, prepared: prepared
     )
-    #expect(metadata.alphaAssociation.contains("editorial-0.125"))
+    #expect(metadata.alphaAssociation.contains("unassociated"))
 }
 
 private func standardSequenceConfiguration(
@@ -160,8 +159,8 @@ private func fusionConfiguration(
             spillThresholdSceneLinear: 0.1,
             spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillSeparate,
-        spillDeliveryMode: spillDeliveryMode,
+        composition: .deviceAndSpillTogether,
+        spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: format,
@@ -252,6 +251,7 @@ private func fusionConfiguration(
     #expect(model.outputFormat == hdr.format)
     #expect(model.renderPreset == hdr)
     #expect(model.outputAlphaMode == .straight)
+    #expect(model.renderComposition == .deviceAndSpillTogether)
 }
 
 @Test @MainActor func vfxEditorialPresetFreezesItsStandardDeliveryContract() {
@@ -454,7 +454,7 @@ private func temporaryDirectory() throws -> URL {
         width: 12, height: 8,
         activeRect: .init(x: 2, y: 2, width: 8, height: 4),
         uniformPaddingPixels: 2, thresholdSupportPixels: 1,
-        deviceRGBA: [], spillRGBA: []
+        deviceRGBA: []
     )
     let comp = try FusionScenePackageWriter.fusionComp(request: request, prepared: prepared)
     #expect(comp.contains("Model = Input { Value = FuID { \"FusionRadial\" } }"))
@@ -476,7 +476,7 @@ private func temporaryDirectory() throws -> URL {
     #expect(!comp.contains("DE4RadialStandardDegree4"))
     #expect(!comp.contains("STMap"))
     let metadata = try FusionScenePackageWriter.metadata(request: request, prepared: prepared)
-    #expect(metadata.schemaVersion == 4)
+    #expect(metadata.schemaVersion == 5)
     #expect(metadata.devicePose == request.devicePose)
     #expect(metadata.lensReconstruction.kind == .applicationBrownConrady)
     #expect(metadata.lensReconstruction.fusionModel == "FusionRadial")
@@ -679,12 +679,12 @@ private func temporaryDirectory() throws -> URL {
     set(2, 2, rgb: 0.8, alpha: 0)
     set(3, 2, rgb: 0.8, alpha: 0.5)
     set(2, 3, rgb: 0.8, alpha: 1)
-    let prepared = try FusionSpillSupport.prepare(
+    let prepared = try FusionDeviceSupport.prepare(
         .init(
             width: width,
             height: height,
             activeRect: .init(x: 2, y: 2, width: 2, height: 2),
-            deviceRGBA: rgba, spillRGBA: rgba
+            deviceRGBA: rgba
         ),
         thresholdSceneLinear: 0.1,
         fadeWidthPixels: 1,
@@ -692,21 +692,18 @@ private func temporaryDirectory() throws -> URL {
     )
     #expect(prepared.uniformPaddingPixels == 2)
     #expect(prepared.activeRect == .init(x: 2, y: 2, width: 2, height: 2))
-    let leftSpill = (2 * prepared.width + 1) * 4
-    #expect(prepared.spillRGBA[leftSpill] > 0)
-    #expect(prepared.spillRGBA[leftSpill + 3] == 1)
+    let leftExterior = (2 * prepared.width + 1) * 4
+    #expect(prepared.deviceRGBA[leftExterior] > 0)
+    #expect(prepared.deviceRGBA[leftExterior + 3] == 0)
     let alphaZero = (2 * prepared.width + 2) * 4
     let alphaHalf = (2 * prepared.width + 3) * 4
     let alphaOne = (3 * prepared.width + 2) * 4
-    #expect(prepared.spillRGBA[alphaZero] == 0.8)
+    #expect(prepared.deviceRGBA[alphaZero] == 0.8)
     #expect(prepared.deviceRGBA[alphaZero + 3] == 0)
-    #expect(prepared.spillRGBA[alphaZero + 3] == 1)
-    #expect(prepared.spillRGBA[alphaHalf] == 0.8)
+    #expect(prepared.deviceRGBA[alphaHalf] == 0.8)
     #expect(prepared.deviceRGBA[alphaHalf + 3] == 0.5)
-    #expect(prepared.spillRGBA[alphaHalf + 3] == 1)
-    #expect(prepared.spillRGBA[alphaOne] == 0.8)
+    #expect(prepared.deviceRGBA[alphaOne] == 0.8)
     #expect(prepared.deviceRGBA[alphaOne + 3] == 1)
-    #expect(prepared.spillRGBA[alphaOne + 3] == 1)
 }
 
 @Test func exteriorFadeBandDoesNotChangeTheSupportedSpill() throws {
@@ -725,12 +722,12 @@ private func temporaryDirectory() throws -> URL {
     set(3, 3, rgb: 0.8, alpha: 1) // Active Device.
     set(2, 3, rgb: 0.4) // Declared support: untouched.
     set(1, 3, rgb: 0.2) // Exterior fade band: reaches zero at its outer edge.
-    let prepared = try FusionSpillSupport.prepare(
+    let prepared = try FusionDeviceSupport.prepare(
         .init(
             width: width,
             height: height,
             activeRect: .init(x: 3, y: 3, width: 2, height: 2),
-            deviceRGBA: rgba, spillRGBA: rgba
+            deviceRGBA: rgba
         ),
         thresholdSceneLinear: 0.1,
         fadeWidthPixels: 1,
@@ -738,14 +735,14 @@ private func temporaryDirectory() throws -> URL {
     )
     #expect(prepared.uniformPaddingPixels == 2)
     let activePixel = (2 * prepared.width + 2) * 4
-    #expect(prepared.spillRGBA[activePixel] == 0.8)
-    #expect(prepared.spillRGBA[activePixel + 3] == 1)
+    #expect(prepared.deviceRGBA[activePixel] == 0.8)
+    #expect(prepared.deviceRGBA[activePixel + 3] == 1)
     let supportedSpill = (2 * prepared.width + 1) * 4
-    #expect(prepared.spillRGBA[supportedSpill] == 0.4)
-    #expect(prepared.spillRGBA[supportedSpill + 3] == 1)
+    #expect(prepared.deviceRGBA[supportedSpill] == 0.4)
+    #expect(prepared.deviceRGBA[supportedSpill + 3] == 0)
     let outerFadeBand = (2 * prepared.width) * 4
-    #expect(prepared.spillRGBA[outerFadeBand] == 0)
-    #expect(prepared.spillRGBA[outerFadeBand + 3] == 1)
+    #expect(prepared.deviceRGBA[outerFadeBand] == 0)
+    #expect(prepared.deviceRGBA[outerFadeBand + 3] == 0)
 }
 
 @Test func physicalOverscanRetainsCompleteGlowSupportAtEveryPositiveAmount() throws {
@@ -851,12 +848,11 @@ private func temporaryDirectory() throws -> URL {
                 activeRect: .init(x: 2, y: 2, width: 8, height: 4),
                 uniformPaddingPixels: 2,
                 thresholdSupportPixels: 1,
-                deviceRGBA: [Float](repeating: 0, count: 12 * 8 * 4),
-                spillRGBA: [Float](repeating: 0, count: 12 * 8 * 4)
+                deviceRGBA: [Float](repeating: 0, count: 12 * 8 * 4)
             )
         )
         #expect(comp.contains("Comp:/../media/Shot010_Device00000001.exr"))
-        #expect(comp.contains("Comp:/../media/Shot010_Spill00000001.exr"))
+        #expect(!comp.contains("_Spill"))
         #expect(comp.contains("FormatID = \"OpenEXRFormat\""))
         #expect(comp.contains("LengthSetManually = true"))
         #expect(!comp.contains("FormatID = \"OpenEXRFormat\",\n                StartFrame = 1,\n                Multiframe = true"))
@@ -885,23 +881,14 @@ private func temporaryDirectory() throws -> URL {
         #expect(comp.contains("RendererType = Input { Value = FuID { \"RendererOpenGL\" } }"))
         #expect(comp.contains("[\"RendererOpenGL.EnableAccumDepthOfField\"] = Input { Value = \(dof == .fusion ? 1 : 0) }"))
         let rgbaRenderer = try! #require(comp.range(of: "RenderDeviceRGBA = Renderer3D"))
-        let spillRenderer = try! #require(comp.range(of: "RenderSpillRGB = Renderer3D"))
-        let addNode = try! #require(comp.range(of: "AddProjectedDeviceSpill = Custom"))
-        let rgbaBlock = String(comp[rgbaRenderer.lowerBound ..< spillRenderer.lowerBound])
-        let spillBlock = String(comp[spillRenderer.lowerBound ..< addNode.lowerBound])
+        let lensNode = try! #require(comp.range(of: "DeviceLensDistortion = LensDistort"))
+        let rgbaBlock = String(comp[rgbaRenderer.lowerBound ..< lensNode.lowerBound])
         #expect(rgbaBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
-        #expect(spillBlock.contains("[\"RendererOpenGL.MaximumTextureDepth\"] = Input { Value = 4 }"))
         #expect(rgbaBlock.contains("Depth = Input { Value = 4 }"))
-        #expect(spillBlock.contains("Depth = Input { Value = 4 }"))
         #expect(comp.contains("DeviceRGBAPlane = ImagePlane3D"))
-        #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceAssociateAlpha\", Source = \"Output\" }"))
-        #expect(comp.contains("SpillRGBPlane = ImagePlane3D"))
-        #expect(comp.contains("MaterialInput = Input { SourceOp = \"SpillAssociateAlpha\", Source = \"Output\" }"))
-        #expect(comp.contains("AddProjectedDeviceSpill = Custom"))
-        #expect(comp.contains("Image1 = Input { SourceOp = \"RenderDeviceRGBA\", Source = \"Output\" }"))
-        #expect(comp.contains("Image2 = Input { SourceOp = \"RenderSpillRGB\", Source = \"Output\" }"))
-        #expect(comp.contains("AlphaExpression = Input { Value = \"a1\" }"))
-        #expect(comp.contains("AlphaSemantics = \"preserve-projected-device-alpha\""))
+        #expect(comp.contains("MaterialInput = Input { SourceOp = \"DeviceRestoreAlpha\", Source = \"Output\" }"))
+        #expect(!comp.contains("SpillRGBA"))
+        #expect(!comp.contains("RenderSpillRGB"))
         #expect(comp.contains("CameraApertureRadius = BezierSpline"))
         #expect(!comp.contains("DeviceRGBOpaque"))
         #expect(!comp.contains("DeviceMatteOpaque"))
@@ -909,44 +896,29 @@ private func temporaryDirectory() throws -> URL {
         #expect(!comp.contains("DeviceMatteScene3D"))
         #expect(!comp.contains("RenderDeviceMatte"))
         #expect(!comp.contains("RecombineDeviceRGBA"))
-        #expect(comp.contains("Input = Input { SourceOp = \"AddProjectedDeviceSpill\", Source = \"Output\" }"))
+        #expect(comp.contains("Input = Input { SourceOp = \"RenderDeviceRGBA\", Source = \"Output\" }"))
         #expect(!comp.contains("PlateOccluded"))
         #expect(comp.contains("r1+r2*(1-a1)"))
-        #expect(comp.contains("Equation = \"resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)\""))
+        #expect(comp.contains("Equation = \"resultRGB = deviceRGB + plateRGB * (1 - deviceA)\""))
         #expect(!comp.contains("PhysicalComposite = Merge"))
         #expect(comp.contains("DeviceRGBA = Loader {"))
         let deviceLoader = try! #require(comp.range(of: "DeviceRGBA = Loader {"))
         let deviceIsolation = try! #require(comp.range(of: "DeviceRGBForColor = Custom"))
         let deviceTransform = try! #require(comp.range(of: "DeviceToACEScg = AcesTransform"))
-        let deviceAssociation = try! #require(comp.range(of: "DeviceAssociateAlpha = Custom"))
-        let spillLoader = try! #require(comp.range(of: "SpillRGBA = Loader {"))
-        let spillIsolation = try! #require(comp.range(of: "SpillRGBForColor = Custom"))
-        let spillTransform = try! #require(comp.range(of: "SpillToACEScg = AcesTransform"))
-        let spillAssociation = try! #require(comp.range(of: "SpillAssociateAlpha = Custom"))
+        let deviceAssociation = try! #require(comp.range(of: "DeviceRestoreAlpha = Custom"))
         #expect(deviceLoader.lowerBound < deviceIsolation.lowerBound)
         #expect(deviceIsolation.lowerBound < deviceTransform.lowerBound)
         #expect(deviceTransform.lowerBound < deviceAssociation.lowerBound)
-        #expect(spillLoader.lowerBound < spillIsolation.lowerBound)
-        #expect(spillIsolation.lowerBound < spillTransform.lowerBound)
-        #expect(spillTransform.lowerBound < spillAssociation.lowerBound)
         let deviceLoaderBlock = String(comp[deviceLoader.lowerBound ..< deviceIsolation.lowerBound])
         let deviceIsolationBlock = String(comp[deviceIsolation.lowerBound ..< deviceTransform.lowerBound])
         let deviceTransformBlock = String(comp[deviceTransform.lowerBound ..< deviceAssociation.lowerBound])
-        let deviceAssociationBlock = String(comp[deviceAssociation.lowerBound ..< spillLoader.lowerBound])
-        let spillLoaderBlock = String(comp[spillLoader.lowerBound ..< spillIsolation.lowerBound])
-        let spillIsolationBlock = String(comp[spillIsolation.lowerBound ..< spillTransform.lowerBound])
-        let spillTransformBlock = String(comp[spillTransform.lowerBound ..< spillAssociation.lowerBound])
+        let deviceAssociationBlock = String(comp[deviceAssociation.lowerBound ..< comp.range(of: "DeviceRGBAPlane = ImagePlane3D")!.lowerBound])
         #expect(deviceLoaderBlock.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
         #expect(deviceIsolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
         #expect(deviceTransformBlock.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
-        #expect(deviceAssociationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
+        #expect(deviceAssociationBlock.contains("RedExpression = Input { Value = \"r1\" }"))
+        #expect(!deviceAssociationBlock.contains("r1*a2"))
         #expect(deviceAssociationBlock.contains("AlphaExpression = Input { Value = \"a2\" }"))
-        #expect(spillLoaderBlock.contains("PostMultiplyByAlpha = Input { Value = 0 }"))
-        #expect(spillIsolationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
-        #expect(spillTransformBlock.contains("[\"Gamut.PreDividePostMultiply\"] = Input { Value = 0 }"))
-        let spillAssociationBlock = String(comp[spillAssociation.lowerBound ..< comp.range(of: "DeviceRGBAPlane = ImagePlane3D")!.lowerBound])
-        #expect(spillAssociationBlock.contains("RedExpression = Input { Value = \"r1*a2\" }"))
-        #expect(spillAssociationBlock.contains("AlphaExpression = Input { Value = \"1\" }"))
         #expect(comp.contains("[\"Clip1.OpenEXRFormat.AlphaName\"] = Input { Value = FuID { \"A\" } }"))
         #expect(comp.contains("ViewInfo = OperatorInfo { Pos = { 110, 214.5 } }"))
         #expect(comp.contains("PhysicalComposite = Custom {"))
@@ -982,7 +954,7 @@ private func temporaryDirectory() throws -> URL {
     )
     let comp = try FusionScenePackageWriter.fusionComp(
         request: request,
-        prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [], spillRGBA: [])
+        prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [])
     )
     #expect(comp.contains("ReferenceToACEScg = AcesTransform"))
     let referenceLoader = try #require(comp.range(of: "ReferenceLoader = Loader"))
@@ -1008,8 +980,8 @@ private func temporaryDirectory() throws -> URL {
     #expect(comp.contains("ColorPipelineGuide = Note"))
     #expect(comp.contains("ViewInfo = StickyNoteInfo"))
     #expect(comp.contains("DEVICE MEDIA"))
-    #expect(comp.contains("SPILL MEDIA"))
-    #expect(comp.contains("resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)"))
+    #expect(!comp.contains("SPILL MEDIA"))
+    #expect(comp.contains("resultRGB = deviceRGB + plateRGB * (1 - deviceA)"))
     #expect(comp.contains("VIEWER (select manually)"))
     #expect(comp.contains("IDT_ACESCG"))
     #expect(comp.contains("ODT_REC709_100"))
@@ -1045,7 +1017,7 @@ private func temporaryDirectory() throws -> URL {
     )
     let comp = try FusionScenePackageWriter.fusionComp(
         request: request,
-        prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [], spillRGBA: [])
+        prepared: .init(width: 12, height: 8, activeRect: .init(x: 2, y: 2, width: 8, height: 4), uniformPaddingPixels: 2, thresholdSupportPixels: 1, deviceRGBA: [])
     )
     #expect(comp.contains("ReferenceToACEScg = AcesTransform"))
     #expect(comp.contains("PassThrough = true"))
@@ -1127,7 +1099,7 @@ private func temporaryDirectory() throws -> URL {
             rgba[spill + 1] = 0.2
             rgba[spill + 2] = 0.2
             return FusionRawPhysicalFrame(
-                width: 8, height: 8, activeRect: active, deviceRGBA: rgba, spillRGBA: rgba
+                width: 8, height: 8, activeRect: active, deviceRGBA: rgba
             )
         },
         progress: { _, _ in }
@@ -1153,14 +1125,14 @@ private func temporaryDirectory() throws -> URL {
     #expect(metadata.raster.width == 8)
     #expect(metadata.raster.height == 8)
     #expect(metadata.raster.uniformPaddingPixels == 3)
-    #expect(metadata.spill.thresholdSupportPixels == 2)
+    #expect(metadata.exteriorSupport.thresholdSupportPixels == 2)
     #expect(metadata.lensReconstruction.fusionTool == "LensDistort")
     #expect(metadata.lensReconstruction.fusionModel == "DE4RadialStandardDegree4")
     let comp = try String(contentsOf: plan.destination.appendingPathComponent(
         "fusion/Shot010.comp"
     ))
     #expect(comp.contains("Comp:/../media/Shot010_Device00000001.exr"))
-    #expect(comp.contains("Comp:/../media/Shot010_Spill00000001.exr"))
+    #expect(!comp.contains("_Spill"))
     #expect(comp.contains("DeviceLensDistortion = LensDistort"))
     #expect(!comp.contains("STMap"))
 }
@@ -1206,7 +1178,7 @@ private func temporaryDirectory() throws -> URL {
                 width: 8,
                 height: 8,
                 activeRect: .init(x: 3, y: 3, width: 2, height: 2),
-                deviceRGBA: rgba, spillRGBA: rgba
+                deviceRGBA: rgba
             )
         },
         progress: { _, _ in }
@@ -1275,9 +1247,9 @@ private func temporaryDirectory() throws -> URL {
         sourceRGBA.replaceSubrange(offset ..< offset + 4, with: rgba)
     }
     let source = FusionRawPhysicalFrame(
-        width: 6, height: 5, activeRect: active, deviceRGBA: sourceRGBA, spillRGBA: sourceRGBA
+        width: 6, height: 5, activeRect: active, deviceRGBA: sourceRGBA
     )
-    let expected = try FusionSpillSupport.prepare(
+    let expected = try FusionDeviceSupport.prepare(
         source,
         thresholdSceneLinear: configuration.fusionScene!.spillThresholdSceneLinear,
         fadeWidthPixels: configuration.fusionScene!.spillFadeWidthPixels,
@@ -1305,7 +1277,7 @@ private func temporaryDirectory() throws -> URL {
     #expect(actual.max() ?? 0 > 1)
 }
 
-@Test @MainActor func fusionWriterUsesTheSelectedNonEXRFormatForBothMedia() async throws {
+@Test @MainActor func fusionWriterUsesTheSelectedNonEXRFormatForDevice() async throws {
     let configuration = StudioResolvedRenderConfiguration(
         renderMode: .final,
         jobName: "ShotTIFF",
@@ -1316,7 +1288,7 @@ private func temporaryDirectory() throws -> URL {
             customActiveWidth: nil, customActiveHeight: nil,
             spillThresholdSceneLinear: 0.1, spillFadeWidthPixels: 1
         ),
-        composition: .deviceAndSpillSeparate,
+        composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled, motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),
         format: .tiff16,
@@ -1352,18 +1324,14 @@ private func temporaryDirectory() throws -> URL {
             FusionRawPhysicalFrame(
                 width: 6, height: 6,
                 activeRect: .init(x: 2, y: 2, width: 2, height: 2),
-                deviceRGBA: rgba, spillRGBA: rgba
+                deviceRGBA: rgba
             )
         }, progress: { _, _ in }
     )
     let deviceURL = destination.appendingPathComponent("media/ShotTIFF_Device00000001.tiff")
-    let spillURL = destination.appendingPathComponent("media/ShotTIFF_Spill00000001.tiff")
     #expect(FileManager.default.fileExists(atPath: deviceURL.path))
-    #expect(FileManager.default.fileExists(atPath: spillURL.path))
     let deviceSource = try #require(CGImageSourceCreateWithURL(deviceURL as CFURL, nil))
-    let spillSource = try #require(CGImageSourceCreateWithURL(spillURL as CFURL, nil))
     #expect(CGImageSourceCreateImageAtIndex(deviceSource, 0, nil)?.alphaInfo == .last)
-    #expect(CGImageSourceCreateImageAtIndex(spillSource, 0, nil)?.alphaInfo == CGImageAlphaInfo.none)
     let comp = try String(contentsOf: destination.appendingPathComponent(
         "fusion/ShotTIFF.comp"
     ), encoding: .utf8)
@@ -1411,16 +1379,13 @@ private func temporaryDirectory() throws -> URL {
             return FusionRawPhysicalFrame(
                 width: 6, height: 6,
                 activeRect: .init(x: 2, y: 2, width: 2, height: 2),
-                deviceRGBA: rgba, spillRGBA: rgba
+                deviceRGBA: rgba
             )
         },
         progress: { _, _ in }
     )
     #expect(requestedFrames == [1, 2])
-    for relativePath in [
-        "media/ColorContract_Device.mov",
-        "media/ColorContract_Spill.mov",
-    ] {
+    for relativePath in ["media/ColorContract_Device.mov"] {
         let url = destination.appendingPathComponent(relativePath)
         #expect(FileManager.default.fileExists(atPath: url.path))
         #expect(try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 > 0)
@@ -1458,7 +1423,7 @@ private func temporaryDirectory() throws -> URL {
             spillThresholdSceneLinear: 0.000_1,
             spillFadeWidthPixels: 4
         ),
-        composition: .deviceAndSpillSeparate,
+        composition: .deviceAndSpillTogether,
         spillDeliveryMode: .physicalLinear,
         motionBlurMode: .disabled,
         motionSamples: 8, raster: .init(width: 1920, height: 1080, placementID: "fit"),

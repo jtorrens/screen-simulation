@@ -30,6 +30,10 @@ import Testing
     #expect(controller.jobs.map(\.state) == [.completed, .completed])
     #expect(controller.jobs.map(\.progress) == [1, 1])
     #expect(controller.jobs.map(\.detail) == ["first.mov", "second.mov"])
+    #expect(controller.jobs.allSatisfy { $0.terminalTiming != nil })
+    #expect(controller.jobs.allSatisfy {
+        ($0.terminalTiming?.averageCompletedFrameSeconds ?? -1) >= 0
+    })
 }
 
 @Test @MainActor func outputCollisionIsAuthorizedImmediatelyBeforeTheAttempt() async throws {
@@ -177,12 +181,16 @@ import Testing
     let timing = try #require(controller.timing(for: job.id))
     #expect(timing.elapsedSeconds > 0)
     #expect((timing.approximateRemainingSeconds ?? 0) > timing.elapsedSeconds)
+    #expect(timing.lastCompletedFrameSeconds != nil)
+    #expect(timing.averageCompletedFrameSeconds != nil)
 
     controller.cancel()
     while controller.isRendering { await Task.yield() }
     #expect(cancellationWasObserved)
     #expect(controller.jobs.first?.state == .cancelled)
     #expect(controller.jobs.first?.detail == "Cancelado")
+    #expect(controller.jobs.first?.terminalTiming?.totalSeconds ?? -1 > 0)
+    #expect(controller.jobs.first?.terminalTiming?.averageCompletedFrameSeconds != nil)
     #expect(controller.timing(for: job.id) == nil)
 }
 
@@ -337,7 +345,48 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV12StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
+@Test @MainActor func outputQueuePersistsTerminalTotalAndAverageAcrossSessions() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("render-queue-terminal-timing-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try RenderQueueStore(directoryURL: root)
+    let controller = try NativeOutputQueueController(store: store)
+    controller.enqueue(
+        scene: outputQueueTestScene(name: "Timing persistido"),
+        generatedEnvironmentEXR: nil,
+        outputPlan: queueTestPlan("/tmp/timing-persisted.mov"),
+        configuration: outputQueueTestConfiguration()
+    )
+    controller.run(operation: { job, progress in
+        progress(1, 2)
+        progress(2, 2)
+        return job.destination
+    }, onFailure: { _ in })
+    while controller.isRendering { await Task.yield() }
+
+    let completed = try #require(controller.jobs.first)
+    let timing = try #require(completed.terminalTiming)
+    #expect(timing.totalSeconds >= 0)
+    #expect(timing.averageCompletedFrameSeconds == timing.totalSeconds / 2)
+
+    let restored = try NativeOutputQueueController(store: store)
+    #expect(restored.jobs.first?.state == .completed)
+    #expect(restored.jobs.first?.terminalTiming == timing)
+
+    var rootObject = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: store.documentURL))
+            as? [String: Any]
+    )
+    var jobs = try #require(rootObject["jobs"] as? [[String: Any]])
+    jobs[0].removeValue(forKey: "terminalTiming")
+    rootObject["jobs"] = jobs
+    try JSONSerialization.data(withJSONObject: rootObject).write(
+        to: store.documentURL, options: .atomic
+    )
+    #expect(throws: (any Error).self) { try store.load() }
+}
+
+@Test @MainActor func renderQueueV14StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-v11-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -352,7 +401,7 @@ import Testing
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v12")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v14")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -437,7 +486,11 @@ import Testing
             configuration: configuration,
             state: state,
             progress: state == .completed ? 1 : 0,
-            detail: state.rawValue
+            detail: state.rawValue,
+            terminalTiming: state.isTerminal ? .init(
+                totalSeconds: 1,
+                averageCompletedFrameSeconds: state == .completed ? 1 : nil
+            ) : nil
         )
     }
     try store.save(.init(jobs: jobs))

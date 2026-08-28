@@ -59,6 +59,15 @@ import Testing
     let texture = try #require(result.frame?.texture)
     #expect(texture.width == 6)
     #expect(texture.height == 6)
+    let timing = FusionPhysicalTiming.resolve(
+        sourcePreparationSeconds: 0,
+        physicalEvaluationSeconds: 1,
+        gpuReadbackSeconds: 0,
+        diagnostics: result.diagnostics
+    )
+    #expect(timing.fusedScreenCoverLensSeconds != nil)
+    #expect(timing.sensorCaptureDevelopmentSeconds != nil)
+    #expect(timing.physicalOrchestrationOverheadSeconds != nil)
 }
 
 @Test @MainActor func unifiedPhysicalABIReportsStaticInputForCompletePipeline() async throws {

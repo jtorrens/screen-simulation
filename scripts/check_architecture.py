@@ -670,6 +670,10 @@ def validate_fusion_scene_color_contract() -> None:
         "studio-fusion-ocio",
         "fusionConfigurationFileName",
         "ocioSourceColorSpace",
+        "SPILL MEDIA",
+        'name: "SpillToACEScg"',
+        "AddProjectedDeviceSpill = Custom",
+        "spillRGB + plateRGB",
     ):
         if forbidden in fusion:
             raise ValidationError(
@@ -684,9 +688,8 @@ def validate_fusion_scene_color_contract() -> None:
         "ColorPipelineGuide = Note",
         "ViewInfo = StickyNoteInfo",
         "DEVICE MEDIA",
-        "SPILL MEDIA",
         'name: "DeviceToACEScg"',
-        'name: "SpillToACEScg"',
+        "DeviceRestoreAlpha = Custom",
         "case let .acesTransform",
         "case let .colorSpaceTransform",
         'inputColorSpaceID: "REC709_COLORSPACE"',
@@ -697,8 +700,7 @@ def validate_fusion_scene_color_contract() -> None:
         'OutputGamma = Input { Value = FuID { "LINEAR_GAMMA" } }',
         'ToneMapping = Input { Value = FuID { "TM_NONE" } }',
         'GamutMapping = Input { Value = FuID { "GM_NONE" } }',
-        "AddProjectedDeviceSpill = Custom",
-        "resultRGB = deviceRGB + spillRGB + plateRGB * (1 - deviceA)",
+        "resultRGB = deviceRGB + plateRGB * (1 - deviceA)",
         "IDT_ACESCG",
         "ODT_REC709_100",
         "Gamut compression: None",

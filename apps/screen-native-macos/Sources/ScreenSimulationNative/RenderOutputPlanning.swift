@@ -60,15 +60,11 @@ struct RenderOutputPlan: Codable, Equatable, Sendable {
             let mediaNames: [String]
             if configuration.format.isMovie {
                 mediaNames = [
-                    "media/\(outputStem)_Device.\(configuration.format.fileExtension)",
-                    "media/\(outputStem)_Spill.\(configuration.format.fileExtension)"
+                    "media/\(outputStem)_Device.\(configuration.format.fileExtension)"
                 ]
             } else {
-                mediaNames = configuration.frameRange.flatMap { frame in
-                    [
-                        String(format: "media/%@_Device%08d.%@", outputStem, frame, configuration.format.fileExtension),
-                        String(format: "media/%@_Spill%08d.%@", outputStem, frame, configuration.format.fileExtension)
-                    ]
+                mediaNames = configuration.frameRange.map { frame in
+                    String(format: "media/%@_Device%08d.%@", outputStem, frame, configuration.format.fileExtension)
                 }
             }
             var relative = mediaNames
