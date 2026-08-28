@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fusion_plan.development_enabled = true;
                 let mut generic_plan = fusion_plan;
                 let mut generic_zero_environment = screen_cover::ProceduralEnvironment::NONE;
-                generic_zero_environment.rotation_x_degrees = 1.0;
+                generic_zero_environment.ambient_radiance.0.r = 1.0;
                 generic_plan.environment =
                     screen_cover::IncidentEnvironment::Procedural(generic_zero_environment);
                 let mut physical_milliseconds = Vec::with_capacity(5);
