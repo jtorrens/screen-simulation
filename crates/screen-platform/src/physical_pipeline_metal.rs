@@ -2179,8 +2179,18 @@ impl MetalPhysicalPipeline {
             ));
         }
         let tile_count = work_height.div_ceil(TILE_ROWS);
+        let zero_incident_environment = matches!(
+            plan.environment,
+            IncidentEnvironment::Procedural(environment)
+                if environment.ambient_radiance.0.r == 0.0
+                    && environment.ambient_radiance.0.g == 0.0
+                    && environment.ambient_radiance.0.b == 0.0
+                    && environment.key_radiance.0.r == 0.0
+                    && environment.key_radiance.0.g == 0.0
+                    && environment.key_radiance.0.b == 0.0
+        );
         let fusion_device_mov = vfx_raster.is_some_and(|raster| !raster.bake_depth_of_field)
-            && plan.environment == IncidentEnvironment::NONE
+            && zero_incident_environment
             && plan.requested_intermediate == PhysicalIntermediate::ShutterMotion;
         let physical_pipeline = match (
             fusion_device_mov,
@@ -2979,6 +2989,9 @@ mod tests {
                 1.0,
             );
             plan.environment = IncidentEnvironment::NONE;
+            if let IncidentEnvironment::Procedural(environment) = &mut plan.environment {
+                environment.character_strength = 1.0;
+            }
             plan.lens_evaluation_model = lens_evaluation_model;
             plan.development_enabled = true;
             plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
@@ -3011,7 +3024,7 @@ mod tests {
 
             let mut generic_plan = plan;
             let mut generic_zero_environment = screen_cover::ProceduralEnvironment::NONE;
-            generic_zero_environment.rotation_x_degrees = 1.0;
+            generic_zero_environment.ambient_radiance.0.r = 1.0;
             generic_plan.environment = IncidentEnvironment::Procedural(generic_zero_environment);
             let generic = backend
                 .evaluate_vfx_transparency_with_environment(
