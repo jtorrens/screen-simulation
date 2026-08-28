@@ -203,6 +203,8 @@ pub struct MetalPhysicalPipeline {
     vfx_frontal_thin_lens_image_pipeline: ComputePipelineState,
     vfx_frontal_depth_blur_procedural_pipeline: ComputePipelineState,
     vfx_frontal_depth_blur_image_pipeline: ComputePipelineState,
+    fusion_vfx_frontal_thin_lens_no_environment_pipeline: ComputePipelineState,
+    fusion_vfx_frontal_depth_blur_no_environment_pipeline: ComputePipelineState,
     environment_importance_pipeline: ComputePipelineState,
     row_prefix_pipeline: ComputePipelineState,
     glow_signal_prefix_pipeline: ComputePipelineState,
@@ -278,7 +280,9 @@ impl MetalPhysicalPipeline {
         let specialized_pipeline = |function_name: &str,
                                     vfx_depth_blur: bool,
                                     image_environment: bool,
-                                    device_vfx_frontal: bool| {
+                                    device_vfx_frontal: bool,
+                                    no_environment: bool,
+                                    fusion_device_mov: bool| {
             let constants = FunctionConstantValues::new();
             constants.set_constant_value_at_index(
                 (&raw const vfx_depth_blur).cast(),
@@ -295,6 +299,16 @@ impl MetalPhysicalPipeline {
                 MTLDataType::Bool,
                 2,
             );
+            constants.set_constant_value_at_index(
+                (&raw const no_environment).cast(),
+                MTLDataType::Bool,
+                3,
+            );
+            constants.set_constant_value_at_index(
+                (&raw const fusion_device_mov).cast(),
+                MTLDataType::Bool,
+                4,
+            );
             let function = library
                 .get_function(function_name, Some(constants))
                 .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -305,28 +319,33 @@ impl MetalPhysicalPipeline {
         let physical_function = "evaluate_physical_pipeline";
         let temporal_function = "evaluate_physical_pipeline_temporal";
         let thin_lens_procedural_pipeline =
-            specialized_pipeline(physical_function, false, false, false)?;
-        let thin_lens_image_pipeline = specialized_pipeline(physical_function, false, true, false)?;
+            specialized_pipeline(physical_function, false, false, false, false, false)?;
+        let thin_lens_image_pipeline =
+            specialized_pipeline(physical_function, false, true, false, false, false)?;
         let vfx_depth_blur_procedural_pipeline =
-            specialized_pipeline(physical_function, true, false, false)?;
+            specialized_pipeline(physical_function, true, false, false, false, false)?;
         let vfx_depth_blur_image_pipeline =
-            specialized_pipeline(physical_function, true, true, false)?;
+            specialized_pipeline(physical_function, true, true, false, false, false)?;
         let temporal_thin_lens_procedural_pipeline =
-            specialized_pipeline(temporal_function, false, false, false)?;
+            specialized_pipeline(temporal_function, false, false, false, false, false)?;
         let temporal_thin_lens_image_pipeline =
-            specialized_pipeline(temporal_function, false, true, false)?;
+            specialized_pipeline(temporal_function, false, true, false, false, false)?;
         let temporal_vfx_depth_blur_procedural_pipeline =
-            specialized_pipeline(temporal_function, true, false, false)?;
+            specialized_pipeline(temporal_function, true, false, false, false, false)?;
         let temporal_vfx_depth_blur_image_pipeline =
-            specialized_pipeline(temporal_function, true, true, false)?;
+            specialized_pipeline(temporal_function, true, true, false, false, false)?;
         let vfx_frontal_thin_lens_procedural_pipeline =
-            specialized_pipeline(physical_function, false, false, true)?;
+            specialized_pipeline(physical_function, false, false, true, false, false)?;
         let vfx_frontal_thin_lens_image_pipeline =
-            specialized_pipeline(physical_function, false, true, true)?;
+            specialized_pipeline(physical_function, false, true, true, false, false)?;
         let vfx_frontal_depth_blur_procedural_pipeline =
-            specialized_pipeline(physical_function, true, false, true)?;
+            specialized_pipeline(physical_function, true, false, true, false, false)?;
         let vfx_frontal_depth_blur_image_pipeline =
-            specialized_pipeline(physical_function, true, true, true)?;
+            specialized_pipeline(physical_function, true, true, true, false, false)?;
+        let fusion_vfx_frontal_thin_lens_no_environment_pipeline =
+            specialized_pipeline(physical_function, false, false, true, true, true)?;
+        let fusion_vfx_frontal_depth_blur_no_environment_pipeline =
+            specialized_pipeline(physical_function, true, false, true, true, true)?;
         let environment_importance_function = library
             .get_function("build_environment_importance", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -413,6 +432,8 @@ impl MetalPhysicalPipeline {
             vfx_frontal_thin_lens_image_pipeline,
             vfx_frontal_depth_blur_procedural_pipeline,
             vfx_frontal_depth_blur_image_pipeline,
+            fusion_vfx_frontal_thin_lens_no_environment_pipeline,
+            fusion_vfx_frontal_depth_blur_no_environment_pipeline,
             environment_importance_pipeline,
             row_prefix_pipeline,
             glow_signal_prefix_pipeline,
@@ -2158,35 +2179,64 @@ impl MetalPhysicalPipeline {
             ));
         }
         let tile_count = work_height.div_ceil(TILE_ROWS);
+        let fusion_device_mov = vfx_raster.is_some_and(|raster| !raster.bake_depth_of_field)
+            && plan.environment == IncidentEnvironment::NONE
+            && plan.requested_intermediate == PhysicalIntermediate::ShutterMotion;
         let physical_pipeline = match (
+            fusion_device_mov,
             vfx_raster.is_some(),
             plan.lens_evaluation_model,
             plan.environment,
         ) {
-            (false, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+            (true, true, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+                &self.fusion_vfx_frontal_thin_lens_no_environment_pipeline
+            }
+            (true, true, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
+                &self.fusion_vfx_frontal_depth_blur_no_environment_pipeline
+            }
+            (false, false, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
                 &self.thin_lens_procedural_pipeline
             }
-            (false, LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
-                &self.thin_lens_image_pipeline
-            }
-            (false, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
-                &self.vfx_depth_blur_procedural_pipeline
-            }
-            (false, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
-                &self.vfx_depth_blur_image_pipeline
-            }
-            (true, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
+            (
+                false,
+                false,
+                LensEvaluationModel::ThinLens,
+                IncidentEnvironment::Equirectangular(_),
+            ) => &self.thin_lens_image_pipeline,
+            (
+                false,
+                false,
+                LensEvaluationModel::VfxDepthBlur,
+                IncidentEnvironment::Procedural(_),
+            ) => &self.vfx_depth_blur_procedural_pipeline,
+            (
+                false,
+                false,
+                LensEvaluationModel::VfxDepthBlur,
+                IncidentEnvironment::Equirectangular(_),
+            ) => &self.vfx_depth_blur_image_pipeline,
+            (false, true, LensEvaluationModel::ThinLens, IncidentEnvironment::Procedural(_)) => {
                 &self.vfx_frontal_thin_lens_procedural_pipeline
             }
-            (true, LensEvaluationModel::ThinLens, IncidentEnvironment::Equirectangular(_)) => {
-                &self.vfx_frontal_thin_lens_image_pipeline
-            }
-            (true, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Procedural(_)) => {
-                &self.vfx_frontal_depth_blur_procedural_pipeline
-            }
-            (true, LensEvaluationModel::VfxDepthBlur, IncidentEnvironment::Equirectangular(_)) => {
-                &self.vfx_frontal_depth_blur_image_pipeline
-            }
+            (
+                false,
+                true,
+                LensEvaluationModel::ThinLens,
+                IncidentEnvironment::Equirectangular(_),
+            ) => &self.vfx_frontal_thin_lens_image_pipeline,
+            (
+                false,
+                true,
+                LensEvaluationModel::VfxDepthBlur,
+                IncidentEnvironment::Procedural(_),
+            ) => &self.vfx_frontal_depth_blur_procedural_pipeline,
+            (
+                false,
+                true,
+                LensEvaluationModel::VfxDepthBlur,
+                IncidentEnvironment::Equirectangular(_),
+            ) => &self.vfx_frontal_depth_blur_image_pipeline,
+            _ => unreachable!("Fusion specialization requires the exact no-Environment contract"),
         };
         for tile in 0..tile_count {
             if is_cancelled() {
@@ -2911,6 +2961,85 @@ mod tests {
             evaluate(disabled, no_environment),
             evaluate(amount_four, no_environment)
         );
+    }
+
+    #[test]
+    fn fusion_device_mov_specialization_is_exact_for_delegated_dof_and_no_environment() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for lens_evaluation_model in [
+            screen_application::LensEvaluationModel::ThinLens,
+            screen_application::LensEvaluationModel::VfxDepthBlur,
+        ] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.12,
+                1.0,
+            );
+            plan.environment = IncidentEnvironment::NONE;
+            plan.lens_evaluation_model = lens_evaluation_model;
+            plan.development_enabled = true;
+            plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
+            plan.cover.anti_glare_microtexture.character_strength = 1.0;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let signal_values = input
+                .device_signal
+                .pixels
+                .iter()
+                .zip(&input.device_signal.alpha)
+                .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
+                .collect::<Vec<_>>();
+            let signal = texture(&device, input.width, input.height, &signal_values);
+            let raster = VfxTransparencyRaster {
+                active_width: plan.requested_width,
+                active_height: plan.requested_height,
+                bake_depth_of_field: false,
+            };
+            let specialized = backend
+                .evaluate_vfx_transparency_with_environment(
+                    &source,
+                    &signal,
+                    None,
+                    plan,
+                    raster,
+                    |_| {},
+                    || false,
+                )
+                .expect("specialized Fusion Device MOV");
+
+            let mut generic_plan = plan;
+            let mut generic_zero_environment = screen_cover::ProceduralEnvironment::NONE;
+            generic_zero_environment.rotation_x_degrees = 1.0;
+            generic_plan.environment = IncidentEnvironment::Procedural(generic_zero_environment);
+            let generic = backend
+                .evaluate_vfx_transparency_with_environment(
+                    &source,
+                    &signal,
+                    None,
+                    generic_plan,
+                    raster,
+                    |_| {},
+                    || false,
+                )
+                .expect("generic zero-Environment Fusion Device MOV");
+
+            let specialized = read(&specialized.texture);
+            let generic = read(&generic.texture);
+            assert_eq!(specialized.len(), generic.len());
+            for (pixel_index, (specialized, generic)) in
+                specialized.iter().zip(&generic).enumerate()
+            {
+                for channel in 0..4 {
+                    assert_eq!(
+                        specialized[channel].to_bits(),
+                        generic[channel].to_bits(),
+                        "Fusion specialization changed pixel {pixel_index} channel {channel} for {lens_evaluation_model:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

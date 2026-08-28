@@ -57,6 +57,8 @@ constant float PI = 3.14159265358979323846f;
 constant bool VFX_DEPTH_BLUR [[function_constant(0)]];
 constant bool IMAGE_ENVIRONMENT [[function_constant(1)]];
 constant bool DEVICE_VFX_FRONTAL [[function_constant(2)]];
+constant bool NO_ENVIRONMENT [[function_constant(3)]];
+constant bool FUSION_DEVICE_MOV [[function_constant(4)]];
 
 struct EnvironmentImportanceParams {
     uint first_level;
@@ -1014,8 +1016,6 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     texture2d<float, access::sample> environment_acescg,
     uint2 sample_seed,
     constant PhysicalPipelineParams& p) {
-    const float reflection_visibility = physical_microtexture_visibility(
-        cover_position_meters, footprint_half_extent_meters, p);
     const float reflection_cosine = clamp(view_cosine, 0.0f, 1.0f);
     const float transmission_cosine_i = reflection_cosine;
     const float reflection = cover_interface(reflection_cosine, p);
@@ -1031,6 +1031,11 @@ inline float3 apply_flat_cover(float3 emitted, float view_cosine,
     const float haze_loss = clamp(p.cover_haze.x * p.cover_geometry.x, 0.0f, 0.95f);
     const float3 transmission = (1.0f - reflection)
         * exp(-p.cover_absorption_roughness.xyz * absorption_scale) * (1.0f - haze_loss);
+    if (NO_ENVIRONMENT) {
+        return emitted * transmission;
+    }
+    const float reflection_visibility = physical_microtexture_visibility(
+        cover_position_meters, footprint_half_extent_meters, p);
     return emitted * transmission
         + flat_environment_radiance(
             reflection_direction_local, cover_position_meters, environment_acescg,
@@ -1653,9 +1658,10 @@ inline float4 evaluate_physical_pipeline_pixel(
     float3 cover_irradiance = 0.0f;
     float cover_weight = 0.0f;
     float aperture_weight = 0.0f;
-    const uint requested_stage = p.semantics.z;
+    const uint requested_stage = FUSION_DEVICE_MOV ? 10u : p.semantics.z;
     const bool vfx_transparency = DEVICE_VFX_FRONTAL;
-    const bool bake_vfx_dof = !vfx_transparency || p.vfx_raster.z != 0.0f;
+    const bool bake_vfx_dof = FUSION_DEVICE_MOV
+        ? false : !vfx_transparency || p.vfx_raster.z != 0.0f;
     const bool final_optical = requested_stage >= 6;
     const bool needs_average_code = requested_stage == 1;
     const bool needs_continuous = requested_stage == 2 || final_optical;
@@ -2053,7 +2059,7 @@ inline float4 evaluate_physical_pipeline_pixel(
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);
     const float3 shuttered = glared * shutter_scale;
     float3 selected;
-    switch (p.semantics.z) {
+    switch (requested_stage) {
         case 0: selected = ideal.rgb; break;
         case 1: selected = average_device_code; break;
         case 2: selected = continuous; break;

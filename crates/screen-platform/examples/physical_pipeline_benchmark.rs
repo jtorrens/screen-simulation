@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     use screen_camera::CameraRenderingIntent;
     use screen_panel::{DEVICE_PRESETS, FlatPanelQuality, PanelLightSpreadProfile};
-    use screen_platform::MetalPhysicalPipeline;
+    use screen_platform::{MetalPhysicalPipeline, VfxTransparencyRaster};
 
     const SOURCE_WIDTH: u32 = 3_840;
     const SOURCE_HEIGHT: u32 = 2_160;
@@ -176,6 +176,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output_bytes,
                 input_bytes + output_bytes,
             );
+            if preset_id == "lcd-macbook-pro-retina-14" && quality == FlatPanelQuality::High {
+                let mut fusion_plan = plan;
+                fusion_plan.development_enabled = true;
+                let mut generic_plan = fusion_plan;
+                let mut generic_zero_environment = screen_cover::ProceduralEnvironment::NONE;
+                generic_zero_environment.rotation_x_degrees = 1.0;
+                generic_plan.environment =
+                    screen_cover::IncidentEnvironment::Procedural(generic_zero_environment);
+                let mut physical_milliseconds = Vec::with_capacity(5);
+                let mut total_milliseconds = Vec::with_capacity(5);
+                let mut generic_physical_milliseconds = Vec::with_capacity(5);
+                let mut generic_total_milliseconds = Vec::with_capacity(5);
+                for _ in 0..5 {
+                    let generic_started = Instant::now();
+                    let generic = backend.evaluate_vfx_transparency_with_environment(
+                        &source,
+                        &signal,
+                        None,
+                        generic_plan,
+                        VfxTransparencyRaster {
+                            active_width: requested_width,
+                            active_height: requested_height,
+                            bake_depth_of_field: false,
+                        },
+                        |_| {},
+                        || false,
+                    )?;
+                    generic_physical_milliseconds
+                        .push(generic.stage_elapsed_nanoseconds[10] as f64 / 1_000_000.0);
+                    generic_total_milliseconds.push(milliseconds(generic_started.elapsed()));
+
+                    let started = Instant::now();
+                    let fusion = backend.evaluate_vfx_transparency_with_environment(
+                        &source,
+                        &signal,
+                        None,
+                        fusion_plan,
+                        VfxTransparencyRaster {
+                            active_width: requested_width,
+                            active_height: requested_height,
+                            bake_depth_of_field: false,
+                        },
+                        |_| {},
+                        || false,
+                    )?;
+                    physical_milliseconds
+                        .push(fusion.stage_elapsed_nanoseconds[10] as f64 / 1_000_000.0);
+                    total_milliseconds.push(milliseconds(started.elapsed()));
+                }
+                let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+                let generic_physical_mean = mean(&generic_physical_milliseconds);
+                let specialized_physical_mean = mean(&physical_milliseconds);
+                println!(
+                    "fusion_device_mov preset={} quality={:?} output={}x{} dof=delegated environment=none iterations=5 generic_physical_mean_ms={:.3} specialized_physical_mean_ms={:.3} physical_reduction_percent={:.2} generic_total_mean_ms={:.3} specialized_total_mean_ms={:.3}",
+                    preset.id,
+                    quality,
+                    requested_width,
+                    requested_height,
+                    generic_physical_mean,
+                    specialized_physical_mean,
+                    100.0 * (generic_physical_mean - specialized_physical_mean)
+                        / generic_physical_mean,
+                    mean(&generic_total_milliseconds),
+                    mean(&total_milliseconds),
+                );
+            }
         }
     }
     Ok(())
