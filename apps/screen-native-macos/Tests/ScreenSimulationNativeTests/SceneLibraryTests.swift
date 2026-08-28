@@ -66,7 +66,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                 assets: [], missingMedia: nil
             ),
             currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-            viewerIsFitted: true, authoring: try sceneAuthoring()
+            viewerIsFitted: true, authoring: try sceneAuthoring(),
+            trackingSceneMethod: .fusionComposition
         ),
         thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
     )
@@ -245,12 +246,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 25)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 26)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v25.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v26.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,
@@ -273,7 +274,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
         viewerPanY: -8,
         viewerIsFitted: false,
         authoring: try sceneAuthoring(),
-        fusionTrackerMotion: motion
+        fusionTrackerMotion: motion,
+        trackingSceneMethod: .fusionTrackerClipboard
     )
     let scene = SavedScene(
         id: id,
@@ -288,6 +290,7 @@ private func sceneCapture() throws -> SavedSceneCapture {
     let loaded = try store.load()
     #expect(loaded == document)
     #expect(loaded.scenes.first?.snapshot.fusionTrackerMotion == motion)
+    #expect(loaded.scenes.first?.snapshot.trackingSceneMethod == .fusionTrackerClipboard)
 }
 
 @MainActor
@@ -306,7 +309,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                     assets: [], missingMedia: nil
                 ),
                 currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-                viewerIsFitted: true, authoring: try sceneAuthoring()
+                viewerIsFitted: true, authoring: try sceneAuthoring(),
+                trackingSceneMethod: .fusionComposition
             ),
             thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
         ),
@@ -349,7 +353,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                 assets: [], missingMedia: nil
             ),
             currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-            viewerIsFitted: true, authoring: authoring
+            viewerIsFitted: true, authoring: authoring,
+            trackingSceneMethod: .fusionComposition
         ),
         thumbnailPNG: Data([1, 2, 3]),
         generatedEnvironmentEXR: nil
@@ -421,7 +426,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                     assets: [], missingMedia: nil
                 ),
                 currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-                viewerIsFitted: true, authoring: authoring
+                viewerIsFitted: true, authoring: authoring,
+                trackingSceneMethod: .fusionComposition
             )
         )
     }
@@ -550,7 +556,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             viewerPanX: 40,
             viewerPanY: -30,
             viewerIsFitted: false,
-            authoring: invalidAuthoring
+            authoring: invalidAuthoring,
+            trackingSceneMethod: .fusionComposition
         )
     )
 
@@ -635,7 +642,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             viewerPanX: 0,
             viewerPanY: 0,
             viewerIsFitted: true,
-            authoring: authoring
+            authoring: authoring,
+            trackingSceneMethod: .fusionComposition
         )
     )
     let workspace = WorkspaceModel()
@@ -680,7 +688,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                 viewerPanX: 0,
                 viewerPanY: 0,
                 viewerIsFitted: true,
-                authoring: authoring
+                authoring: authoring,
+                trackingSceneMethod: .fusionComposition
             )
         )
     }
@@ -730,7 +739,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             viewerPanX: 0,
             viewerPanY: 0,
             viewerIsFitted: true,
-            authoring: try sceneAuthoring()
+            authoring: try sceneAuthoring(),
+            trackingSceneMethod: .fusionComposition
         )
     )
 
@@ -755,7 +765,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             ),
             currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
             viewerIsFitted: true,
-            authoring: try sceneAuthoring()
+            authoring: try sceneAuthoring(),
+            trackingSceneMethod: .fusionComposition
         ),
         thumbnailPNG: Data([1, 2, 3]), generatedEnvironmentEXR: nil
     )
@@ -802,7 +813,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
         viewerPanX: -41,
         viewerPanY: 19,
         viewerIsFitted: false,
-        authoring: try sceneAuthoring()
+        authoring: try sceneAuthoring(),
+        trackingSceneMethod: .fusionComposition
     )
     let scene = SavedScene(
         id: id,
@@ -852,7 +864,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
                 assets: [], missingMedia: nil
             ),
             currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-            viewerIsFitted: true, authoring: try sceneAuthoring()
+            viewerIsFitted: true, authoring: try sceneAuthoring(),
+            trackingSceneMethod: .fusionComposition
         )
     )
     var rootObject = try #require(
@@ -938,7 +951,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
         currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
         viewerIsFitted: true,
         authoring: try sceneAuthoring(),
-        tracking: tracking
+        tracking: tracking,
+        trackingSceneMethod: .fusionComposition
     )
     let scene = SavedScene(
         id: id, name: "Plano con solve",
@@ -993,7 +1007,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             assets: [], missingMedia: nil
         ),
         currentFrame: 7, viewerZoom: 1.75, viewerPanX: 12, viewerPanY: -4,
-        viewerIsFitted: false, authoring: try sceneAuthoring(), tracking: tracking
+        viewerIsFitted: false, authoring: try sceneAuthoring(), tracking: tracking,
+        trackingSceneMethod: .fusionComposition
     )
     let scene = try controller.add(capture: .init(
         snapshot: snapshot, thumbnailPNG: Data([4, 5, 6]),
@@ -1023,7 +1038,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
         viewerPanY: snapshot.viewerPanY,
         viewerIsFitted: snapshot.viewerIsFitted,
         authoring: snapshot.authoring,
-        tracking: tracking
+        tracking: tracking,
+        trackingSceneMethod: .fusionComposition
     )
     let activeUpdated = try controller.removeImported3D(
         scene,
@@ -1068,7 +1084,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             assets: [], missingMedia: nil
         ),
         currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
-        viewerIsFitted: true, authoring: try sceneAuthoring()
+        viewerIsFitted: true, authoring: try sceneAuthoring(),
+        trackingSceneMethod: .fusionComposition
     )
     let originalData = Data([1, 2, 3, 4])
     let scene = try controller.add(capture: .init(
@@ -1128,7 +1145,8 @@ private func sceneCapture() throws -> SavedSceneCapture {
             currentFrame: frame,
             viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
             viewerIsFitted: true,
-            authoring: try sceneAuthoring()
+            authoring: try sceneAuthoring(),
+            trackingSceneMethod: .fusionComposition
         )
     }
     let originalEnvironment = Data([1, 2, 3, 4])

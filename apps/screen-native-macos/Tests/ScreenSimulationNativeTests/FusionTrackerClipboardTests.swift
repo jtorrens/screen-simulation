@@ -184,6 +184,7 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     let cameraResolver = try RustSceneFrameResolver(
         revision: 1, frameRate: rate, base: base,
         resolvedDevice: resolvedDevice, resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .fusionTrackerClipboard,
         trackingCamera: nil, trackingMetersPerSourceUnit: nil,
         fusionTrackerMotion: try track(.camera, cameraDestination)
     )
@@ -196,6 +197,7 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     let deviceResolver = try RustSceneFrameResolver(
         revision: 2, frameRate: rate, base: base,
         resolvedDevice: resolvedDevice, resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .fusionTrackerClipboard,
         trackingCamera: nil, trackingMetersPerSourceUnit: nil,
         fusionTrackerMotion: try track(.device, deviceDestination)
     )
@@ -204,4 +206,55 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     #expect(abs(Double(deviceFrame.screen_position.1) - deviceDestination.y) < 1e-5)
     #expect(abs(Double(deviceFrame.screen_position.2) - deviceDestination.z) < 1e-5)
     #expect(abs(Double(deviceFrame.camera_position.0) - base.cameraPose.position[0]) < 1e-5)
+
+    let importedDestination = SIMD3(
+        base.cameraPose.position[0] + 1,
+        base.cameraPose.position[1] + 2,
+        base.cameraPose.position[2] + 3
+    )
+    let importedCamera = TrackingCamera(
+        id: "Cam1", label: "Cam1",
+        frameRateNumerator: 24, frameRateDenominator: 1,
+        focalLengthMillimeters: 40,
+        gateWidthMillimeters: 24, gateHeightMillimeters: 13.5,
+        plateWidth: 1920, plateHeight: 1080,
+        distortion: .pinhole,
+        samples: [
+            .init(
+                frame: 0,
+                sourcePosition: SIMD3(
+                    base.cameraPose.position[0], base.cameraPose.position[1],
+                    base.cameraPose.position[2]
+                ),
+                orientation: SIMD4(0, 0, 0, 1)
+            ),
+            .init(
+                frame: 1, sourcePosition: importedDestination,
+                orientation: SIMD4(0, 0, 0, 1)
+            ),
+        ]
+    )
+    let importedResolver = try RustSceneFrameResolver(
+        revision: 3, frameRate: rate, base: base,
+        resolvedDevice: resolvedDevice, resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .fusionComposition,
+        trackingCamera: importedCamera, trackingMetersPerSourceUnit: 1,
+        fusionTrackerMotion: try track(.camera, cameraDestination)
+    )
+    let importedFrame = try importedResolver.resolve(frame)
+    #expect(abs(Double(importedFrame.camera_position.0) - importedDestination.x) < 1e-5)
+    #expect(abs(Double(importedFrame.camera_position.1) - importedDestination.y) < 1e-5)
+    #expect(abs(Double(importedFrame.camera_position.2) - importedDestination.z) < 1e-5)
+
+    let cornerResolver = try RustSceneFrameResolver(
+        revision: 4, frameRate: rate, base: base,
+        resolvedDevice: resolvedDevice, resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .deviceCorners,
+        trackingCamera: importedCamera, trackingMetersPerSourceUnit: 1,
+        fusionTrackerMotion: try track(.camera, cameraDestination)
+    )
+    let cornerFrame = try cornerResolver.resolve(frame)
+    #expect(abs(Double(cornerFrame.camera_position.0) - base.cameraPose.position[0]) < 1e-5)
+    #expect(abs(Double(cornerFrame.camera_position.1) - base.cameraPose.position[1]) < 1e-5)
+    #expect(abs(Double(cornerFrame.camera_position.2) - base.cameraPose.position[2]) < 1e-5)
 }

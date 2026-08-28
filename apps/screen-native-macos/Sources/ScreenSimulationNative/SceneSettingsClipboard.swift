@@ -195,8 +195,11 @@ struct SceneSettingsClipboardDocument: Codable, Equatable, Sendable {
 
     var containsAnimation: Bool {
         (includedBlocks.contains(.cameraTransform) && (
-            snapshot.tracking != nil || snapshot.fusionTrackerMotion?.target == .camera
+            (snapshot.trackingSceneMethod == .fusionComposition && snapshot.tracking != nil)
+                || (snapshot.trackingSceneMethod == .fusionTrackerClipboard
+                    && snapshot.fusionTrackerMotion?.target == .camera)
         )) || (includedBlocks.contains(.deviceTransform)
+            && snapshot.trackingSceneMethod == .fusionTrackerClipboard
             && snapshot.fusionTrackerMotion?.target == .device)
     }
 }
@@ -292,6 +295,7 @@ extension SavedSceneSnapshot {
                 ? source.authoring.environmentCalibration : authoring.environmentCalibration
         )
         var mergedFusionTrackerMotion = fusionTrackerMotion
+        var mergedTrackingSceneMethod = trackingSceneMethod
         for (block, target) in [
             (SceneSettingsBlock.cameraTransform, FusionTrackerTarget.camera),
             (.deviceTransform, .device),
@@ -300,6 +304,16 @@ extension SavedSceneSnapshot {
             if source.fusionTrackerMotion?.target == target {
                 mergedFusionTrackerMotion = source.fusionTrackerMotion
             }
+        }
+        if blocks.contains(.cameraTransform),
+           (source.trackingSceneMethod != .fusionTrackerClipboard
+            || source.fusionTrackerMotion?.target == .camera) {
+            mergedTrackingSceneMethod = source.trackingSceneMethod
+        } else if blocks.contains(.deviceTransform),
+                  (source.trackingSceneMethod == .deviceCorners
+                    || (source.trackingSceneMethod == .fusionTrackerClipboard
+                        && source.fusionTrackerMotion?.target == .device)) {
+            mergedTrackingSceneMethod = source.trackingSceneMethod
         }
         let result = SavedSceneSnapshot(
             source: self.source,
@@ -312,7 +326,8 @@ extension SavedSceneSnapshot {
             generatedEnvironment: blocks.contains(.environment)
                 ? source.generatedEnvironment : generatedEnvironment,
             tracking: blocks.contains(.cameraTransform) ? source.tracking : tracking,
-            fusionTrackerMotion: mergedFusionTrackerMotion
+            fusionTrackerMotion: mergedFusionTrackerMotion,
+            trackingSceneMethod: mergedTrackingSceneMethod
         )
         try result.validate()
         return result

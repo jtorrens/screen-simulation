@@ -44,11 +44,47 @@ import Testing
             patternRawValue: SyntheticPattern.eyeChart.rawValue,
             assets: [], missingMedia: nil
         ),
-        tracking: tracking
+        tracking: tracking,
+        fusionTrackerMotion: nil,
+        trackingSceneMethod: .fusionComposition
     )
     let expectedRate = try StudioFrameRate(numerator: 25, denominator: 1)
     #expect(timeline.exactFrameRate == expectedRate)
     #expect(timeline.frameCount == 100)
+
+    let motion = try FusionTrackerPoseTrack(
+        target: .camera, anchorFrame: 0,
+        frameRateNumerator: 24, frameRateDenominator: 1,
+        samples: [
+            .init(frame: 0, position: SIMD3(0, 0, 1), orientation: SIMD4(0, 0, 0, 1)),
+            .init(frame: 199, position: SIMD3(1, 0, 1), orientation: SIMD4(0, 0, 0, 1)),
+        ]
+    )
+    let fusionTimeline = try WorkspaceModel.savedRenderTimeline(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        tracking: tracking,
+        fusionTrackerMotion: motion,
+        trackingSceneMethod: .fusionComposition
+    )
+    #expect(fusionTimeline.exactFrameRate == expectedRate)
+    #expect(fusionTimeline.frameCount == 100)
+
+    let trackerTimeline = try WorkspaceModel.savedRenderTimeline(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        tracking: tracking,
+        fusionTrackerMotion: motion,
+        trackingSceneMethod: .fusionTrackerClipboard
+    )
+    #expect(trackerTimeline.exactFrameRate == .fps24)
+    #expect(trackerTimeline.frameCount == 200)
 }
 
 @MainActor @Test func rerenderRestoresAuthoredDirectoryNameAndVersion() throws {

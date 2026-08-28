@@ -244,7 +244,8 @@ import Testing
         viewerIsFitted: initial.snapshot.viewerIsFitted,
         authoring: authoring,
         generatedEnvironment: initial.snapshot.generatedEnvironment,
-        tracking: initial.snapshot.tracking
+        tracking: initial.snapshot.tracking,
+        trackingSceneMethod: initial.snapshot.trackingSceneMethod
     )
     let frozenScene = SavedScene(
         id: initial.id, name: initial.name,
@@ -336,7 +337,7 @@ import Testing
     #expect(restored.jobs[0].state == .pending)
 }
 
-@Test @MainActor func renderQueueV11StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
+@Test @MainActor func renderQueueV12StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-v11-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -351,7 +352,7 @@ import Testing
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v11")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v12")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])
@@ -551,7 +552,8 @@ private func outputQueueTestScene(name: String) -> SavedScene {
             viewerPanX: 0,
             viewerPanY: 0,
             viewerIsFitted: true,
-            authoring: authoring
+            authoring: authoring,
+            trackingSceneMethod: .fusionComposition
         )
     )
 }

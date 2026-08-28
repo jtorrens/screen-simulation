@@ -1219,6 +1219,7 @@ private func renderMoireVariant(
         base: pipeline,
         resolvedDevice: resolvedDevice,
         resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .deviceCorners,
         trackingCamera: nil,
         trackingMetersPerSourceUnit: nil
     )

@@ -478,7 +478,7 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
         method: TrackingSceneMethod? = nil
     ) {
         let switchesVisibleMethod = method.map { $0 != model.trackingSceneMethod } ?? false
-        if let method { model.trackingSceneMethod = method }
+        if let method { model.setTrackingSceneMethod(method) }
         if let panel, panel.isVisible {
             if switchesVisibleMethod {
                 model.setReferenceMatchEnabled(model.trackingSceneMethod == .deviceCorners)
@@ -548,13 +548,13 @@ private struct TrackingScenePanel: View {
     var body: some View {
         Form {
             Section("Método") {
-                Picker("Generar escena 3D", selection: $model.trackingSceneMethod) {
+                Picker("Generar escena 3D", selection: Binding(
+                    get: { model.trackingSceneMethod },
+                    set: { model.setTrackingSceneMethod($0) }
+                )) {
                     ForEach(TrackingSceneMethod.allCases) { method in
                         Text(method.label).tag(method)
                     }
-                }
-                .onChange(of: model.trackingSceneMethod) { _, method in
-                    model.setReferenceMatchEnabled(method == .deviceCorners)
                 }
             }
             if model.trackingSceneMethod == .fusionComposition {

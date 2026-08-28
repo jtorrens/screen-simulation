@@ -4140,9 +4140,18 @@ struct ContentView: View {
                     )
                 }
                 .nativeActionState(.init(active: model.previewGizmosVisible))
-                .help(model.previewGizmosVisible
-                    ? "Ocultar todos los gizmos del Viewer"
-                    : "Mostrar todos los gizmos del Viewer")
+                .help("""
+                    \(model.previewGizmosVisible ? "Ocultar" : "Mostrar") todos los gizmos del Viewer
+
+                    Atajos de cámara y Device (con transformaciones desbloqueadas):
+                    • MMB: desplazar
+                    • Alt/Option + MMB: orbitar alrededor del Device
+                    • Shift + MMB o rueda: acercar/alejar
+                    • Cmd + MMB: escalar el mundo de tracking y recolocar el Device
+
+                    Sin cámara Fusion/SynthEyes activa, los tres primeros atajos mueven la cámara.
+                    Con cámara Fusion/SynthEyes activa, mueven el Device manteniendo fija esa cámara.
+                    """)
                 .accessibilityLabel(model.previewGizmosVisible
                     ? "Ocultar gizmos del Viewer"
                     : "Mostrar gizmos del Viewer")

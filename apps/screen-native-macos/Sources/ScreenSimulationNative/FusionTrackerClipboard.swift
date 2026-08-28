@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-enum TrackingSceneMethod: String, CaseIterable, Identifiable, Sendable {
+enum TrackingSceneMethod: String, CaseIterable, Identifiable, Codable, Sendable {
     case fusionComposition
     case deviceCorners
     case fusionTrackerClipboard

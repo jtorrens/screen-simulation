@@ -458,7 +458,7 @@ final class WorkspaceModel: ObservableObject {
     private(set) var environmentPresets: [EnvironmentProfileDefinition]
     @Published private(set) var physicalPublicationSummary = "Sin publicación física"
     @Published private(set) var trackingScene: TrackingScene?
-    @Published var trackingSceneMethod = TrackingSceneMethod.fusionComposition
+    @Published private(set) var trackingSceneMethod = TrackingSceneMethod.fusionComposition
     @Published private(set) var fusionTrackerClipboard: FusionTrackerClipboard?
     @Published private(set) var fusionTrackerAnchorFrame: Int?
     @Published private(set) var fusionTrackerMotion: FusionTrackerPoseTrack?
@@ -1351,7 +1351,8 @@ final class WorkspaceModel: ObservableObject {
               viewportSize.width > 0, viewportSize.height > 0
         else { return }
         if operation == .trackingWorldScale,
-           !(trackingCameraEnabled
+           !(trackingSceneMethod == .fusionComposition
+                && trackingCameraEnabled
                 && trackingMetersPerSourceUnit != nil
                 && selectedTrackingCamera != nil) {
             errorMessage = "Cmd+MMB necesita una cámara tracking activa y una escala 3D resuelta."
@@ -1387,7 +1388,8 @@ final class WorkspaceModel: ObservableObject {
             ? trackingMetersPerSourceUnit : nil
         cameraNavigationLatestTrackingScale = nil
         cameraNavigationMovesDevice = operation == .trackingWorldScale || (
-            trackingCameraEnabled
+            trackingSceneMethod == .fusionComposition
+                && trackingCameraEnabled
                 && trackingMetersPerSourceUnit != nil
                 && selectedTrackingCamera != nil
         )
@@ -3132,6 +3134,16 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
+    func setTrackingSceneMethod(_ method: TrackingSceneMethod) {
+        guard method != trackingSceneMethod else { return }
+        trackingSceneMethod = method
+        referenceMatchEnabled = method == .deviceCorners && referenceACEScgFrame != nil
+        cachedSceneResolver = nil
+        applyTimelineAuthority(resetRange: true)
+        physicalModel.invalidateExternalParameters(preservingQuality: true)
+        publishSetupFraming()
+    }
+
     private func loadReferenceFrame(_ url: URL) async {
         do {
             let managed = try ReferenceAssetLibrary.importAsset(from: url)
@@ -3671,12 +3683,14 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var trackingOverlayPoints: [CGPoint] {
-        guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
+        guard trackingSceneMethod == .fusionComposition,
+              trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
         return resolveTrackingOverlay(group.points.map(\.sourcePosition)).compactMap(\.self)
     }
 
     var trackingOverlayPointIDs: [String] {
-        guard trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
+        guard trackingSceneMethod == .fusionComposition,
+              trackingPointsVisible, let group = selectedTrackingPointGroup else { return [] }
         let projected = resolveTrackingOverlay(group.points.map(\.sourcePosition))
         return zip(group.points, projected).compactMap { point, projection in
             projection == nil ? nil : point.id
@@ -3684,7 +3698,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var trackingOverlaySegments: [CGPoint] {
-        guard trackingGeometryVisible, let scene = trackingScene else { return [] }
+        guard trackingSceneMethod == .fusionComposition,
+              trackingGeometryVisible, let scene = trackingScene else { return [] }
         let sources = scene.meshes.filter { visibleTrackingMeshIDs.contains($0.id) }.flatMap { mesh in
             var cursor = 0
             return mesh.faceVertexCounts.flatMap { count -> [SIMD3<Double>] in
@@ -3727,7 +3742,8 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private var visibleTrackingPlanePlacements: [(mesh: TrackingMesh, placement: TrackingPlanePlacement)] {
-        guard trackingGeometryVisible, let scene = trackingScene else { return [] }
+        guard trackingSceneMethod == .fusionComposition,
+              trackingGeometryVisible, let scene = trackingScene else { return [] }
         let viewer = trackingSourceCameraPosition
         return scene.meshes.compactMap { mesh in
             guard visibleTrackingMeshIDs.contains(mesh.id),
@@ -3842,6 +3858,7 @@ final class WorkspaceModel: ObservableObject {
         FileDialogDirectory.trackingComposition.remember(url)
         do {
             let imported = try FusionTrackingImporter().load(url)
+            setTrackingSceneMethod(.fusionComposition)
             trackingScene = imported
             selectedTrackingCameraID = nil
             selectedTrackingPointGroupID = nil
@@ -3854,6 +3871,10 @@ final class WorkspaceModel: ObservableObject {
             trackingSynthEyesUnitValue = 1
             trackingSynthEyesUnit = "m"
             trackingMetersPerSourceUnit = 1
+            cachedSceneResolver = nil
+            applyTimelineAuthority(resetRange: true)
+            physicalModel.invalidateExternalParameters(preservingQuality: true)
+            publishSetupFraming()
             status = "Tracking importado · 1 unidad SynthEyes = 1 m"
         } catch { errorMessage = error.localizedDescription }
     }
@@ -4442,7 +4463,7 @@ final class WorkspaceModel: ObservableObject {
     }
 
     private var trackingTimelineInfo: NativeVideoTimelineInfo? {
-        if let motion = fusionTrackerMotion {
+        if trackingSceneMethod == .fusionTrackerClipboard, let motion = fusionTrackerMotion {
             let rate: ExactFrameRate
             do {
                 rate = try ExactFrameRate(
@@ -4457,7 +4478,8 @@ final class WorkspaceModel: ObservableObject {
                 frameCount: (motion.samples.map(\.frame).max() ?? 0) + 1
             )
         }
-        guard trackingCameraEnabled, let camera = selectedTrackingCamera else { return nil }
+        guard trackingSceneMethod == .fusionComposition,
+              trackingCameraEnabled, let camera = selectedTrackingCamera else { return nil }
         let rate: ExactFrameRate
         do {
             rate = try ExactFrameRate(
@@ -4473,7 +4495,8 @@ final class WorkspaceModel: ObservableObject {
     static func savedRenderTimeline(
         source: SavedSceneSource,
         tracking: SavedTrackingScene?,
-        fusionTrackerMotion: FusionTrackerPoseTrack? = nil
+        fusionTrackerMotion: FusionTrackerPoseTrack?,
+        trackingSceneMethod: TrackingSceneMethod
     ) throws -> NativeVideoTimelineInfo {
         let sourceTimeline: NativeVideoTimelineInfo
         switch source.kind {
@@ -4491,7 +4514,7 @@ final class WorkspaceModel: ObservableObject {
             )
         }
         let trackingTimeline: NativeVideoTimelineInfo?
-        if let fusionTrackerMotion {
+        if trackingSceneMethod == .fusionTrackerClipboard, let fusionTrackerMotion {
             try fusionTrackerMotion.validate()
             trackingTimeline = .init(
                 exactFrameRate: try .init(
@@ -4500,7 +4523,8 @@ final class WorkspaceModel: ObservableObject {
                 ),
                 frameCount: (fusionTrackerMotion.samples.map(\.frame).max() ?? 0) + 1
             )
-        } else if let tracking, tracking.cameraEnabled {
+        } else if trackingSceneMethod == .fusionComposition,
+                  let tracking, tracking.cameraEnabled {
             guard let camera = tracking.scene.cameras.first(where: {
                 $0.id == tracking.cameraID
             }) else {
@@ -4653,6 +4677,7 @@ final class WorkspaceModel: ObservableObject {
                 base: authored,
                 resolvedDevice: device,
                 resolvedPipeline: pipeline,
+                trackingSceneMethod: trackingSceneMethod,
                 trackingCamera: trackingCameraEnabled ? selectedTrackingCamera : nil,
                 trackingMetersPerSourceUnit: trackingCameraEnabled
                     ? trackingMetersPerSourceUnit : nil,
@@ -5016,7 +5041,8 @@ final class WorkspaceModel: ObservableObject {
             savedTimeline = try Self.savedRenderTimeline(
                 source: scene.snapshot.source,
                 tracking: scene.snapshot.tracking,
-                fusionTrackerMotion: scene.snapshot.fusionTrackerMotion
+                fusionTrackerMotion: scene.snapshot.fusionTrackerMotion,
+                trackingSceneMethod: scene.snapshot.trackingSceneMethod
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -6046,7 +6072,8 @@ final class WorkspaceModel: ObservableObject {
                 selection: selection
             ),
             tracking: savedTracking,
-            fusionTrackerMotion: fusionTrackerMotion
+            fusionTrackerMotion: fusionTrackerMotion,
+            trackingSceneMethod: trackingSceneMethod
         )
         try snapshot.validate()
         let thumbnail = try SceneThumbnailRenderer.render(
@@ -6131,7 +6158,8 @@ final class WorkspaceModel: ObservableObject {
             authoring: authoring,
             generatedEnvironment: nil,
             tracking: nil,
-            fusionTrackerMotion: nil
+            fusionTrackerMotion: nil,
+            trackingSceneMethod: .fusionComposition
         )
         try reset.validate()
         return reset
@@ -6281,6 +6309,7 @@ final class WorkspaceModel: ObservableObject {
         try restoreTrackingScene(scene.snapshot.tracking)
         try scene.snapshot.fusionTrackerMotion?.validate()
         fusionTrackerMotion = scene.snapshot.fusionTrackerMotion
+        trackingSceneMethod = scene.snapshot.trackingSceneMethod
         cachedSceneResolver = nil
         // Tracking is part of the timeline authority. Establish it before restoring
         // the authored frame so a static Source plus a Tracker pose track cannot
@@ -6454,6 +6483,7 @@ final class WorkspaceModel: ObservableObject {
         trackingScalePointBID = staged.trackingScalePointBID
         trackingMeasuredDistanceMeters = staged.trackingMeasuredDistanceMeters
         fusionTrackerMotion = staged.fusionTrackerMotion
+        trackingSceneMethod = staged.trackingSceneMethod
 
         currentFrame = staged.currentFrame
         viewerNavigation.restore(

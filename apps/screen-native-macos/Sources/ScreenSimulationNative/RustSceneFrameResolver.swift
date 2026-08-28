@@ -13,6 +13,7 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         base: PhysicalPipelineAuthoringState,
         resolvedDevice: ResolvedDevice,
         resolvedPipeline: PhysicalPipelineResolvedState,
+        trackingSceneMethod: TrackingSceneMethod,
         trackingCamera: TrackingCamera?,
         trackingMetersPerSourceUnit: Double?,
         fusionTrackerMotion: FusionTrackerPoseTrack? = nil,
@@ -21,18 +22,23 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         autofocusTargetV: Double = 0.5
     ) throws {
         var error: UnsafePointer<CChar>?
+        let activeTrackingCamera = trackingSceneMethod == .fusionComposition
+            ? trackingCamera : nil
+        let activeFusionTrackerMotion = trackingSceneMethod == .fusionTrackerClipboard
+            ? fusionTrackerMotion : nil
         let cameraKnots = try Self.cameraKnots(
             base: base,
-            trackingCamera: trackingCamera,
-            trackingMetersPerSourceUnit: trackingMetersPerSourceUnit,
-            fusionTrackerMotion: fusionTrackerMotion
+            trackingCamera: activeTrackingCamera,
+            trackingMetersPerSourceUnit: activeTrackingCamera == nil
+                ? nil : trackingMetersPerSourceUnit,
+            fusionTrackerMotion: activeFusionTrackerMotion
         )
         let intrinsicsKnots = try Self.intrinsicsKnots(
             resolvedPipeline: resolvedPipeline,
-            trackingCamera: trackingCamera
+            trackingCamera: activeTrackingCamera
         )
         let screenKnots = try Self.screenKnots(
-            base: base, fusionTrackerMotion: fusionTrackerMotion
+            base: base, fusionTrackerMotion: activeFusionTrackerMotion
         )
         let cameraTrack = cameraKnots.withUnsafeBufferPointer {
             screen_physical_camera_pose_track_v2_create($0.baseAddress, $0.count, &error)

@@ -211,6 +211,12 @@
         "scripts/test_migrate_scene_library_v24_to_v25.py",
         "scripts/migrate_render_queue_v10_to_v11.py",
         "scripts/test_migrate_render_queue_v10_to_v11.py",
+        "scripts/migrate_scene_library_v25_to_v26.py",
+        "scripts/test_migrate_scene_library_v25_to_v26.py",
+        "scripts/migrate_render_queue_v11_to_v12.py",
+        "scripts/test_migrate_render_queue_v11_to_v12.py",
+        "scripts/migrate_scene_autosaves_v23_to_v24.py",
+        "scripts/test_migrate_scene_autosaves_v23_to_v24.py",
         "scripts/check_architecture.py"
       ]
     },

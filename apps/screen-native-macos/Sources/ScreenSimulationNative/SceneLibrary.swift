@@ -272,7 +272,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v24"
+    static let schema = "ScreenSimulation.SavedScene.v25"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -284,10 +284,12 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     let generatedEnvironment: SavedSceneAsset?
     let tracking: SavedTrackingScene?
     let fusionTrackerMotion: FusionTrackerPoseTrack?
+    let trackingSceneMethod: TrackingSceneMethod
 
     private enum CodingKeys: String, CodingKey {
         case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
         case viewerIsFitted, authoring, generatedEnvironment, tracking, fusionTrackerMotion
+        case trackingSceneMethod
     }
 
     init(
@@ -300,7 +302,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         authoring: SceneAuthoringDocument,
         generatedEnvironment: SavedSceneAsset? = nil,
         tracking: SavedTrackingScene? = nil,
-        fusionTrackerMotion: FusionTrackerPoseTrack? = nil
+        fusionTrackerMotion: FusionTrackerPoseTrack? = nil,
+        trackingSceneMethod: TrackingSceneMethod
     ) {
         schema = Self.schema
         self.source = source
@@ -313,6 +316,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         self.generatedEnvironment = generatedEnvironment
         self.tracking = tracking
         self.fusionTrackerMotion = fusionTrackerMotion
+        self.trackingSceneMethod = trackingSceneMethod
     }
 
     init(from decoder: Decoder) throws {
@@ -331,6 +335,9 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         tracking = try values.decodeIfPresent(SavedTrackingScene.self, forKey: .tracking)
         fusionTrackerMotion = try values.decodeIfPresent(
             FusionTrackerPoseTrack.self, forKey: .fusionTrackerMotion
+        )
+        trackingSceneMethod = try values.decode(
+            TrackingSceneMethod.self, forKey: .trackingSceneMethod
         )
     }
 
@@ -356,6 +363,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         } else {
             try values.encodeNil(forKey: .fusionTrackerMotion)
         }
+        try values.encode(trackingSceneMethod, forKey: .trackingSceneMethod)
     }
 
     func validate() throws {
@@ -380,7 +388,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
                 viewerPanX: viewerPanX, viewerPanY: viewerPanY,
                 viewerIsFitted: viewerIsFitted, authoring: authoring,
                 generatedEnvironment: nil,
-                tracking: tracking, fusionTrackerMotion: fusionTrackerMotion
+                tracking: tracking, fusionTrackerMotion: fusionTrackerMotion,
+                trackingSceneMethod: trackingSceneMethod
             )
         }
         guard let resolvedAbsolutePath = absolutePath
@@ -418,7 +427,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
                 environmentCalibration: authoring.environmentCalibration
             ),
             generatedEnvironment: asset, tracking: tracking,
-            fusionTrackerMotion: fusionTrackerMotion
+            fusionTrackerMotion: fusionTrackerMotion,
+            trackingSceneMethod: trackingSceneMethod
         )
     }
 
@@ -428,7 +438,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted, authoring: authoring,
             generatedEnvironment: generatedEnvironment, tracking: nil,
-            fusionTrackerMotion: fusionTrackerMotion
+            fusionTrackerMotion: fusionTrackerMotion,
+            trackingSceneMethod: trackingSceneMethod
         )
     }
 }
@@ -476,7 +487,7 @@ enum SceneImported3DRemovalDestination: Sendable {
 /// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
 /// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
-    static let schema = "ScreenSimulation.SceneAutosave.v1"
+    static let schema = "ScreenSimulation.SceneAutosave.v2"
     let schema: String
     let id: UUID
     let originalSceneID: UUID
@@ -586,7 +597,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 25
+    static let currentSchemaVersion = 26
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -808,15 +819,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v25.json")
+        documentURL = directory.appendingPathComponent("Scenes.v26.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v24.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v25.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v24.json. Ejecuta la migración de mantenimiento v24→v25 antes de abrir la biblioteca."
+                    "Existe Scenes.v25.json. Ejecuta la migración de mantenimiento v25→v26 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -868,7 +879,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v23", isDirectory: true)
+            .appendingPathComponent("Autosave.v24", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -1006,6 +1017,7 @@ struct SceneLibraryStore: Sendable {
                       "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
                       "viewerPanY", "viewerIsFitted", "authoring",
                       "generatedEnvironment", "tracking", "fusionTrackerMotion",
+                      "trackingSceneMethod",
                   ],
                   let source = snapshot["source"] as? [String: Any],
                   Set(source.keys) == ["kind", "assets", "missingMedia"]
@@ -1128,6 +1140,9 @@ struct SceneLibraryStore: Sendable {
                             ] else { return false }
                       return true
                   }()),
+                  (snapshot["trackingSceneMethod"] as? String).flatMap(
+                    TrackingSceneMethod.init(rawValue:)
+                  ) != nil,
                   (snapshot["fusionTrackerMotion"] == nil
                     || snapshot["fusionTrackerMotion"] is NSNull || {
                       guard let motion = snapshot["fusionTrackerMotion"] as? [String: Any],
@@ -1470,7 +1485,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v23", isDirectory: true)
+            .appendingPathComponent("Autosave.v24", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

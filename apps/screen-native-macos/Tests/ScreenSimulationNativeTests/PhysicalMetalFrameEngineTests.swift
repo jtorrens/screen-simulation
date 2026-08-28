@@ -521,6 +521,7 @@ private func submit(
         base: resolverAuthoring,
         resolvedDevice: resolvedDevice,
         resolvedPipeline: resolvedPipeline,
+        trackingSceneMethod: .deviceCorners,
         trackingCamera: nil,
         trackingMetersPerSourceUnit: nil
     )

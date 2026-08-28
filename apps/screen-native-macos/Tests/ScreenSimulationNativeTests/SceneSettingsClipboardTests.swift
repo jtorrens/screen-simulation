@@ -59,7 +59,8 @@ private func clipboardSnapshot(
             modelOverrides: .init(screen: nil, stages: []),
             context: clipboardContext(preview: preview),
             environmentCalibration: nil
-        )
+        ),
+        trackingSceneMethod: .fusionComposition
     )
 }
 
@@ -256,7 +257,8 @@ private func clipboardScene(name: String, snapshot: SavedSceneSnapshot) -> Saved
                 modelOverrides: .init(screen: nil, stages: []),
                 context: context(environment: environment),
                 environmentCalibration: nil
-            )
+            ),
+            trackingSceneMethod: .fusionComposition
         )
     }
     let target = snapshot(

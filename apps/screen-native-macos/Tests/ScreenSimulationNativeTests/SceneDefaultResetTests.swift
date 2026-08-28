@@ -113,7 +113,8 @@ import Testing
             fileName: "generated.exr",
             sha256: String(repeating: "a", count: 64)
         ),
-        tracking: tracking
+        tracking: tracking,
+        trackingSceneMethod: .fusionComposition
     )
     try original.validate()
 
