@@ -1101,6 +1101,11 @@ enum FusionScenePackageWriter {
                 totalSeconds: frameStarted.duration(to: frameFinished).seconds
             ))
             progress(position + 1, frames.count)
+            // Movie encoding and zero-opacity publication are MainActor-owned today.
+            // Yield after every completed frame so SwiftUI can publish the counter
+            // and deliver cancellation before the following frame begins.
+            await Task.yield()
+            try Task.checkCancellation()
         }
         try await deviceMovie?.finish()
         guard let prepared = firstPrepared else { throw FusionScenePackageError.invalidRaster }

@@ -22,6 +22,10 @@ struct ScreenSimulationNativeApp: App {
                     .keyboardShortcut(.leftArrow, modifiers: [])
                 Button("Frame siguiente") { model.step(1) }
                     .keyboardShortcut(.rightArrow, modifiers: [])
+                Button("Keyframe anterior", action: model.seekPreviousSimulationOpacityKeyframe)
+                    .keyboardShortcut("j", modifiers: [])
+                Button("Keyframe siguiente", action: model.seekNextSimulationOpacityKeyframe)
+                    .keyboardShortcut("k", modifiers: [])
                 Divider()
                 Button("Marcar IN", action: model.markIn).keyboardShortcut("i", modifiers: [])
                 Button("Marcar OUT", action: model.markOut).keyboardShortcut("o", modifiers: [])

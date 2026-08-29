@@ -4835,14 +4835,33 @@ final class WorkspaceModel: ObservableObject {
         ).map { track.keyframes[$0] }
     }
 
-    var simulationOpacityKeyframeFrames: [Int] {
+    var simulationOpacityKeyframes: [SceneScalarKeyframePresentation] {
         let rate = currentTimelineFrameRate
         return sceneAnimation.simulationOpacityTrack.keyframes.compactMap { keyframe in
             guard keyframe.timeDenominator != 0 else { return nil }
             let frame = Double(keyframe.timeNumerator) / Double(keyframe.timeDenominator)
                 * rate.framesPerSecond
             guard frame.isFinite else { return nil }
-            return Int(frame.rounded())
+            return .init(
+                id: keyframe.id,
+                frame: Int(frame.rounded()),
+                interpolation: keyframe.interpolation
+            )
+        }
+    }
+
+    var simulationOpacityKeyframeFrames: [Int] {
+        simulationOpacityKeyframes.map(\.frame)
+    }
+
+    func toggleSimulationOpacityKeyframe(undoManager: UndoManager? = nil) {
+        if currentSimulationOpacityKeyframe != nil {
+            removeCurrentSimulationOpacityKeyframe(undoManager: undoManager)
+        } else {
+            setSimulationOpacityKeyframe(
+                value: currentSimulationOpacity,
+                undoManager: undoManager
+            )
         }
     }
 
@@ -4896,10 +4915,14 @@ final class WorkspaceModel: ObservableObject {
             )
             var animation = sceneAnimation
             var track = animation.simulationOpacityTrack
-            guard track.keyframes.count > 1,
-                  let index = track.keyframeIndex(
-                    timeNumerator: time.numerator, timeDenominator: time.denominator
+            guard let index = track.keyframeIndex(
+                      timeNumerator: time.numerator, timeDenominator: time.denominator
                   ) else { return }
+            guard track.keyframes.count > 1 else {
+                throw SceneAnimationError.invalidContract(
+                    "La pista de opacidad debe conservar al menos un keyframe."
+                )
+            }
             track.keyframes.remove(at: index)
             animation.simulationOpacityTrack = track
             try animation.validate()
@@ -4919,6 +4942,66 @@ final class WorkspaceModel: ObservableObject {
             interpolation: interpolation,
             undoManager: undoManager
         )
+    }
+
+    func setSimulationOpacityInterpolation(
+        keyframeID: UUID,
+        interpolation: SceneAnimationInterpolation,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            var animation = sceneAnimation
+            var track = animation.simulationOpacityTrack
+            guard let index = track.keyframes.firstIndex(where: { $0.id == keyframeID }) else {
+                throw SceneAnimationError.invalidContract("El keyframe seleccionado ya no existe.")
+            }
+            track.keyframes[index].interpolation = interpolation
+            animation.simulationOpacityTrack = track
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Interpolación de opacidad · frame \(simulationOpacityKeyframes.first(where: { $0.id == keyframeID })?.frame ?? currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func moveSimulationOpacityKeyframe(
+        id: UUID,
+        toFrame frame: Int,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            let destination = min(max(0, frame), max(0, frameCount - 1))
+            let time = try exactAnimationTime(
+                frame: destination, frameRate: currentTimelineFrameRate
+            )
+            var animation = sceneAnimation
+            animation.simulationOpacityTrack = try animation.simulationOpacityTrack.movingKeyframe(
+                id: id,
+                timeNumerator: time.numerator,
+                timeDenominator: time.denominator
+            )
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            seek(toFrame: destination)
+            status = "Keyframe de opacidad movido · frame \(destination)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func seekPreviousSimulationOpacityKeyframe() {
+        guard let frame = TimelineFrameGeometry.previousKeyframe(
+            before: currentFrame, keyframes: simulationOpacityKeyframeFrames
+        ) else { return }
+        seek(toFrame: frame)
+    }
+
+    func seekNextSimulationOpacityKeyframe() {
+        guard let frame = TimelineFrameGeometry.nextKeyframe(
+            after: currentFrame, keyframes: simulationOpacityKeyframeFrames
+        ) else { return }
+        seek(toFrame: frame)
     }
 
     private func replaceSceneAnimation(
@@ -6716,6 +6799,8 @@ final class WorkspaceModel: ObservableObject {
         trackingMeasuredDistanceMeters = staged.trackingMeasuredDistanceMeters
         fusionTrackerMotion = staged.fusionTrackerMotion
         trackingSceneMethod = staged.trackingSceneMethod
+        sceneAnimation = staged.sceneAnimation
+        cachedSceneResolver = nil
 
         currentFrame = staged.currentFrame
         viewerNavigation.restore(

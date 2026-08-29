@@ -159,7 +159,7 @@ final class NativeOutputQueueController: ObservableObject {
             return
         }
         jobs[index].state = .rendering
-        jobs[index].detail = "Preparando grafo Metal"
+        jobs[index].detail = "Preparando salida"
         persist()
         let job = jobs[index]
         beginTiming(jobID: job.id)
@@ -171,7 +171,7 @@ final class NativeOutputQueueController: ObservableObject {
                           let live = self.jobs.firstIndex(where: { $0.id == job.id })
                     else { return }
                     self.jobs[live].progress = min(1, max(0, Double(completed) / Double(total)))
-                    self.jobs[live].detail = "\(completed) / \(total)"
+                    self.jobs[live].detail = "Frame \(completed) / \(total)"
                     let now = ContinuousClock.now
                     if let previous = self.activePreviousFrameAt {
                         self.activeLastFrameSeconds = previous.duration(to: now).secondsMagnitude

@@ -27,6 +27,11 @@
       "checks": ["architecture", "workspace"]
     },
     {
+      "id": "project-handoff",
+      "paths": ["work/shot_manager_phase_1_handoff.md"],
+      "checks": ["architecture"]
+    },
+    {
       "id": "sealed-history",
       "paths": ["Docs/old/**"],
       "checks": ["archive-isolation"]

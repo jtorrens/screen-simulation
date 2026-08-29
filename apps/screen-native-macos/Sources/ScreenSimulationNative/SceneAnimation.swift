@@ -42,8 +42,8 @@ struct SceneAnimationPropertyPresentation: Equatable, Sendable {
 
 struct SceneScalarKeyframe: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
-    let timeNumerator: Int64
-    let timeDenominator: UInt64
+    var timeNumerator: Int64
+    var timeDenominator: UInt64
     var value: Double
     var interpolation: SceneAnimationInterpolation
 
@@ -56,6 +56,26 @@ struct SceneScalarKeyframe: Codable, Equatable, Identifiable, Sendable {
         self.timeDenominator = timeDenominator
         self.value = value
         self.interpolation = interpolation
+    }
+}
+
+struct SceneScalarKeyframePresentation: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let frame: Int
+    let interpolation: SceneAnimationInterpolation
+}
+
+enum SceneAnimationKeyframeShape: Equatable, Sendable {
+    case square
+    case diamond
+    case circle
+
+    init(interpolation: SceneAnimationInterpolation) {
+        self = switch interpolation {
+        case .hold: .square
+        case .linear: .diamond
+        case .smooth: .circle
+        }
     }
 }
 
@@ -103,6 +123,38 @@ struct SceneScalarAnimationTrack: Codable, Equatable, Identifiable, Sendable {
                 timeNumerator, timeDenominator
             )
         }
+    }
+
+    func movingKeyframe(
+        id: UUID,
+        timeNumerator: Int64,
+        timeDenominator: UInt64
+    ) throws -> Self {
+        guard timeDenominator != 0 else {
+            throw SceneAnimationError.invalidContract(
+                "El tiempo exacto de destino del keyframe no es válido."
+            )
+        }
+        var moved = self
+        guard let sourceIndex = moved.keyframes.firstIndex(where: { $0.id == id }) else {
+            throw SceneAnimationError.invalidContract("El keyframe arrastrado ya no existe.")
+        }
+        if let occupied = moved.keyframeIndex(
+            timeNumerator: timeNumerator,
+            timeDenominator: timeDenominator
+        ), occupied != sourceIndex {
+            throw SceneAnimationError.invalidContract(
+                "El tiempo de destino ya contiene otro keyframe."
+            )
+        }
+        moved.keyframes[sourceIndex].timeNumerator = timeNumerator
+        moved.keyframes[sourceIndex].timeDenominator = timeDenominator
+        moved.keyframes.sort {
+            Decimal($0.timeNumerator) * Decimal($1.timeDenominator)
+                < Decimal($1.timeNumerator) * Decimal($0.timeDenominator)
+        }
+        try moved.validate()
+        return moved
     }
 
     private static func sameRational(

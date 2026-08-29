@@ -42,6 +42,54 @@ private func opacityTrack(
     ) == 0.15625)
 }
 
+@Test func animationTimelineSharesExactGeometryAndSnapsOnlyNearKeyframes() {
+    let width: CGFloat = 1_000
+    #expect(TimelineFrameGeometry.x(for: 50, width: width, frameCount: 101) == 500)
+    #expect(TimelineFrameGeometry.frame(at: 500, width: width, frameCount: 101) == 50)
+    #expect(TimelineFrameGeometry.snappedFrame(
+        at: 507, width: width, frameCount: 101, snapFrames: [50]
+    ) == 50)
+    #expect(TimelineFrameGeometry.snappedFrame(
+        at: 520, width: width, frameCount: 101, snapFrames: [50]
+    ) == 52)
+    #expect(SceneAnimationKeyframeShape(interpolation: .hold) == .square)
+    #expect(SceneAnimationKeyframeShape(interpolation: .linear) == .diamond)
+    #expect(SceneAnimationKeyframeShape(interpolation: .smooth) == .circle)
+    #expect(TimelineFrameGeometry.previousKeyframe(
+        before: 50, keyframes: [50, 10, 90, 30]
+    ) == 30)
+    #expect(TimelineFrameGeometry.nextKeyframe(
+        after: 50, keyframes: [50, 10, 90, 70]
+    ) == 70)
+}
+
+@Test func draggingKeyframePreservesIdentityAndCommitsExactRationalTime() throws {
+    let firstID = UUID()
+    let movedID = UUID()
+    let track = SceneScalarAnimationTrack(
+        propertyID: SceneScalarAnimationTrack.simulationOpacityID,
+        keyframes: [
+            .init(
+                id: firstID, timeNumerator: 0, timeDenominator: 1,
+                value: 1, interpolation: .hold
+            ),
+            .init(
+                id: movedID, timeNumerator: 1, timeDenominator: 1,
+                value: 0.5, interpolation: .linear
+            )
+        ]
+    )
+    let moved = try track.movingKeyframe(
+        id: movedID, timeNumerator: 1001, timeDenominator: 24000
+    )
+    #expect(moved.keyframes.map(\.id) == [firstID, movedID])
+    #expect(moved.keyframes[1].timeNumerator == 1001)
+    #expect(moved.keyframes[1].timeDenominator == 24000)
+    #expect(throws: SceneAnimationError.self) {
+        try moved.movingKeyframe(id: movedID, timeNumerator: 0, timeDenominator: 48_000)
+    }
+}
+
 @Test func sceneAnimationRoundTripsOnlyItsCurrentStrictContract() throws {
     let document = SceneAnimationDocument(scalarTracks: [opacityTrack(.linear)])
     try document.validate()

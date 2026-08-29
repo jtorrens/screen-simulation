@@ -176,6 +176,7 @@ import Testing
     }, onFailure: { _ in })
 
     while controller.jobs.first?.progress != 0.25 { await Task.yield() }
+    #expect(controller.jobs.first?.detail == "Frame 1 / 4")
     try await Task.sleep(for: .milliseconds(20))
     let job = try #require(controller.jobs.first)
     let timing = try #require(controller.timing(for: job.id))
@@ -541,12 +542,20 @@ import Testing
     })
     source.selectModelDevice(device, coverGlass: cover)
     let capture = try source.captureSavedScene()
+    var snapshot = capture.snapshot
+    snapshot.animation = SceneAnimationDocument(scalarTracks: [.init(
+        propertyID: SceneScalarAnimationTrack.simulationOpacityID,
+        keyframes: [.init(
+            timeNumerator: 0, timeDenominator: 1,
+            value: 0, interpolation: .hold
+        )]
+    )])
     let id = UUID()
     let scene = SavedScene(
         id: id,
         name: "Render aislado",
         thumbnailFileName: "\(id.uuidString.lowercased()).png",
-        snapshot: capture.snapshot
+        snapshot: snapshot
     )
 
     let executor = WorkspaceModel()
@@ -555,6 +564,8 @@ import Testing
     #expect(executor.errorMessage == nil)
     let reopened = try executor.captureSavedScene().snapshot.authoring
     #expect(reopened == capture.snapshot.authoring)
+    #expect(executor.sceneAnimation == snapshot.animation)
+    #expect(executor.currentSimulationOpacity == 0)
 }
 
 private func outputQueueTestScene(name: String) -> SavedScene {

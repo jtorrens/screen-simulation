@@ -228,6 +228,11 @@ import Testing
     )
     #expect(fusionPlan.destination.lastPathComponent == "Shot_v12_FusionScene")
     #expect(fusionPlan.generatedRelativePaths.allSatisfy { $0.contains("Shot_v12") })
+    #expect(fusionPlan.generatedRelativePaths.filter { $0.hasPrefix("media/") } == [
+        "media/Shot_v12_Device00000001.tiff",
+        "media/Shot_v12_Device00000002.tiff",
+    ])
+    #expect(!fusionPlan.generatedRelativePaths.contains { $0.contains("_Spill") })
 }
 
 private func derivationConfiguration(

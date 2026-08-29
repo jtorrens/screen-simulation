@@ -238,7 +238,6 @@ struct ContentView: View {
     @State private var settingsCopyRequest: SceneSettingsCopyRequest?
     @State private var settingsPasteRequest: SceneSettingsPasteRequest?
     @State private var pendingSettingsPaste: PendingSettingsPaste?
-    @State private var animationPanelExpanded = false
 
     private struct SceneSettingsCopyRequest: Identifiable {
         let scene: SavedScene
@@ -3229,24 +3228,6 @@ struct ContentView: View {
                         }
                     }
                     if model.renderMode == .final {
-                    Picker("Entrega", selection: Binding(
-                        get: { model.renderComposition },
-                        set: { model.changeRenderComposition($0) }
-                    )) {
-                        ForEach([
-                            StudioRenderComposition.deviceAndSpillTogether,
-                            .deviceAndSpillSeparate
-                        ]) { composition in
-                            Text(composition.label).tag(composition)
-                        }
-                    }
-                    if model.renderComposition == .deviceAndSpillSeparate {
-                        Picker("Spill", selection: $model.renderSpillDeliveryMode) {
-                            ForEach(StudioSpillDeliveryMode.allCases) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                    }
                     Toggle("Incluir composición Fusion · Device único", isOn: Binding(
                             get: { model.includeFusionComposition },
                             set: {
@@ -3254,6 +3235,28 @@ struct ContentView: View {
                                 model.ensureRenderOptionsCompatible()
                             }
                         ))
+                    if model.includeFusionComposition {
+                        LabeledContent("Entrega", value: "Fusion · Device único")
+                    } else {
+                        Picker("Entrega", selection: Binding(
+                            get: { model.renderComposition },
+                            set: { model.changeRenderComposition($0) }
+                        )) {
+                            ForEach([
+                                StudioRenderComposition.deviceAndSpillTogether,
+                                .deviceAndSpillSeparate
+                            ]) { composition in
+                                Text(composition.label).tag(composition)
+                            }
+                        }
+                        if model.renderComposition == .deviceAndSpillSeparate {
+                            Picker("Spill", selection: $model.renderSpillDeliveryMode) {
+                                ForEach(StudioSpillDeliveryMode.allCases) { mode in
+                                    Text(mode.label).tag(mode)
+                                }
+                            }
+                        }
+                    }
                     } else {
                         Picker("WIP Review", selection: Binding(
                             get: { model.renderWIPReviewPreset },
@@ -4306,84 +4309,25 @@ struct ContentView: View {
     }
 
     private var transport: some View {
-        VStack(spacing: 5) {
-            NativeTimelineView(
-                frameCount: model.frameCount,
-                frameRate: model.frameRate,
-                currentFrame: model.currentFrame,
-                inFrame: model.inFrame,
-                outFrame: model.outFrame,
-                onSeek: { model.seek(toFrame: $0) },
-                onSetIn: { model.setInFrame($0) },
-                onSetOut: { model.setOutFrame($0) }
-            )
-            .frame(height: 58)
-            DisclosureGroup(isExpanded: $animationPanelExpanded) {
-                HStack(spacing: 10) {
-                    let descriptor = SimulationOpacityResolver.presentation
-                    Text(descriptor.displayName)
-                        .frame(width: 86, alignment: .leading)
-                    CommittedNumberField(
-                        label: "Opacidad de simulación",
-                        value: model.currentSimulationOpacity
-                    ) {
-                        model.setSimulationOpacityKeyframe(value: $0, undoManager: undoManager)
-                    }
-                    .frame(width: 72)
-                    Text("\(descriptor.minimum.formatted())–\(descriptor.maximum.formatted())")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Button {
-                        model.setSimulationOpacityKeyframe(
-                            value: model.currentSimulationOpacity,
-                            undoManager: undoManager
-                        )
-                    } label: {
-                        Image(systemName: model.currentSimulationOpacityKeyframe == nil
-                            ? "diamond" : "diamond.fill")
-                    }
-                    .help("Añadir o actualizar keyframe")
-                    Picker(
-                        "Interpolación",
-                        selection: Binding(
-                            get: {
-                                model.currentSimulationOpacityKeyframe?.interpolation
-                                    ?? descriptor.defaultInterpolation
-                            },
-                            set: { interpolation in
-                                model.setCurrentSimulationOpacityInterpolation(
-                                    interpolation, undoManager: undoManager
-                                )
-                            }
-                        )
-                    ) {
-                        ForEach(descriptor.supportedInterpolations, id: \.self) {
-                            Text(descriptor.interpolationLabels[$0]!).tag($0)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 82)
-                    Button(role: .destructive) {
-                        model.removeCurrentSimulationOpacityKeyframe(undoManager: undoManager)
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .disabled(
-                        model.currentSimulationOpacityKeyframe == nil
-                            || model.sceneAnimation.simulationOpacityTrack.keyframes.count <= 1
-                    )
-                    SimulationOpacityTrackLane(
-                        frameCount: model.frameCount,
-                        currentFrame: model.currentFrame,
-                        keyframeFrames: model.simulationOpacityKeyframeFrames,
-                        onSeek: { frame in model.seek(toFrame: frame) }
-                    )
-                    .frame(minWidth: 180, maxWidth: .infinity, minHeight: 24)
-                }
-                .padding(.top, 5)
-            } label: {
-                Label("Animación", systemImage: "slider.horizontal.3")
-                    .font(.caption.weight(.semibold))
+        let propertyColumnWidth: CGFloat = 276
+        let descriptor = SimulationOpacityResolver.presentation
+        return VStack(spacing: 5) {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: propertyColumnWidth, height: 58)
+                NativeTimelineView(
+                    frameCount: model.frameCount,
+                    frameRate: model.frameRate,
+                    currentFrame: model.currentFrame,
+                    inFrame: model.inFrame,
+                    outFrame: model.outFrame,
+                    snapFrames: model.simulationOpacityKeyframeFrames,
+                    onSeek: { model.seek(toFrame: $0) },
+                    onSetIn: { model.setInFrame($0) },
+                    onSetOut: { model.setOutFrame($0) }
+                )
+                .frame(height: 58)
             }
+            .frame(height: 58)
             HStack(spacing: 12) {
                 Button("[", action: model.markIn)
                     .help("Marcar entrada (I)")
@@ -4427,6 +4371,67 @@ struct ContentView: View {
                 Text(model.timecode).monospacedDigit()
             }
             .buttonStyle(.borderless)
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Text(descriptor.displayName)
+                            .frame(width: 64, alignment: .leading)
+                        CommittedNumberField(
+                            label: "Opacidad de simulación",
+                            value: model.currentSimulationOpacity
+                        ) {
+                            model.setSimulationOpacityKeyframe(
+                                value: $0, undoManager: undoManager
+                            )
+                        }
+                        .frame(width: 68)
+                        Button {
+                            model.toggleSimulationOpacityKeyframe(undoManager: undoManager)
+                        } label: {
+                            Image(systemName: model.currentSimulationOpacityKeyframe == nil
+                                ? "diamond" : "diamond.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .help(model.currentSimulationOpacityKeyframe == nil
+                            ? "Crear keyframe" : "Eliminar keyframe")
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(width: propertyColumnWidth, height: 28)
+                    SimulationOpacityTrackView(
+                        frameCount: model.frameCount,
+                        currentFrame: model.currentFrame,
+                        keyframes: model.simulationOpacityKeyframes,
+                        interpolationOptions: descriptor.supportedInterpolations.map {
+                            ($0, descriptor.interpolationLabels[$0]!)
+                        },
+                        onSeek: { model.seek(toFrame: $0) },
+                        onMove: { id, frame in
+                            model.moveSimulationOpacityKeyframe(
+                                id: id, toFrame: frame, undoManager: undoManager
+                            )
+                        },
+                        onSetInterpolation: { id, interpolation in
+                            model.setSimulationOpacityInterpolation(
+                                keyframeID: id,
+                                interpolation: interpolation,
+                                undoManager: undoManager
+                            )
+                        }
+                    )
+                    .frame(height: 28)
+                }
+            }
+            .padding(.vertical, 4)
+            .background(
+                Color(nsColor: .windowBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -4615,51 +4620,6 @@ private struct CommittedZoomField: View {
 
     private func synchronize(with value: Double) {
         draft = value.formatted(.number.precision(.fractionLength(0 ... 1)))
-    }
-}
-
-/// Keeps incomplete keyboard input local to the editor. Domain validation and
-/// Global Library persistence run only after Return or focus loss, so values
-/// such as `0.5` can pass through the intermediate text `0` without being
-/// rejected and replaced by the previously committed value.
-private struct SimulationOpacityTrackLane: View {
-    let frameCount: Int
-    let currentFrame: Int
-    let keyframeFrames: [Int]
-    let onSeek: (Int) -> Void
-
-    var body: some View {
-        GeometryReader { geometry in
-            let width = max(1, geometry.size.width - 10)
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.black.opacity(0.22))
-                    .frame(height: 4)
-                    .offset(x: 5)
-                ForEach(Array(keyframeFrames.enumerated()), id: \.offset) { _, frame in
-                    Button { onSeek(frame) } label: {
-                        Rectangle()
-                            .fill(NativeTheme.accent)
-                            .frame(width: 8, height: 8)
-                            .rotationEffect(.degrees(45))
-                    }
-                    .buttonStyle(.plain)
-                    .position(
-                        x: 5 + width * CGFloat(frame) / CGFloat(max(1, frameCount - 1)),
-                        y: geometry.size.height / 2
-                    )
-                    .accessibilityLabel("Keyframe de opacidad, frame \(frame)")
-                }
-                Rectangle()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: 1, height: geometry.size.height)
-                    .position(
-                        x: 5 + width * CGFloat(currentFrame) / CGFloat(max(1, frameCount - 1)),
-                        y: geometry.size.height / 2
-                    )
-            }
-        }
-        .accessibilityLabel("Pista de opacidad de simulación")
     }
 }
 
