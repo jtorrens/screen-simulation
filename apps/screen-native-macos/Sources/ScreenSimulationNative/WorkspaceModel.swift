@@ -255,6 +255,9 @@ final class WorkspaceModel: ObservableObject {
         )
         explicitSceneOverrideControlIDs.formUnion(controlIDs)
         explicitSceneOverrideControlIDs.subtract(resetControlIDs)
+        if activeSceneControlEditID == nil, cameraNavigationGesture == nil {
+            try persistActiveSceneAuthoring()
+        }
         guard let prior else { return }
         registerUndo(with: undoManager, actionName: actionName) { target, manager in
             try? target.restoreSceneAuthoringEdit(
@@ -273,6 +276,7 @@ final class WorkspaceModel: ObservableObject {
         let inverse = sceneAuthoringEditSnapshot
         try applyTestAuthoringSelection(snapshot.selection)
         explicitSceneOverrideControlIDs = snapshot.explicitOverrideControlIDs
+        try persistActiveSceneAuthoring()
         guard let inverse else { return }
         registerUndo(with: undoManager, actionName: actionName) { target, manager in
             try? target.restoreSceneAuthoringEdit(
@@ -307,6 +311,11 @@ final class WorkspaceModel: ObservableObject {
                 undoManager: manager,
                 actionName: "Editar parámetro"
             )
+        }
+        do {
+            try persistActiveSceneAuthoring()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -520,6 +529,7 @@ final class WorkspaceModel: ObservableObject {
     private var generatedReflectionEnvironmentData: Data?
     @Published private(set) var activeSceneID: UUID?
     private var persistGeneratedEnvironment: ((UUID, Data) throws -> ManagedEnvironmentAsset)?
+    private var persistActiveSceneCapture: ((UUID, SavedSceneCapture) throws -> Void)?
     private var referenceACEScgFrame: StudioColorMetalFrame?
     private var syntheticReferencePlateCache: (plate: ReferencePlate, width: Int, height: Int, frame: StudioColorMetalFrame)?
     private var referenceForegroundFrame: StudioColorMetalFrame?
@@ -1243,6 +1253,7 @@ final class WorkspaceModel: ObservableObject {
                 testPresentation = snapshot.presentation
                 testPreviewResultByPhaseID = snapshot.previewResultByPhaseID
                 testPhysicalIntermediateByPhaseID = snapshot.physicalIntermediateByPhaseID
+                persistActiveSceneAuthoringReportingFailure()
                 let selectedResult = snapshot.previewResultByPhaseID[phaseID]
                 if (selectedResult == .recordingOutput || selectedResult == .recordingCodec),
                    recordingCameraCheckpoint != nil {
@@ -2041,6 +2052,7 @@ final class WorkspaceModel: ObservableObject {
         try applyTestAuthoringSelection(snapshot.selection)
         explicitSceneOverrideControlIDs = snapshot.explicitOverrideControlIDs
         applyTrackingCameraAtCurrentFrame()
+        try persistActiveSceneAuthoring()
         if let currentScale, let currentSnapshot {
             registerUndo(with: undoManager, actionName: "Escalar mundo tracking") { target, manager in
                 try? target.restoreTrackingWorldScale(
@@ -2305,6 +2317,28 @@ final class WorkspaceModel: ObservableObject {
         _ persistence: @escaping (UUID, Data) throws -> ManagedEnvironmentAsset
     ) {
         persistGeneratedEnvironment = persistence
+    }
+
+    func configureActiveScenePersistence(
+        _ persistence: @escaping (UUID, SavedSceneCapture) throws -> Void
+    ) {
+        persistActiveSceneCapture = persistence
+    }
+
+    private func persistActiveSceneAuthoring() throws {
+        guard !isMaterializingSavedScene,
+              let activeSceneID,
+              let persistActiveSceneCapture
+        else { return }
+        try persistActiveSceneCapture(activeSceneID, captureSavedScene())
+    }
+
+    private func persistActiveSceneAuthoringReportingFailure() {
+        do {
+            try persistActiveSceneAuthoring()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func markActiveScene(_ id: UUID?) {
@@ -3067,6 +3101,7 @@ final class WorkspaceModel: ObservableObject {
             return
         }
         renderPattern()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func removeExternalSourceMedia() {
@@ -3120,6 +3155,7 @@ final class WorkspaceModel: ObservableObject {
         applyTimelineAuthority(resetRange: true)
         invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func setReferenceMatchEnabled(_ enabled: Bool) {
@@ -3144,6 +3180,7 @@ final class WorkspaceModel: ObservableObject {
         applyTimelineAuthority(resetRange: true)
         physicalModel.invalidateExternalParameters(preservingQuality: true)
         publishSetupFraming()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     private func loadReferenceFrame(_ url: URL) async {
@@ -3190,6 +3227,7 @@ final class WorkspaceModel: ObservableObject {
             applyTimelineAuthority(resetRange: true)
             try await rebuildReferenceFrame()
             publishReferenceMatchSetup(resetTargetsToVisibleFrame: true)
+            try persistActiveSceneAuthoring()
             status = "Referencia · \(managed.originalFileName) · \(info.detail) · interpretación explícita conservada"
         } catch {
             errorMessage = error.localizedDescription
@@ -3208,6 +3246,7 @@ final class WorkspaceModel: ObservableObject {
         referenceInputTransformID = value.id
         invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferenceAlpha(_ value: StudioAlphaMode) {
@@ -3215,6 +3254,7 @@ final class WorkspaceModel: ObservableObject {
         referenceAlphaMode = value
         invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferenceMatrix(_ value: StudioSignalMatrix) {
@@ -3222,6 +3262,7 @@ final class WorkspaceModel: ObservableObject {
         referenceSignalMatrix = value
         invalidateNativeResultForSceneContextChange()
         refreshReferenceInterpretation()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferenceRange(_ value: StudioSignalRange) {
@@ -3229,6 +3270,7 @@ final class WorkspaceModel: ObservableObject {
         referenceSignalRange = value
         invalidateNativeResultForSceneContextChange()
         reconfigureReferenceDecode()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferenceColorModel(_ value: StudioSignalColorModel) {
@@ -3236,6 +3278,7 @@ final class WorkspaceModel: ObservableObject {
         referenceSignalColorModel = value
         invalidateNativeResultForSceneContextChange()
         reconfigureReferenceDecode()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferencePlacement(_ value: SourcePlacement) {
@@ -3243,6 +3286,7 @@ final class WorkspaceModel: ObservableObject {
         referencePlacement = value
         invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeReferencePlate(_ value: ReferencePlate) {
@@ -3256,6 +3300,7 @@ final class WorkspaceModel: ObservableObject {
         // authored scene state, so a completed Native frame can never remain current.
         invalidateNativeResultForSceneContextChange()
         rebuildPhysicalSelectedFrame()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     /// Reference context is authored scene state outside the physical-model control
@@ -3298,6 +3343,7 @@ final class WorkspaceModel: ObservableObject {
         )
         referenceMatchErrorPixels = nil
         status = "Match referencia · objetivos reiniciados"
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func beginReferenceCornerDrag(_ index: Int) {
@@ -3547,6 +3593,7 @@ final class WorkspaceModel: ObservableObject {
             try await Task.sleep(for: .milliseconds(20))
             session.pause()
             try present(try await session.exactSample(at: .zero))
+            try persistActiveSceneAuthoring()
             status = "Medio abierto con la interpretación explícita activa; las etiquetas de metadata son solo propuestas."
         } catch {
             errorMessage = error.localizedDescription
@@ -3561,6 +3608,7 @@ final class WorkspaceModel: ObservableObject {
         }
         inputTransform = value
         rebuildCurrent()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeAlpha(_ value: StudioAlphaMode, undoManager: UndoManager?) {
@@ -3570,21 +3618,25 @@ final class WorkspaceModel: ObservableObject {
         }
         alphaMode = value
         rebuildCurrent()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeMatrix(_ value: StudioSignalMatrix) {
         signalMatrix = value
         rebuildCurrent()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeRange(_ value: StudioSignalRange) {
         signalRange = value
         reconfigureSourceDecode()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func changeColorModel(_ value: StudioSignalColorModel) {
         signalColorModel = value
         reconfigureSourceDecode()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     private func reconfigureSourceDecode() {
@@ -3634,6 +3686,7 @@ final class WorkspaceModel: ObservableObject {
         }
         previewTransform = value
         objectWillChange.send()
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func togglePlayback() {
@@ -3878,6 +3931,7 @@ final class WorkspaceModel: ObservableObject {
             physicalModel.invalidateExternalParameters(preservingQuality: true)
             publishSetupFraming()
             status = "Tracking importado · 1 unidad SynthEyes = 1 m"
+            persistActiveSceneAuthoringReportingFailure()
         } catch { errorMessage = error.localizedDescription }
     }
 
@@ -4049,6 +4103,7 @@ final class WorkspaceModel: ObservableObject {
                 }
             }
             status = "Tracker Fusion aplicado a \(fusionTrackerTarget.label) · \(materialized.count) frames"
+            persistActiveSceneAuthoringReportingFailure()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -4062,6 +4117,7 @@ final class WorkspaceModel: ObservableObject {
         cachedSceneResolver = nil
         physicalModel.invalidateExternalParameters(preservingQuality: true)
         publishSetupFraming()
+        persistActiveSceneAuthoringReportingFailure()
         registerUndo(with: undoManager, actionName: "Aplicar Tracker Fusion") { target, manager in
             target.restoreFusionTrackerMotion(current, undoManager: manager)
         }
@@ -4178,11 +4234,43 @@ final class WorkspaceModel: ObservableObject {
     func setTrackingMesh(_ id: String, visible: Bool) {
         if visible { visibleTrackingMeshIDs.insert(id) }
         else { visibleTrackingMeshIDs.remove(id) }
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func refreshTrackingCamera() {
         applyTimelineAuthority(resetRange: true)
         applyTrackingCameraAtCurrentFrame()
+        persistActiveSceneAuthoringReportingFailure()
+    }
+
+    func selectTrackingCamera(_ id: String?) {
+        guard selectedTrackingCameraID != id else { return }
+        selectedTrackingCameraID = id
+        refreshTrackingCamera()
+    }
+
+    func selectTrackingPointGroup(_ id: String?) {
+        guard selectedTrackingPointGroupID != id else { return }
+        selectedTrackingPointGroupID = id
+        persistActiveSceneAuthoringReportingFailure()
+    }
+
+    func setTrackingCameraEnabled(_ enabled: Bool) {
+        guard trackingCameraEnabled != enabled else { return }
+        trackingCameraEnabled = enabled
+        refreshTrackingCamera()
+    }
+
+    func setTrackingPointsVisible(_ visible: Bool) {
+        guard trackingPointsVisible != visible else { return }
+        trackingPointsVisible = visible
+        persistActiveSceneAuthoringReportingFailure()
+    }
+
+    func setTrackingGeometryVisible(_ visible: Bool) {
+        guard trackingGeometryVisible != visible else { return }
+        trackingGeometryVisible = visible
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func beginTrackingScalePointSelection(slot: Int) {
@@ -4249,6 +4337,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             } else {
                 applyTrackingCameraAtCurrentFrame()
+                try persistActiveSceneAuthoring()
             }
         } catch {
             trackingMetersPerSourceUnit = priorScale
@@ -4386,6 +4475,7 @@ final class WorkspaceModel: ObservableObject {
                 actionName: "Eliminar animación de cámara"
             )
             status = "Cámara congelada en el frame actual · animación eliminada"
+            persistActiveSceneAuthoringReportingFailure()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -4416,6 +4506,7 @@ final class WorkspaceModel: ObservableObject {
             actionName: "Eliminar importación 3D"
         )
         status = "Importación 3D eliminada"
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     private func registerTrackingAuthoringUndo(
@@ -4457,6 +4548,7 @@ final class WorkspaceModel: ObservableObject {
         inFrame = min(max(0, state.inFrame), frameCount - 1)
         outFrame = min(max(inFrame, state.outFrame), frameCount - 1)
         physicalModel.invalidateExternalParameters()
+        persistActiveSceneAuthoringReportingFailure()
         registerTrackingAuthoringUndo(
             inverse,
             undoManager: undoManager,
@@ -5014,6 +5106,7 @@ final class WorkspaceModel: ObservableObject {
             target.replaceSceneAnimation(prior, undoManager: manager)
         }
         sceneAnimation = animation
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     private var currentTimelineFrameRate: ExactFrameRate {
@@ -5214,24 +5307,6 @@ final class WorkspaceModel: ObservableObject {
             renderSpillDeliveryMode = .physicalLinear
         }
         if renderMode == .final, !outputFormat.supportsAlpha { return }
-    }
-
-    func savedSceneNeedsUpdate(_ scene: SavedScene) throws -> Bool {
-        guard activeSceneID == scene.id else { return false }
-        let capture = try captureSavedScene()
-        let generatedMatches: Bool
-        switch (capture.generatedEnvironmentEXR, scene.snapshot.generatedEnvironment) {
-        case (nil, nil):
-            generatedMatches = true
-        case let (.some(data), .some(asset)):
-            generatedMatches = FrameCheckPNG.sha256(data) == asset.sha256
-        default:
-            generatedMatches = false
-        }
-        let normalized = try capture.snapshot.replacingGeneratedEnvironment(
-            scene.snapshot.generatedEnvironment
-        )
-        return normalized != scene.snapshot || !generatedMatches
     }
 
     func enqueueSavedScene(

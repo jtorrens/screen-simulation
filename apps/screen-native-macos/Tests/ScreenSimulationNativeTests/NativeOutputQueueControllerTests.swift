@@ -198,6 +198,7 @@ import Testing
 @Test @MainActor func outputQueueFreezesTheSavedSceneAtEnqueueTime() throws {
     let controller = try queueTestController()
     var scene = outputQueueTestScene(name: "Guardada")
+    let frozenSnapshot = scene.snapshot
     controller.enqueue(
         scene: scene,
         generatedEnvironmentEXR: Data([1, 2, 3]),
@@ -208,7 +209,7 @@ import Testing
 
     #expect(controller.jobs.first?.scene.name == "Guardada")
     #expect(controller.jobs.first?.generatedEnvironmentEXR == Data([1, 2, 3]))
-    #expect(controller.jobs.first?.scene.snapshot == outputQueueTestScene(name: "Otra").snapshot)
+    #expect(controller.jobs.first?.scene.snapshot == frozenSnapshot)
     #expect(controller.jobs.first?.configuration.motionBlurMode == .physical)
     #expect(controller.jobs.first?.configuration.motionSamples == 8)
 }

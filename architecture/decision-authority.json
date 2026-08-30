@@ -662,7 +662,7 @@
     },
     {
       "id": "ui.active-scene-selection",
-      "scope": "native workstation active Saved Scene identity, opening gesture and dirty-state decision",
+      "scope": "native workstation active Saved Scene identity, automatic commit persistence and opening gesture",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Native workspace navigation"
@@ -670,6 +670,7 @@
       "enforcement": [
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/TestAuthoringView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "scripts/check_architecture.py"
       ]
@@ -720,7 +721,7 @@
     },
     {
       "id": "ui.test-inspector-hierarchy",
-      "scope": "Test inspector grouping, nested cards and disclosure interaction",
+      "scope": "Test inspector grouping, flat single-section cards, nested multi-section cards and disclosure interaction",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Test inspector hierarchy"
@@ -733,6 +734,7 @@
         "apps/screen-native-macos/Sources/ScreenSimulationMacUI/TestAuthoringView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationPresentationTests/TestPresentationTests.swift",
         "scripts/check_architecture.py"
       ]

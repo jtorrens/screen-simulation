@@ -58,29 +58,35 @@ public struct TestAuthoringView: View {
     }
 
     private func inspectorGroup(_ group: TestInspectorGroupPresentation) -> some View {
-        TestPhaseCard(label: group.label) {
+        let sections = group.sections.filter { section in
+            section.controls.contains { !excludedControlIDs.contains($0.id) }
+                || supplementarySectionContent[section.id] != nil
+        }
+        return TestPhaseCard(label: group.label) {
             VStack(spacing: 8) {
-                ForEach(group.sections) { section in
-                    let controls = section.controls.filter {
-                        !excludedControlIDs.contains($0.id)
-                    }
-                    let supplement = supplementarySectionContent[section.id]
-                    if !controls.isEmpty || supplement != nil {
+                if sections.count == 1, let section = sections.first {
+                    inspectorSectionBody(section)
+                } else {
+                    ForEach(sections) { section in
                         TestInspectorSubcard(label: section.label) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                if let supplement { supplement }
-                                if !controls.isEmpty {
-                                    Grid(
-                                        alignment: .leading,
-                                        horizontalSpacing: 12,
-                                        verticalSpacing: 8
-                                    ) {
-                                        ForEach(controls) { controlView($0) }
-                                    }
-                                }
-                            }
+                            inspectorSectionBody(section)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private func inspectorSectionBody(
+        _ section: TestInspectorSectionPresentation
+    ) -> some View {
+        let controls = section.controls.filter { !excludedControlIDs.contains($0.id) }
+        let supplement = supplementarySectionContent[section.id]
+        return VStack(alignment: .leading, spacing: 10) {
+            if let supplement { supplement }
+            if !controls.isEmpty {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    ForEach(controls) { controlView($0) }
                 }
             }
         }
@@ -107,7 +113,7 @@ public struct TestAuthoringView: View {
                     }
                 )
                 .frame(width: 92)
-                DebouncedTestScalarField(control: control) { value in
+                CommittedTestScalarField(control: control) { value in
                     onIntent(.setScalar(controlID: control.id, value: value))
                 }
                 .frame(width: 58)
@@ -163,7 +169,7 @@ public struct TestAuthoringView: View {
                 } else {
                     Color.clear.frame(width: 150, height: 1)
                 }
-                DebouncedTestScalarField(control: control) { value in
+                CommittedTestScalarField(control: control) { value in
                     onIntent(.setScalar(controlID: control.id, value: value))
                 }
                 .frame(width: 108)
@@ -234,12 +240,11 @@ public struct TestAuthoringView: View {
     }
 }
 
-private struct DebouncedTestScalarField: View {
+private struct CommittedTestScalarField: View {
     let control: TestScalarControl
     let onCommit: (Double) -> Void
 
     @State private var draft: String
-    @State private var pendingCommit: Task<Void, Never>?
     @FocusState private var focused: Bool
 
     init(control: TestScalarControl, onCommit: @escaping (Double) -> Void) {
@@ -253,10 +258,6 @@ private struct DebouncedTestScalarField: View {
             .focused($focused)
             .frame(maxWidth: .infinity)
             .onSubmit { commitOrRestore() }
-            .onChange(of: draft) { _, _ in
-                guard focused else { return }
-                scheduleCommit()
-            }
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commitOrRestore() }
             }
@@ -264,20 +265,9 @@ private struct DebouncedTestScalarField: View {
                 guard !focused else { return }
                 draft = Self.format(value)
             }
-            .onDisappear { pendingCommit?.cancel() }
-    }
-
-    private func scheduleCommit() {
-        pendingCommit?.cancel()
-        pendingCommit = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(450))
-            guard !Task.isCancelled else { return }
-            commitIfValid()
-        }
     }
 
     private func commitOrRestore() {
-        pendingCommit?.cancel()
         if !commitIfValid() {
             draft = Self.format(control.value)
         }

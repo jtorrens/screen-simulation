@@ -24,10 +24,13 @@ import Testing
     #expect(source.contains("isEnabled: shot.associationState == .free"))
     #expect(source.contains("isEnabled: episode.associationState == .free"))
     #expect(source.contains("title: \"Nombre\", value: scene.name, isEnabled: placement == nil"))
-    #expect(source.contains("Button(\"Guardar cambios\")"))
-    #expect(source.contains("Button(\"Descartar cambios\", role: .destructive)"))
-    #expect(source.contains("Button(\"Cancelar\", role: .cancel)"))
-    #expect(source.contains("try model.savedSceneNeedsUpdate(activeScene)"))
+    #expect(source.contains("model.configureActiveScenePersistence"))
+    #expect(source.contains("try scenes.update(scene, capture: capture)"))
+    #expect(!source.contains("Button(\"Guardar cambios\")"))
+    #expect(!source.contains("Button(\"Descartar cambios\", role: .destructive)"))
+    #expect(!source.contains("savedSceneNeedsUpdate"))
+    #expect(!source.contains("Actualizar con el estado actual"))
+    #expect(!source.contains("Actualizar con estado actual"))
     #expect(source.contains("destinationSnapshot = capture.snapshot"))
     #expect(source.contains("model.sceneSettingsOwnership("))
     #expect(source.contains("Button(\"Restaurar valores por defecto…\")"))
@@ -49,6 +52,70 @@ import Testing
     #expect(trackingSource.contains("Button(\"Eliminar animación de cámara…\", role: .destructive)"))
     #expect(!trackingSource.contains("Button(\"Eliminar importación 3D…\", role: .destructive)"))
     #expect(trackingSource.contains(".confirmationDialog("))
+}
+
+@Test func sceneScalarFieldsCommitOnlyAtReturnOrFocusLossAndSingleSectionsAreFlat() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let sources = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources")
+    let macUI = try String(
+        contentsOf: sources.appendingPathComponent(
+            "ScreenSimulationMacUI/TestAuthoringView.swift"
+        ),
+        encoding: .utf8
+    )
+    let native = try String(
+        contentsOf: sources.appendingPathComponent(
+            "ScreenSimulationNative/ContentView.swift"
+        ),
+        encoding: .utf8
+    )
+
+    #expect(macUI.contains("private struct CommittedTestScalarField"))
+    #expect(macUI.contains(".onSubmit { commitOrRestore() }"))
+    #expect(macUI.contains("if !isFocused { commitOrRestore() }"))
+    #expect(!macUI.contains("scheduleCommit()"))
+    #expect(!macUI.contains("Task.sleep(for: .milliseconds(450))"))
+    #expect(macUI.contains("if sections.count == 1, let section = sections.first"))
+    #expect(native.contains("CommittedNumberField(\n                            label: \"cd/m²\""))
+    #expect(!native.contains("TextField(\"cd/m²\", value:"))
+}
+
+@Test @MainActor func activeScenePersistsOncePerCommittedScalarEdit() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectDevice(device, coverGlass: cover, amount: 0)
+    let sceneID = UUID()
+    workspace.markActiveScene(sceneID)
+    var persisted: [SavedSceneCapture] = []
+    workspace.configureActiveScenePersistence { id, capture in
+        #expect(id == sceneID)
+        persisted.append(capture)
+    }
+
+    let first = min(device.maximumWhiteLuminance, device.whiteLevelNits + device.whiteLuminanceStep)
+    workspace.handleTestIntent(.setScalar(
+        controlID: "white-luminance", value: first
+    ))
+    #expect(persisted.count == 1)
+    #expect(persisted.last?.snapshot.authoring.overrides.contains(
+        .scalar("white-luminance", first)
+    ) == true)
+
+    workspace.beginSceneControlEdit("white-luminance")
+    let second = max(device.minimumWhiteLuminance, first - device.whiteLuminanceStep)
+    workspace.handleTestIntent(.setScalar(
+        controlID: "white-luminance", value: second
+    ))
+    #expect(persisted.count == 1)
+    workspace.endSceneControlEdit("white-luminance", undoManager: nil)
+    #expect(persisted.count == 2)
+    #expect(persisted.last?.snapshot.authoring.overrides.contains(
+        .scalar("white-luminance", second)
+    ) == true)
 }
 
 @Test func captureCheckpointsOwnTheCameraRasterInsteadOfTheDeviceRaster() {

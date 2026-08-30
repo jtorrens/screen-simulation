@@ -146,7 +146,7 @@ struct ContentView: View {
         case scene(UUID)
     }
     enum PendingSceneAction {
-        case update, renderAfterUpdate, resetDefaults, removeImported3D, delete
+        case resetDefaults, removeImported3D, delete
     }
     enum LibraryDeletion: String {
         case pattern = "patrón"
@@ -229,9 +229,7 @@ struct ContentView: View {
     @State private var sidebarIsVisible = true
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
-    @State private var pendingSceneOpen: SavedScene?
     @State private var renderDraft: RenderDraft?
-    @State private var pendingRenderDraftAfterUpdate: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
     @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
     @State private var expandedSceneTreeBranches: Set<SceneTreeSelection> = []
@@ -309,6 +307,12 @@ struct ContentView: View {
         .onAppear {
             model.configureSceneEnvironmentPersistence { sceneID, data in
                 try scenes.replaceGeneratedEnvironment(sceneID: sceneID, data: data)
+            }
+            model.configureActiveScenePersistence { sceneID, capture in
+                guard let scene = scenes.scene(id: sceneID) else {
+                    throw SceneLibraryError.inaccessible("La escena activa ya no existe.")
+                }
+                try scenes.update(scene, capture: capture)
             }
             if model.resolvedDevice == nil,
                let first = library.document.devices.first,
@@ -401,27 +405,6 @@ struct ContentView: View {
             }
         }
         .confirmationDialog(
-            activeSceneSavePromptTitle,
-            isPresented: Binding(
-                get: { pendingSceneOpen != nil },
-                set: { if !$0 { pendingSceneOpen = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let target = pendingSceneOpen {
-                Button("Guardar cambios") { saveCurrentSceneAndOpen(target) }
-                Button("Descartar cambios", role: .destructive) {
-                    pendingSceneOpen = nil
-                    openScene(target)
-                }
-            }
-            Button("Cancelar", role: .cancel) { pendingSceneOpen = nil }
-        } message: {
-            if let target = pendingSceneOpen {
-                Text("La escena actual tiene cambios sin guardar. Elige qué hacer antes de abrir ‘\(target.name)’.")
-            }
-        }
-        .confirmationDialog(
             "¿Eliminar \(pendingLibraryDeletion?.rawValue ?? "elemento")?",
             isPresented: Binding(
                 get: { pendingLibraryDeletion != nil },
@@ -473,11 +456,7 @@ struct ContentView: View {
                 pendingScene = nil
             }
         } message: {
-            if pendingSceneAction == .update {
-                Text("Se reemplazarán los datos y la miniatura guardados por el estado activo.")
-            } else if pendingSceneAction == .renderAfterUpdate {
-                Text("La escena activa ha cambiado. Se guardará primero y Render Queue conservará una copia inmutable de ese estado.")
-            } else if pendingSceneAction == .resetDefaults {
+            if pendingSceneAction == .resetDefaults {
                 Text("Se conservarán únicamente Source y Reference. El resto quedará como en una escena nueva.")
             } else if pendingSceneAction == .removeImported3D {
                 Text("Se eliminarán la cámara importada, la nube de puntos, las geometrías, su visibilidad y su escala. Volverá a aplicarse la cámara manual de esta escena.")
@@ -2207,8 +2186,6 @@ struct ContentView: View {
     private var sceneConfirmationTitle: String {
         guard let action = pendingSceneAction, let scene = pendingScene else { return "Escena" }
         return switch action {
-        case .update: "¿Actualizar ‘\(scene.name)’?"
-        case .renderAfterUpdate: "¿Actualizar ‘\(scene.name)’ antes de renderizar?"
         case .resetDefaults: "¿Restaurar ‘\(scene.name)’ a sus valores por defecto?"
         case .removeImported3D: "¿Eliminar el 3D importado de ‘\(scene.name)’?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
@@ -2326,7 +2303,6 @@ struct ContentView: View {
                 }
             }
             Divider()
-            Button("Actualizar con el estado actual") { requestSceneAction(.update, scene: scene) }
             Button("Duplicar escena") {
                 do { _ = try scenes.duplicate(scene) }
                 catch { model.errorMessage = error.localizedDescription }
@@ -2639,7 +2615,6 @@ struct ContentView: View {
                     requestSceneAction(.removeImported3D, scene: scene)
                 }
             }
-            Button("Actualizar con estado actual") { requestSceneAction(.update, scene: scene) }
             Button("Duplicar escena") {
                 do { _ = try scenes.duplicate(scene) }
                 catch { model.errorMessage = error.localizedDescription }
@@ -2916,8 +2891,6 @@ struct ContentView: View {
 
     private func sceneConfirmationButton(_ action: PendingSceneAction) -> String {
         switch action {
-        case .update: "Actualizar escena"
-        case .renderAfterUpdate: "Actualizar y añadir a cola"
         case .resetDefaults: "Restaurar valores"
         case .removeImported3D: "Eliminar 3D importado"
         case .delete: "Eliminar escena"
@@ -2936,41 +2909,9 @@ struct ContentView: View {
         return scene.name
     }
 
-    private var activeSceneSavePromptTitle: String {
-        guard let activeSceneID = model.activeSceneID,
-              let scene = scenes.scene(id: activeSceneID)
-        else { return "¿Guardar los cambios de la escena actual?" }
-        return "¿Guardar los cambios de ‘\(scene.name)’?"
-    }
-
     private func requestOpenScene(_ scene: SavedScene) {
         guard scene.id != model.activeSceneID else { return }
-        do {
-            if let activeSceneID = model.activeSceneID,
-               let activeScene = scenes.scene(id: activeSceneID),
-               try model.savedSceneNeedsUpdate(activeScene) {
-                pendingSceneOpen = scene
-            } else {
-                openScene(scene)
-            }
-        } catch {
-            model.errorMessage = error.localizedDescription
-        }
-    }
-
-    private func saveCurrentSceneAndOpen(_ target: SavedScene) {
-        do {
-            guard let activeSceneID = model.activeSceneID,
-                  let activeScene = scenes.scene(id: activeSceneID)
-            else { throw SceneLibraryError.inaccessible("La escena activa ya no existe.") }
-            let capture = try model.captureSavedScene()
-            try scenes.update(activeScene, capture: capture, undoManager: undoManager)
-            model.markActiveScene(activeScene.id)
-            pendingSceneOpen = nil
-            openScene(target)
-        } catch {
-            model.errorMessage = error.localizedDescription
-        }
+        openScene(scene)
     }
 
     private func openScene(_ scene: SavedScene) {
@@ -3061,31 +3002,6 @@ struct ContentView: View {
         pendingSceneAction = nil
         pendingScene = nil
         switch action {
-        case .update:
-            do {
-                let capture = try model.captureSavedScene()
-                try scenes.update(scene, capture: capture, undoManager: undoManager)
-                model.markActiveScene(scene.id)
-            } catch { model.errorMessage = error.localizedDescription }
-        case .renderAfterUpdate:
-            do {
-                let capture = try model.captureSavedScene()
-                try scenes.update(scene, capture: capture, undoManager: undoManager)
-                model.markActiveScene(scene.id)
-                guard let updated = scenes.scene(id: scene.id) else {
-                    throw SceneLibraryError.inaccessible("La escena actualizada no existe.")
-                }
-                model.ensureRenderOptionsCompatible()
-                let prior = pendingRenderDraftAfterUpdate
-                pendingRenderDraftAfterUpdate = nil
-                let updatedDraft = RenderDraft(
-                    scene: updated,
-                    sourceJob: prior?.sourceJob,
-                    historicalSnapshot: false
-                )
-                renderDraft = updatedDraft
-                enqueueRenderDraft(updatedDraft)
-            } catch { model.errorMessage = error.localizedDescription }
         case .resetDefaults:
             do {
                 let isActive = model.activeSceneID == scene.id
@@ -3413,14 +3329,17 @@ struct ContentView: View {
             enqueueRenderDraft(draft)
             return
         }
-        do {
-            if try model.savedSceneNeedsUpdate(draft.scene) {
-                pendingRenderDraftAfterUpdate = draft
-                requestSceneAction(.renderAfterUpdate, scene: draft.scene)
-            } else {
-                enqueueRenderDraft(draft)
-            }
-        } catch { model.errorMessage = error.localizedDescription }
+        guard let current = scenes.scene(id: draft.scene.id) else {
+            model.errorMessage = "La escena guardada ya no existe."
+            return
+        }
+        let currentDraft = RenderDraft(
+            scene: current,
+            sourceJob: draft.sourceJob,
+            historicalSnapshot: false
+        )
+        renderDraft = currentDraft
+        enqueueRenderDraft(currentDraft)
     }
 
     private func enqueueRenderDraft(_ draft: RenderDraft) {
@@ -3571,14 +3490,14 @@ struct ContentView: View {
                                 }
                             }
                         )
-                        TextField("cd/m²", value: Binding(
-                            get: { selected.whiteLevelNits },
-                            set: { value in
-                                model.handleTestIntent(.setScalar(
-                                    controlID: "white-luminance", value: value
-                                ), undoManager: undoManager)
-                            }
-                        ), format: .number)
+                        CommittedNumberField(
+                            label: "cd/m²",
+                            value: selected.whiteLevelNits
+                        ) { value in
+                            model.handleTestIntent(.setScalar(
+                                controlID: "white-luminance", value: value
+                            ), undoManager: undoManager)
+                        }
                         .frame(width: 72)
                         Text("cd/m²").foregroundStyle(.secondary)
                     }
@@ -3604,10 +3523,11 @@ struct ContentView: View {
                 originRow("Fuente actual") { Text(model.sourceName).lineLimit(1) }
                 originRow("Detalle") { Text(model.sourceDetail).lineLimit(2) }
                 originRow("Tiempo (s)") {
-                    TextField("0", value: Binding(
-                        get: { model.requestedSeconds },
-                        set: { model.requestedSeconds = $0 }
-                    ), format: .number)
+                    CommittedNumberField(
+                        label: "0",
+                        value: model.requestedSeconds,
+                        onCommit: { model.requestedSeconds = $0 }
+                    )
                     .accessibilityLabel("Tiempo solicitado en segundos")
                 }
                 originRow("") {
@@ -4439,7 +4359,11 @@ struct ContentView: View {
     }
 
     private func frameField(_ label: String, value: Binding<Int>) -> some View {
-        TextField(label, value: value, format: .number)
+        CommittedNumberField(
+            label: label,
+            value: value.wrappedValue,
+            onCommit: { value.wrappedValue = $0 }
+        )
             .labelsHidden()
             .frame(width: 54)
             .monospacedDigit()

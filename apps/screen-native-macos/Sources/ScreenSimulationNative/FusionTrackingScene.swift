@@ -599,21 +599,24 @@ private struct TrackingScenePanel: View {
                 Button("Importar .comp…", action: model.importFusionTrackingScene)
                 if let scene = model.trackingScene {
                     LabeledContent("Origen", value: "Autoría 3D de la escena")
-                    Picker("Cámara", selection: $model.selectedTrackingCameraID) {
+                    Picker("Cámara", selection: Binding(
+                        get: { model.selectedTrackingCameraID },
+                        set: { model.selectTrackingCamera($0) }
+                    )) {
                         Text("Seleccionar…").tag(String?.none)
                         ForEach(scene.cameras) { Text($0.label).tag(Optional($0.id)) }
                     }
-                    .onChange(of: model.selectedTrackingCameraID) { _, _ in
-                        model.refreshTrackingCamera()
-                    }
-                    Picker("Nube de puntos", selection: $model.selectedTrackingPointGroupID) {
+                    Picker("Nube de puntos", selection: Binding(
+                        get: { model.selectedTrackingPointGroupID },
+                        set: { model.selectTrackingPointGroup($0) }
+                    )) {
                         Text("Seleccionar…").tag(String?.none)
                         ForEach(scene.pointGroups) { Text("\($0.label) · \($0.points.count)").tag(Optional($0.id)) }
                     }
-                    Toggle("Aplicar cámara animada", isOn: $model.trackingCameraEnabled)
-                        .onChange(of: model.trackingCameraEnabled) { _, _ in
-                            model.refreshTrackingCamera()
-                        }
+                    Toggle("Aplicar cámara animada", isOn: Binding(
+                        get: { model.trackingCameraEnabled },
+                        set: { model.setTrackingCameraEnabled($0) }
+                    ))
                     Button("Eliminar animación de cámara…", role: .destructive) {
                         pendingRemoval = .cameraAnimation
                     }
@@ -716,7 +719,10 @@ private struct TrackingScenePanel: View {
                     Text("Clic derecho sobre un punto verde para colocar el centro del Device. Clic derecho sobre el centro naranja de un plano para colocarlo y orientarlo.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Toggle(isOn: $model.trackingPointsVisible) {
+                    Toggle(isOn: Binding(
+                        get: { model.trackingPointsVisible },
+                        set: { model.setTrackingPointsVisible($0) }
+                    )) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Nube de puntos")
                             if let group = selectedPointGroup(in: scene) {
@@ -730,7 +736,10 @@ private struct TrackingScenePanel: View {
                             }
                         }
                     }
-                    Toggle(isOn: $model.trackingGeometryVisible) {
+                    Toggle(isOn: Binding(
+                        get: { model.trackingGeometryVisible },
+                        set: { model.setTrackingGeometryVisible($0) }
+                    )) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Geometrías")
                             Text("\(scene.meshes.count) elementos importados")
