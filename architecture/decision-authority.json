@@ -15,6 +15,18 @@
       ]
     },
     {
+      "id": "persistence.portable-project-contract",
+      "scope": "strict current portable .screensim package structure, version and publication",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Portable project contract"
+      },
+      "enforcement": [
+        "crates/screen-persistence/src/lib.rs",
+        "apps/screen-desktop/src/project_mapping.rs"
+      ]
+    },
+    {
       "id": "scene.library-rename",
       "scope": "workstation Saved Scene shelf-name editing and persistence",
       "owner": {
