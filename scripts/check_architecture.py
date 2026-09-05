@@ -1214,6 +1214,151 @@ def validate_wip_review_metal_contract() -> None:
             raise ValidationError("WIP Review Metal build is incomplete: " + required)
 
 
+def validate_ofx_identity_bootstrap() -> None:
+    root = ROOT / "ofx/screen-simulation"
+    cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+    plugin = (root / "src/plugin.cpp").read_text(encoding="utf-8")
+    core = (root / "src/identity_core.cpp").read_text(encoding="utf-8")
+    origin_core = (root / "src/origin_core.cpp").read_text(encoding="utf-8")
+    tests = (root / "tests/identity_core_tests.cpp").read_text(encoding="utf-8")
+    origin_tests = (root / "tests/origin_core_tests.cpp").read_text(encoding="utf-8")
+    plist = (root / "cmake/Info.plist.in").read_text(encoding="utf-8")
+    bundle_test = (root / "tests/bundle_smoke.cpp").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    origin_application = (ROOT / "crates/screen-application/src/ofx_origin.rs").read_text(
+        encoding="utf-8"
+    )
+    bridge_manifest = (ROOT / "crates/screen-ofx-bridge/Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    bridge = (ROOT / "crates/screen-ofx-bridge/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        'com.jtorrens.ScreenSimulation',
+        '"ScreenSimulation"',
+        'kOfxImageEffectContextFilter',
+        'kOfxImageEffectContextGeneral',
+        'kOfxImageComponentRGBA',
+        'kOfxImageEffectPropCPURenderSupported, 0, "true"',
+        'kOfxImageEffectPropMetalRenderSupported, 0, "false"',
+        'kOfxImageEffectPropCudaRenderSupported, 0, "false"',
+        'kOfxImageEffectPropOpenCLRenderSupported, 0, "false"',
+        '"OfxColourspace_Source"',
+        'return kOfxStatGPURenderFailed;',
+    ):
+        if required not in plugin:
+            raise ValidationError("OFX identity contract is incomplete: " + required)
+    for content_name, content in (
+        ("CMake", cmake),
+        ("Info.plist", plist),
+        ("bundle smoke test", bundle_test),
+        ("README", readme),
+    ):
+        if "ScreenSimulationIdentity" in content:
+            raise ValidationError(
+                f"OFX public identity retains a phase name in {content_name}"
+            )
+    for required in (
+        'ScreenSimulation.ofx.bundle',
+        'add_library(ScreenSimulation MODULE',
+        'CPACK_PACKAGE_NAME "ScreenSimulationOFX"',
+    ):
+        if required not in cmake:
+            raise ValidationError("OFX canonical package identity is incomplete: " + required)
+    for required in (
+        '<string>ScreenSimulation.ofx</string>',
+        '<string>com.jtorrens.ScreenSimulation</string>',
+        '<string>ScreenSimulation</string>',
+    ):
+        if required not in plist:
+            raise ValidationError("OFX canonical plist identity is incomplete: " + required)
+    if '"com.jtorrens.ScreenSimulation"' not in bundle_test:
+        raise ValidationError("OFX bundle test does not enforce the canonical identifier")
+    for required in (
+        'std::memmove(',
+        'contains(source.bounds, render_window)',
+        'contains(destination.bounds, render_window)',
+    ):
+        if required not in core:
+            raise ValidationError("OFX identity copy is incomplete: " + required)
+    for required in (
+        'partial_window_preserves_unrequested_pixels',
+        'negative_row_bytes_are_supported',
+        'every_supported_pixel_size_is_byte_exact',
+        'incompatible_or_unavailable_requests_fail',
+    ):
+        if required not in tests:
+            raise ValidationError("OFX identity coverage is incomplete: " + required)
+    for required in (
+        '"arm64;x86_64"',
+        "--target aarch64-apple-darwin",
+        "--target x86_64-apple-darwin",
+        "--target x86_64-pc-windows-msvc",
+        "MACOSX_DEPLOYMENT_TARGET=14.0",
+        '"${SCREEN_SIMULATION_BUNDLE_CONTENTS}/MacOS"',
+        '"${SCREEN_SIMULATION_BUNDLE_DIR}/Contents/Win64"',
+        'CPACK_GENERATOR "ZIP"',
+    ):
+        if required not in cmake:
+            raise ValidationError("OFX portable packaging is incomplete: " + required)
+    for required in (
+        "kOfxParamTypeStrChoice",
+        '"input-transform"',
+        '"alpha-interpretation"',
+        '"preview"',
+        "screen_ofx_origin_process_rgba32f(",
+        "read_origin_window_rgba32f(",
+        "write_origin_window_rgba32f(",
+    ):
+        if required not in plugin:
+            raise ValidationError("OFX Origin host binding is incomplete: " + required)
+    for required in (
+        "OFX_UNSELECTED_INPUT_TRANSFORM_ID",
+        "OFX_ORIGIN_ALPHA_CHOICES",
+        "OFX_ORIGIN_PREVIEW_CHOICES",
+        "evaluate_ofx_origin(",
+        "resolve_acescct_working_space_round_trips_through_origin",
+        "AlphaInterpretation::Premultiplied",
+        "AlphaInterpretation::Straight",
+        "AlphaInterpretation::Ignore",
+    ):
+        if required not in origin_application:
+            raise ValidationError("Application-owned OFX Origin is incomplete: " + required)
+    if "screen-application" not in bridge_manifest or "screen-color" in bridge_manifest:
+        raise ValidationError(
+            "OFX bridge must depend narrowly on Application and not duplicate Color ownership"
+        )
+    for required in (
+        "ofx_origin_input_transform_choices",
+        "screen_ofx_origin_process_rgba32f",
+        "evaluate_ofx_origin(",
+    ):
+        if required not in bridge:
+            raise ValidationError("OFX Origin bridge is incomplete: " + required)
+    for required in (
+        "std::clamp(value, 0.0F, 1.0F)",
+        "PixelDepth::Half",
+        "PixelDepth::Float",
+        "contains(source.bounds, render_window)",
+        "contains(destination.bounds, render_window)",
+    ):
+        if required not in origin_core:
+            raise ValidationError("OFX Origin pixel transport is incomplete: " + required)
+    for required in (
+        "byte_partial_window_preserves_unrequested_pixels",
+        "half_roundtrip_preserves_extended_finite_values",
+        "negative_rows_and_nonzero_bounds_are_supported",
+        "invalid_layouts_fail_explicitly",
+    ):
+        if required not in origin_tests:
+            raise ValidationError("OFX Origin pixel coverage is incomplete: " + required)
+    for required in ("Resolve ACES", "ACEScct", "ACEScg", "sole owner of the project ODT"):
+        if required not in readme:
+            raise ValidationError("OFX Resolve ACES guidance is incomplete: " + required)
+
+
+
 def validate_migration_backup_contract() -> None:
     migration_io = (ROOT / "scripts/migration_io.py").read_text(encoding="utf-8")
     for required in (
@@ -1273,6 +1418,7 @@ def main() -> int:
         validate_native_workspace_navigation()
         validate_reference_matte_transport()
         validate_wip_review_metal_contract()
+        validate_ofx_identity_bootstrap()
         validate_migration_backup_contract()
         validate_native_package_relinks_bridge()
         validate_phase_gated_workflow()

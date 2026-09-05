@@ -113,6 +113,12 @@
       ]
     },
     {
+      "name": "screen-ofx-bridge",
+      "path": "crates/screen-ofx-bridge",
+      "owner": "ofx-adapter",
+      "allowed_local_dependencies": ["screen-application"]
+    },
+    {
       "name": "screen-desktop",
       "path": "apps/screen-desktop",
       "owner": "desktop-composition",

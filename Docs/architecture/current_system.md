@@ -175,6 +175,40 @@ this boundary and cannot appear as physical contributions.
 
 The current supported system is Apple Silicon on macOS 14 or later. Windows and D3D12 are outside the current version and impose no parity requirement on Metal work.
 
+## OFX host adapter identity
+<!-- decision-owner: host.ofx-identity-bootstrap -->
+
+The current OFX integration is one CPU adapter exposing the same `Filter` and
+`General` `Source RGBA -> Output RGBA` contract to Resolve and Fusion. It
+inherits Source RoD, components, depth and pixel aspect, and processes only the
+requested `renderWindow`. Byte, Short, Half and Float RGBA are explicit
+supported layouts. A missing Source, a mismatched Source/Output raster
+contract, an out-of-bounds render window or a negotiated GPU buffer fails
+explicitly. The plug-in advertises no Metal, CUDA or OpenCL render path and
+never treats a GPU handle as CPU memory.
+
+Its canonical product identity is fixed independently of any phase: the
+visible name is `ScreenSimulation`, the OFX identifier is
+`com.jtorrens.ScreenSimulation`, and every platform packages the single
+`ScreenSimulation.ofx.bundle`. Every phase extends that same plug-in identity;
+phase-named, diagnostic and temporary plug-ins are forbidden.
+
+OFX 1.5 colour management remains observational host evidence. The adapter
+declares the pinned native OFX colour configuration, logs the Source and Output
+colourspace identities and cross-references Output to Source. It does not load
+another OCIO configuration, inspect Resolve project settings or infer a Fusion
+working space. Application owns the Source and Origin Preview descriptors and
+the typed Origin evaluation described by the Color owner; the C ABI and C++
+adapter only bind those descriptors, translate the requested raster window and
+publish the evaluated result.
+
+The adapter is shared portable C++17 over one host-neutral Rust/Application
+bridge. macOS packages the module under `Contents/MacOS` with a universal
+arm64/x86_64 binary and ad-hoc signature; Windows packaging is declared from
+the same sources under `Contents/Win64` for MSVC x64. macOS is the first
+host-validation platform, but no macOS API enters the pixel or phase contract.
+
+
 ## Physical packages
 
 ```text

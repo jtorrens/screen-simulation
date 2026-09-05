@@ -745,6 +745,46 @@ impl ColorEngine {
         ocio_rs::version().ok_or(ColorError::MissingLibraryVersion)
     }
 
+    pub fn source_to_acescg_processor(
+        &self,
+        input: OcioInputTransform,
+    ) -> Result<SourceToAcesCgProcessor, ColorError> {
+        let processor = match input.processor() {
+            OcioInputProcessor::ColorSpace(source) => {
+                self.config.processor(source, ACESCG_COLOR_SPACE)
+            }
+            OcioInputProcessor::InverseDisplay { display, view } => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                display,
+                view,
+                TransformDirection::Inverse,
+            ),
+        }
+        .and_then(|processor| processor.default_cpu_processor())
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        Ok(SourceToAcesCgProcessor { processor })
+    }
+
+    pub fn acescg_to_source_processor(
+        &self,
+        input: OcioInputTransform,
+    ) -> Result<AcesCgToSourceProcessor, ColorError> {
+        let processor = match input.processor() {
+            OcioInputProcessor::ColorSpace(destination) => {
+                self.config.processor(ACESCG_COLOR_SPACE, destination)
+            }
+            OcioInputProcessor::InverseDisplay { display, view } => self.config.processor_display(
+                ACESCG_COLOR_SPACE,
+                display,
+                view,
+                TransformDirection::Forward,
+            ),
+        }
+        .and_then(|processor| processor.default_cpu_processor())
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+        Ok(AcesCgToSourceProcessor { processor })
+    }
+
     pub fn source_to_device_processor(
         &self,
         interpretation: SourceColorInterpretation,
@@ -982,6 +1022,47 @@ impl ColorEngine {
 pub struct CameraOutputProcessor {
     transform: CameraOutputTransform,
     processor: CPUProcessor,
+}
+
+pub struct SourceToAcesCgProcessor {
+    processor: CPUProcessor,
+}
+
+pub struct AcesCgToSourceProcessor {
+    processor: CPUProcessor,
+}
+
+fn apply_cpu_rgba(processor: &CPUProcessor, pixels: &mut [f32]) -> Result<(), ColorError> {
+    if !pixels.len().is_multiple_of(4) {
+        return Err(ColorError::InvalidRgbaBufferLength(pixels.len()));
+    }
+    let alpha = pixels
+        .chunks_exact(4)
+        .map(|pixel| pixel[3])
+        .collect::<Vec<_>>();
+    processor
+        .try_apply_rgba_pixels(
+            pixels,
+            i64::try_from(pixels.len() / 4).map_err(|_| ColorError::PixelCountOverflow)?,
+            4,
+        )
+        .map_err(|error| ColorError::OpenColorIo(error.to_string()))?;
+    for (pixel, alpha) in pixels.chunks_exact_mut(4).zip(alpha) {
+        pixel[3] = alpha;
+    }
+    Ok(())
+}
+
+impl SourceToAcesCgProcessor {
+    pub fn apply_rgba_buffer(&self, pixels: &mut [f32]) -> Result<(), ColorError> {
+        apply_cpu_rgba(&self.processor, pixels)
+    }
+}
+
+impl AcesCgToSourceProcessor {
+    pub fn apply_rgba_buffer(&self, pixels: &mut [f32]) -> Result<(), ColorError> {
+        apply_cpu_rgba(&self.processor, pixels)
+    }
 }
 
 pub struct RecordingOutputProcessor {
@@ -1238,6 +1319,48 @@ mod tests {
         for (actual, expected) in [signal.r, signal.g, signal.b].into_iter().zip(source) {
             assert!((actual - expected).abs() <= 3.0e-5);
         }
+    }
+
+    #[test]
+    fn every_input_transform_resolves_as_an_origin_roundtrip() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        for input in OcioInputTransform::ALL {
+            let to_acescg = engine
+                .source_to_acescg_processor(input)
+                .unwrap_or_else(|error| panic!("{} input failed: {error}", input.label()));
+            let from_acescg = engine
+                .acescg_to_source_processor(input)
+                .unwrap_or_else(|error| panic!("{} output failed: {error}", input.label()));
+            let mut rgba = [0.18, 0.22, 0.31, 0.375];
+            to_acescg
+                .apply_rgba_buffer(&mut rgba)
+                .unwrap_or_else(|error| panic!("{} to ACEScg failed: {error}", input.label()));
+            assert!(rgba[..3].iter().all(|value| value.is_finite()));
+            assert_eq!(rgba[3], 0.375);
+            from_acescg
+                .apply_rgba_buffer(&mut rgba)
+                .unwrap_or_else(|error| panic!("{} from ACEScg failed: {error}", input.label()));
+            assert!(rgba.iter().all(|value| value.is_finite()));
+            assert_eq!(rgba[3], 0.375);
+        }
+    }
+
+    #[test]
+    fn acescg_origin_processor_preserves_extended_values_and_alpha() {
+        let engine = ColorEngine::bundled().expect("bundled color engine");
+        let to_acescg = engine
+            .source_to_acescg_processor(OcioInputTransform::AcesCg)
+            .expect("ACEScg input");
+        let from_acescg = engine
+            .acescg_to_source_processor(OcioInputTransform::AcesCg)
+            .expect("ACEScg output");
+        let expected = [-0.25, 0.18, 16.0, 0.4];
+        let mut actual = expected;
+        to_acescg.apply_rgba_buffer(&mut actual).expect("to ACEScg");
+        from_acescg
+            .apply_rgba_buffer(&mut actual)
+            .expect("from ACEScg");
+        assert_eq!(actual, expected);
     }
 
     #[test]

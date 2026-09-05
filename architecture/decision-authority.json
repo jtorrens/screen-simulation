@@ -336,7 +336,10 @@
         "packages/StudioColor/Sources/StudioColor/StudioColorContracts.swift",
         "packages/StudioColor/Tests/StudioColorTests/StudioColorTests.swift",
         "crates/screen-color/src/lib.rs",
+        "crates/screen-application/src/ofx_origin.rs",
+        "crates/screen-ofx-bridge/src/lib.rs",
         "crates/screen-application/src/test_authoring.rs",
+        "ofx/screen-simulation/src/plugin.cpp",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/TestAuthoringCoordinator.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/TestAuthoringCoordinatorTests.swift",
@@ -738,6 +741,42 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationPresentationTests/TestPresentationTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "host.ofx-identity-bootstrap",
+      "scope": "stable ScreenSimulation OFX product identity and portable Resolve/Fusion CPU host adapter",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "OFX host adapter identity"
+      },
+      "enforcement": [
+        "ofx/screen-simulation/CMakeLists.txt",
+        "ofx/screen-simulation/src/identity_core.cpp",
+        "ofx/screen-simulation/src/plugin.cpp",
+        "ofx/screen-simulation/tests/identity_core_tests.cpp",
+        "ofx/screen-simulation/tests/bundle_smoke.cpp",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "host.ofx-origin-phase",
+      "scope": "explicit OFX Source interpretation, canonical ACEScg Origin checkpoint, alpha semantics and cumulative Source or Origin Preview publication",
+      "owner": {
+        "path": "Docs/architecture/color_and_panel.md",
+        "anchor": "OFX Origin phase"
+      },
+      "enforcement": [
+        "crates/screen-color/src/lib.rs",
+        "crates/screen-application/src/ofx_origin.rs",
+        "crates/screen-ofx-bridge/src/lib.rs",
+        "crates/screen-ofx-bridge/include/screen_ofx_bridge.h",
+        "ofx/screen-simulation/CMakeLists.txt",
+        "ofx/screen-simulation/src/origin_core.cpp",
+        "ofx/screen-simulation/src/plugin.cpp",
+        "ofx/screen-simulation/tests/origin_core_tests.cpp",
+        "ofx/screen-simulation/README.md",
         "scripts/check_architecture.py"
       ]
     }

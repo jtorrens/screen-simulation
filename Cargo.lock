@@ -4542,6 +4542,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "screen-ofx-bridge"
+version = "0.1.0"
+dependencies = [
+ "screen-application",
+]
+
+[[package]]
 name = "screen-panel"
 version = "0.1.0"
 dependencies = [

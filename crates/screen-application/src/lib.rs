@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod ofx_origin;
 mod parameter_animation;
 mod physical_pipeline;
 mod recording;
@@ -13,6 +14,13 @@ mod temporal_cache;
 mod test_authoring;
 mod tracking_overlay;
 
+pub use ofx_origin::{
+    OFX_ALPHA_INTERPRETATION_PARAMETER_ID, OFX_INPUT_TRANSFORM_PARAMETER_ID,
+    OFX_ORIGIN_ALPHA_CHOICES, OFX_ORIGIN_PREVIEW_CHOICES, OFX_ORIGIN_SCHEMA_VERSION,
+    OFX_PREVIEW_PARAMETER_ID, OFX_UNSELECTED_INPUT_TRANSFORM_ID, OfxChoiceDescriptor,
+    OfxOriginError, OfxOriginEvaluation, OfxOriginPreview, evaluate_ofx_origin,
+    ofx_origin_input_transform_choices,
+};
 pub use parameter_animation::{
     SIMULATION_OPACITY_DESCRIPTOR, SIMULATION_OPACITY_PROPERTY_ID, ScalarInterpolation,
     ScalarKeyframe, ScalarPropertyDescriptor, ScalarPropertyTrack, ScalarTrackError,

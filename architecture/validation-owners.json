@@ -130,6 +130,11 @@
       "id": "desktop-composition",
       "paths": ["apps/screen-desktop/**"],
       "checks": ["architecture", "workspace", "desktop"]
+    },
+    {
+      "id": "ofx-adapter",
+      "paths": ["crates/screen-ofx-bridge/**", "ofx/screen-simulation/**"],
+      "checks": ["architecture", "workspace", "ofx-origin"]
     }
   ]
 }

@@ -1,0 +1,12 @@
+[package]
+name = "screen-ofx-bridge"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+screen-application = { path = "../screen-application" }

@@ -55,6 +55,45 @@ Media transports declared primaries, transfer characteristic, matrix coefficient
 
 Every Input Transform offered by the Color-owned selectable catalog is executable through the complete source-to-ACEScg-to-feeder process and is accepted and republished with the exact same stable identifier by Application Test authoring, Saved Scene materialization and every host. Color-space and inverse display/view inputs both resolve through the one bundled OCIO configuration; their OCIO color-space, display and view names are implementation facts, not alternate application identities. The detected scene-referred Camera Rec.709 transform therefore persists exactly `input-rec709`; `camera-rec709` is not an alias or compatibility key. A catalog option that cannot complete every feeder Output Signal is invalid and cannot be published to UI.
 
+## OFX Origin phase
+<!-- decision-owner: host.ofx-origin-phase -->
+
+The OFX Source boundary is the exact RGBA raster supplied by Resolve or Fusion.
+The host colourspace property is observational evidence only because neither
+validated host supplies a reliable working-space identity to the plug-in.
+Application therefore publishes one required `Input Transform` choice using
+the existing Color-owned stable catalog. The initial `unselected` value is an
+explicit unresolved state, not a transform, default or inference: Source
+Preview remains an exact passthrough in that state and Origin evaluation fails
+until the author selects the actual encoding delivered to the node.
+
+Origin publishes the versioned unassociated linear ACEScg raster plus the
+resolved scalar alpha interpretation. `Premultiplied` unassociates RGB exactly
+once before OCIO, defines zero-alpha RGB as zero and reassociates only for host
+publication. `Straight` preserves independent RGB, including RGB at zero
+alpha. `Ignore / Opaque` discards Source alpha and publishes one. Alpha never
+enters a Color transform and its stored scalar is preserved exactly. Source
+Preview copies the requested Source bytes. Origin Preview evaluates the
+canonical checkpoint and, solely for host presentation, applies the exact
+inverse of the authored Input Transform so Output remains in the same host
+working space. It is not an Output Transform or ODT and it never changes the
+checkpoint.
+
+In a Resolve ACES project the authored choice is `ACEScct` when the node
+receives ACEScct/AP1 and `ACEScg` when it receives linear AP1. The internal
+checkpoint remains ACEScg in both cases and publication returns to the selected
+space, leaving Resolve to apply the project ODT exactly once. Resolve Color
+Managed and Fusion working spaces follow the same explicit rule; project mode,
+metadata, host name and filenames never select the transform.
+
+Origin preserves finite negative and above-one RGB through Float and Half
+processing. Byte and Short publication explicitly quantize and clip at their
+integer output boundary. It preserves Source dimensions, pixel aspect,
+placement and exact requested `renderWindow`, has no temporal or spatial
+support expansion and requests no second input clip. Application owns all
+stable parameter and Preview identities; the OFX adapter cannot duplicate or
+reorder them.
+
 A Device preset declares the stable Color Mode identifiers and EOTF interpretations it supports and its calibrated White Luminance capability, including finite minimum, maximum, step and reference value. It does not own or duplicate feeder OCIO processors. The authored simulation instance separately selects one Output Signal, one Device, one supported Color Mode and one in-range White Luminance. Application validates and materializes that selection before Color or Panel evaluation; changing instance authoring never mutates the preset. Presentation receives only the resolved option and scalar descriptors and cannot filter Color Modes or invent luminance bounds.
 
 Feeder owns two consecutive typed artifacts. Its strict color checkpoint contains the nonlinear RGBA16F source raster without display quantization, exact source dimensions, Input Transform id and reference domain, Output Signal id, resolved feeder-output id and resolved alpha interpretation. Device, Color Mode, White Luminance, placement and Preview quality cannot mutate that color checkpoint. Feeder then applies the authored placement against the selected target Device raster and publishes `placed-feeder-signal-v1`; changing Device dimensions or placement therefore changes this phase output without recoding the strict color checkpoint. Device Mapping and Interpretation consumes only the placed artifact. Both comparison evaluators consume the same accepted artifact; diagnostic PNGs are derived views and never become physical inputs. End-to-end evaluation remains separately validated so checkpoint isolation cannot hide an integration error.
