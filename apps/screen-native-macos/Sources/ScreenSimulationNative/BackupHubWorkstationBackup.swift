@@ -6,6 +6,7 @@ import Foundation
 enum WorkstationBackupReason: String, Codable {
     case cleanExit = "clean-exit"
     case manual
+    case preRestore = "pre-restore"
 }
 
 enum WorkstationBackupError: LocalizedError {
@@ -72,6 +73,10 @@ struct BackupHubWorkstationProducer {
 
     @discardableResult
     func publish(reason: WorkstationBackupReason) throws -> URL {
+        try publishPackage(reason: reason).url
+    }
+
+    func publishPackage(reason: WorkstationBackupReason) throws -> PublishedWorkstationBackup {
         let inbox = try validatedInboxURL()
         let packageID = makePackageID().uuidString.lowercased()
         let stagingURL = inbox.appendingPathComponent(".\(packageID).tmp", isDirectory: true)
@@ -119,7 +124,10 @@ struct BackupHubWorkstationProducer {
             )
             try validatePackage(at: stagingURL, expectedManifest: manifest)
             try fileManager.moveItem(at: stagingURL, to: publishedURL)
-            return publishedURL
+            return PublishedWorkstationBackup(
+                packageID: UUID(uuidString: packageID)!,
+                url: publishedURL
+            )
         } catch {
             if fileManager.fileExists(atPath: stagingURL.path) {
                 try? fileManager.removeItem(at: stagingURL)
@@ -129,7 +137,7 @@ struct BackupHubWorkstationProducer {
         }
     }
 
-    private func validatedInboxURL() throws -> URL {
+    func validatedVaultURL() throws -> URL {
         let vault = applicationSupportURL
             .appendingPathComponent("com.jtorrens.backup-hub", isDirectory: true)
             .appendingPathComponent("vault", isDirectory: true)
@@ -157,6 +165,11 @@ struct BackupHubWorkstationProducer {
                 "vault-layout.json no cumple Vault Location v1"
             )
         }
+        return vault
+    }
+
+    private func validatedInboxURL() throws -> URL {
+        let vault = try validatedVaultURL()
         let inbox = vault.appendingPathComponent("inbox", isDirectory: true)
         let values = try? inbox.resourceValues(forKeys: [
             .isDirectoryKey, .isSymbolicLinkKey,
@@ -271,7 +284,7 @@ struct BackupHubWorkstationProducer {
         }
     }
 
-    private func payloadFiles(at payloadURL: URL) throws -> [BackupPackageFile] {
+    func payloadFiles(at payloadURL: URL) throws -> [BackupPackageFile] {
         var result: [BackupPackageFile] = []
         guard let enumerator = fileManager.enumerator(
             at: payloadURL,
@@ -300,7 +313,7 @@ struct BackupHubWorkstationProducer {
         return result.sorted { $0.path < $1.path }
     }
 
-    private func validatePackage(
+    func validatePackage(
         at packageURL: URL,
         expectedManifest: BackupPackageManifest
     ) throws {
@@ -320,13 +333,19 @@ struct BackupHubWorkstationProducer {
         let decoded = try JSONDecoder().decode(BackupPackageManifest.self, from: data)
         guard decoded == expectedManifest,
               decoded.contractVersion == 1,
+              UUID(uuidString: decoded.packageId)?.uuidString.lowercased() == decoded.packageId,
               decoded.applicationId == Self.applicationID,
-              ["clean-exit", "manual"].contains(decoded.reason),
+              isRFC3339(decoded.createdAt),
+              ["clean-exit", "manual", "pre-migration", "pre-restore"].contains(decoded.reason),
+              !decoded.producer.version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               decoded.producer.platform == "macos",
               decoded.snapshot.format == Self.snapshotFormat,
               decoded.snapshot.schemaVersion == Self.snapshotSchemaVersion,
               !decoded.files.isEmpty,
-              Set(decoded.files.map(\.path)).count == decoded.files.count else {
+              Set(decoded.files.map(\.path)).count == decoded.files.count,
+              decoded.files.allSatisfy({
+                  $0.byteLength >= 0 && isLowercaseSHA256($0.sha256)
+              }) else {
             throw WorkstationBackupError.publicationFailed("manifest.json no cumple Backup Package v1")
         }
         let actualFiles = try payloadFiles(at: packageURL.appendingPathComponent("payload"))
@@ -348,6 +367,51 @@ struct BackupHubWorkstationProducer {
         guard descriptor.schema == Self.snapshotDocumentSchema,
               descriptor.includedStatePaths == actualStatePaths else {
             throw WorkstationBackupError.publicationFailed("snapshot.json no coincide con el estado incluido")
+        }
+    }
+
+    func validatedRestoreManifest(
+        at packageURL: URL,
+        expectedPackageID: UUID
+    ) throws -> BackupPackageManifest {
+        let manifestURL = packageURL.appendingPathComponent("manifest.json")
+        let data = try Data(contentsOf: manifestURL)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(root.keys) == [
+                "contractVersion", "packageId", "applicationId", "createdAt", "reason",
+                "producer", "snapshot", "files",
+              ],
+              let producer = root["producer"] as? [String: Any],
+              Set(producer.keys) == ["version", "platform"],
+              let snapshot = root["snapshot"] as? [String: Any],
+              Set(snapshot.keys) == ["format", "schemaVersion"],
+              let rawFiles = root["files"] as? [[String: Any]],
+              rawFiles.allSatisfy({ Set($0.keys) == ["path", "byteLength", "sha256"] }) else {
+            throw WorkstationBackupError.publicationFailed("manifest.json no tiene la forma exacta v1")
+        }
+        let manifest = try JSONDecoder().decode(BackupPackageManifest.self, from: data)
+        guard manifest.packageId.lowercased() == expectedPackageID.uuidString.lowercased(),
+              manifest.applicationId == Self.applicationID,
+              manifest.snapshot.format == Self.snapshotFormat,
+              manifest.snapshot.schemaVersion == Self.snapshotSchemaVersion else {
+            throw WorkstationBackupError.publicationFailed("la identidad del paquete no coincide")
+        }
+        try validatePackage(at: packageURL, expectedManifest: manifest)
+        return manifest
+    }
+
+    private func isRFC3339(_ value: String) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if fractional.date(from: value) != nil { return true }
+        let whole = ISO8601DateFormatter()
+        whole.formatOptions = [.withInternetDateTime]
+        return whole.date(from: value) != nil
+    }
+
+    private func isLowercaseSHA256(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy {
+            $0.isNumber || ("a" ... "f").contains(String($0))
         }
     }
 
@@ -396,12 +460,17 @@ struct BackupHubWorkstationProducer {
     }
 }
 
-private struct WorkstationSnapshotDescriptor: Codable, Equatable {
+struct PublishedWorkstationBackup {
+    let packageID: UUID
+    let url: URL
+}
+
+struct WorkstationSnapshotDescriptor: Codable, Equatable {
     let schema: String
     let includedStatePaths: [String]
 }
 
-private struct BackupPackageManifest: Codable, Equatable {
+struct BackupPackageManifest: Codable, Equatable {
     struct Producer: Codable, Equatable {
         let version: String
         let platform: String
@@ -422,7 +491,7 @@ private struct BackupPackageManifest: Codable, Equatable {
     let files: [BackupPackageFile]
 }
 
-private struct BackupPackageFile: Codable, Equatable {
+struct BackupPackageFile: Codable, Equatable {
     let path: String
     let byteLength: Int
     let sha256: String

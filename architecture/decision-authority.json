@@ -35,9 +35,11 @@
       },
       "enforcement": [
         "apps/screen-native-macos/Sources/ScreenSimulationNative/BackupHubWorkstationBackup.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/BackupHubWorkstationRestore.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ScreenSimulationNativeApp.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/BackupHubWorkstationBackupTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/BackupHubWorkstationRestoreTests.swift",
         "scripts/check_architecture.py"
       ]
     },

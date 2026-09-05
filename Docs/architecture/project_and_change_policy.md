@@ -38,9 +38,21 @@ inbox, scans for another vault, or publishes to a fallback. Missing or invalid B
 visible error; failed clean-exit publication requires an explicit choice between cancelling
 termination and quitting without a backup.
 
-Backup Hub owns encryption, vault storage, history and retention after publication. This producer
-contract does not implement restore. The timestamped byte-identical copies created by explicit
-maintenance migrations remain local migration safety artifacts and are not Backup Hub packages.
+Backup Hub owns encryption, vault storage, history and retention after publication. Restore is
+consumed exclusively through Restore Handoff/Result v2 at application startup before constructing
+any workstation store. The owner performs the v1 no-read cutoff once, claims each complete request
+by rename, and strictly revalidates request, package, summary, payload hashes and current snapshot
+semantics before showing native confirmation. Cancellation publishes `cancelled` without backup or
+live-data mutation. Confirmation first publishes `pre-restore`, prepares and validates a candidate,
+atomically swaps the complete Application Support state directory while retaining excluded local
+artifacts, verifies the live result, publishes the terminal result with `preRestorePackageId`, and
+only then retires the claimed plaintext request. A durable transaction journal rolls an interrupted
+replacement back before any retry; a published success finalizes instead of reverting it. Rejected
+or failed claims move to quarantine after durable result publication. Restore v1 is never opened,
+converted or inferred.
+
+The timestamped byte-identical copies created by explicit maintenance migrations remain local
+migration safety artifacts and are not Backup Hub packages.
 
 ## Workstation Saved Scene authority
 <!-- decision-owner: scene.profile-resolution -->
