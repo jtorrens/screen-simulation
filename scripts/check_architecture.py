@@ -1192,11 +1192,16 @@ def validate_wip_review_metal_contract() -> None:
         "try await wipSession?.finish()",
         "bytesNoCopy:",
         "withTaskCancellationHandler",
+        "externalPluginBundleURL",
+        "verifyAvailability",
     ):
         if required not in adapter + renderer:
             raise ValidationError("WIP Review persistent session is incomplete: " + required)
     if "temporaryDirectory" in adapter or "input.rgba32f" in adapter:
         raise ValidationError("WIP Review still exchanges per-frame temporary rasters")
+    package = (ROOT / "scripts/build_native_macos.py").read_text(encoding="utf-8")
+    if "WIP_PLUGIN" in package or "EXPECTED_WIP_PLUGIN_HASH" in package:
+        raise ValidationError("the independently installed WIP OFX bundle is still packaged or hash-pinned")
     for required in (
         'kOfxImageEffectPropCPURenderSupported, "false"',
         'kOfxImageEffectPropMetalRenderSupported, "true"',

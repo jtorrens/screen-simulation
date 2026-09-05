@@ -3224,6 +3224,12 @@ struct ContentView: View {
                                 Text(preset.name).tag(Optional(preset))
                             }
                         }
+                        .disabled(!model.wipReviewAvailable)
+                        if !model.wipReviewAvailable {
+                            Text("WIP Review no disponible: instala o corrige el OFX y reinicia la app.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     if model.includeFusionComposition {
                         Picker("DOF", selection: $model.fusionDOFMode) {
@@ -3976,6 +3982,10 @@ struct ContentView: View {
         }
         do {
             if let wipID = job.configuration.wipReview?.id {
+                guard model.wipReviewAvailable else {
+                    model.errorMessage = "WIP Review no está disponible. Instala o corrige el OFX y reinicia la app antes de reutilizar este render."
+                    return
+                }
                 guard let currentWIP = library.allWIPReviewPresets.first(where: { $0.id == wipID }) else {
                     model.errorMessage = "El preset WIP Review del render histórico ya no existe en la Biblioteca Global."
                     return

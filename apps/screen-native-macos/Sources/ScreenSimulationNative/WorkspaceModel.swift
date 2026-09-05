@@ -498,6 +498,7 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var testPresentation: TestPagePresentation?
     @Published private(set) var recordingEncodedBytes: Int?
     @Published private(set) var recordingEncodedSHA256: String?
+    @Published private(set) var wipReviewAvailable = false
     private var testAuthoringSelection: TestAuthoringResolvedSelection?
     private var explicitSceneOverrideControlIDs: Set<String> = []
     private var activeSceneControlEditID: String?
@@ -593,6 +594,17 @@ final class WorkspaceModel: ObservableObject {
     }
     var modelViewerOneToOne: Bool { viewerNavigation.modelOneToOne }
     var jobs: [NativeOutputQueueController.RenderJob] { outputQueue.jobs }
+
+    func verifyWIPReviewAvailabilityAtLaunch() async {
+        do {
+            try await WIPReviewOFXAdapter.verifyAvailability()
+            wipReviewAvailable = true
+        } catch {
+            wipReviewAvailable = false
+            renderWIPReviewPreset = nil
+            errorMessage = "WIP Review no está disponible y permanecerá desactivado: \(error.localizedDescription)"
+        }
+    }
 
     var environmentSourceEvidence: [String] {
         guard let name = environmentSourceName,
@@ -5523,7 +5535,9 @@ final class WorkspaceModel: ObservableObject {
             signalRange: configuration.signalRange, alpha: configuration.alpha,
             includeAudio: configuration.includeAudio
         )
-        renderWIPReviewPreset = configuration.wipReview
+        // A historical WIP selection remains evidence in its immutable job, but
+        // cannot reactivate an unavailable external OFX capability.
+        renderWIPReviewPreset = wipReviewAvailable ? configuration.wipReview : nil
         includeFusionComposition = configuration.fusionScene != nil
         if let fusion = configuration.fusionScene {
             fusionDOFMode = fusion.dofMode

@@ -22,6 +22,13 @@ enum WIPReviewOFXError: Error, LocalizedError {
 }
 
 struct WIPReviewOFXAdapter: Sendable {
+    /// WIP Review is independently installed, so updating it does not require
+    /// rebuilding or repackaging SCREEN-SIMULATION.
+    static let externalPluginBundleURL = URL(
+        fileURLWithPath: "/Library/OFX/Plugins/WIPReviewProbe.ofx.bundle",
+        isDirectory: true
+    )
+
     struct Raster: Equatable, Sendable {
         let width: Int
         let height: Int
@@ -34,8 +41,7 @@ struct WIPReviewOFXAdapter: Sendable {
         guard let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
         else { throw WIPReviewOFXError.invalidPayload }
         let host = executableDirectory.appendingPathComponent("screen-wip-ofx-host")
-        let bundle = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/PlugIns/WIPReviewProbe.ofx.bundle")
+        let bundle = Self.externalPluginBundleURL
         guard FileManager.default.isExecutableFile(atPath: host.path) else {
             throw WIPReviewOFXError.missingPackagedHost(host)
         }
@@ -44,6 +50,26 @@ struct WIPReviewOFXAdapter: Sendable {
         }
         hostExecutableURL = host
         pluginBundleURL = bundle
+    }
+
+    /// A present bundle is usable only after the host loads and renders its OFX effect.
+    static func verifyAvailability() async throws {
+        let adapter = try Self()
+        let session = try adapter.makeSession(
+            sourceWidth: 1, sourceHeight: 1,
+            frameRate: 24, firstFrame: 1_001, lastFrame: 1_002,
+            preset: StudioWIPReviewPreset.builtIns[0]
+        )
+        do {
+            _ = try await session.render(
+                encodedRGBA: [0, 0, 0, 1], frame: 1_001,
+                outputFilename: "wip-availability-check"
+            )
+            try await session.finish()
+        } catch {
+            session.terminate()
+            throw error
+        }
     }
 
     init(hostExecutableURL: URL, pluginBundleURL: URL) {

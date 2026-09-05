@@ -30,9 +30,6 @@ BRIDGE = (
 )
 EXPECTED_CONFIG_HASH = "ebe2293968975e3540c6b32cfbee2ca1274b5bf3c9ff610235abb07b65da970b"
 EXPECTED_BRIDGE_HASH = "471bc5e68c0c8e08ba49741eea994fa7cc560b1ad1002211747153f9121a1c9c"
-WIP_PLUGIN = Path("/Library/OFX/Plugins/WIPReviewProbe.ofx.bundle")
-WIP_PLUGIN_BINARY = WIP_PLUGIN / "Contents/MacOS/WIPReviewProbe.ofx"
-EXPECTED_WIP_PLUGIN_HASH = "e8668c5174fb974e3065493d362c64db23b763594863ee8954e5835dca2f67bf"
 WIP_HOST_BUILD = ROOT / "target/wip-ofx-host-build"
 WIP_HOST = WIP_HOST_BUILD / "screen-wip-ofx-host"
 
@@ -101,7 +98,6 @@ def bundle_ffmpeg_libraries(executable: Path, frameworks: Path) -> None:
 def main() -> int:
     verify_hash(CONFIG, EXPECTED_CONFIG_HASH)
     verify_hash(BRIDGE, EXPECTED_BRIDGE_HASH)
-    verify_hash(WIP_PLUGIN_BINARY, EXPECTED_WIP_PLUGIN_HASH)
     run([
         "cmake", "-S", "tools/wip-ofx-host", "-B", str(WIP_HOST_BUILD),
         "-DCMAKE_BUILD_TYPE=Release",
@@ -119,13 +115,10 @@ def main() -> int:
     macos = BUNDLE / "Contents" / "MacOS"
     resources = BUNDLE / "Contents" / "Resources"
     frameworks = BUNDLE / "Contents" / "Frameworks"
-    plugins = BUNDLE / "Contents" / "PlugIns"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
-    plugins.mkdir(parents=True)
     shutil.copy2(EXECUTABLE, macos / "ScreenSimulationNative")
     shutil.copy2(WIP_HOST, macos / "screen-wip-ofx-host")
-    shutil.copytree(WIP_PLUGIN, plugins / WIP_PLUGIN.name)
     shutil.copytree(RESOURCE_BUNDLE, resources / RESOURCE_BUNDLE.name)
     shutil.copy2(APP_ICON, resources / "AppIcon.icns")
     bundle_ffmpeg_libraries(macos / "ScreenSimulationNative", frameworks)
@@ -162,7 +155,6 @@ def main() -> int:
         ]
     )
     run(["codesign", "--force", "--sign", "-", str(macos / "screen-wip-ofx-host")])
-    run(["codesign", "--force", "--deep", "--sign", "-", str(plugins / WIP_PLUGIN.name)])
     run(["codesign", "--force", "--deep", "--sign", "-", str(BUNDLE)])
     run(["codesign", "--verify", "--deep", "--strict", str(BUNDLE)])
     return 0

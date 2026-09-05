@@ -8,6 +8,7 @@ struct ScreenSimulationNativeApp: App {
         WindowGroup("SCREEN-SIMULATION") {
             ContentView(model: model)
                 .frame(minWidth: 1040, minHeight: 680)
+                .task { await model.verifyWIPReviewAvailabilityAtLaunch() }
         }
         .defaultSize(width: 1440, height: 900)
         .commands {
