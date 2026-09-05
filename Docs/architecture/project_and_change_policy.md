@@ -15,6 +15,33 @@ Project documents contain portable relative references and stable opaque ids. Ma
 
 Normal open validates without writing. Each document has one current schema and version. Unknown versions, unknown fields, missing required values and invalid references fail explicitly.
 
+## Workstation backup contract
+<!-- decision-owner: persistence.backup-hub-workstation-snapshot -->
+
+SCREEN-SIMULATION is the sole producer and semantic owner of the strict
+`screen-simulation-workstation` snapshot at schema version `1`. A snapshot contains one
+`ScreenSimulation.WorkstationSnapshot.v1` descriptor and only the current app-owned workstation
+state under Application Support: `GlobalLibrary.v17.json`, `Scenes.v28.json` and its referenced
+scene thumbnails, the complete current `Autosave.v25` tree, the managed Environment HDRI library,
+and `RenderQueue.v15.json`. A current document that has never been materialized is represented by
+its absence. Previous schema files, maintenance backups, diagnostics, render outputs, caches,
+portable `.screensim` projects and external Source or Reference resources are outside this
+snapshot. Files copied into the managed Environment library are app-owned state and are included;
+an external file referenced from authoring is not.
+
+Manual backup and confirmed clean application termination publish that snapshot as Backup Package
+v1 for application id `screen-simulation`. Publication resolves the canonical native Application
+Support root, validates the exact Backup Hub Vault Location v1 marker, builds and validates the
+complete package in a hidden temporary directory inside the canonical inbox, and exposes it through
+one rename to `<packageId>.bhpkg`. SCREEN-SIMULATION never creates the Backup Hub vault, marker or
+inbox, scans for another vault, or publishes to a fallback. Missing or invalid Backup Hub state is a
+visible error; failed clean-exit publication requires an explicit choice between cancelling
+termination and quitting without a backup.
+
+Backup Hub owns encryption, vault storage, history and retention after publication. This producer
+contract does not implement restore. The timestamped byte-identical copies created by explicit
+maintenance migrations remain local migration safety artifacts and are not Backup Hub packages.
+
 ## Workstation Saved Scene authority
 <!-- decision-owner: scene.profile-resolution -->
 <!-- decision-ref: scene.parameter-animation -->

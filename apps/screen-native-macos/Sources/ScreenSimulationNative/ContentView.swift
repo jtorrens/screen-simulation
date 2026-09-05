@@ -217,6 +217,7 @@ struct ContentView: View {
 
     @Environment(\.undoManager) private var undoManager
     @ObservedObject var model: WorkspaceModel
+    @ObservedObject var backup = WorkstationBackupController.shared
     @StateObject private var library = GlobalLibraryController()
     @StateObject private var scenes = SceneLibraryController()
     @StateObject private var reflectionEnvironmentPanel = ReflectionEnvironmentPanelController()
@@ -573,6 +574,24 @@ struct ContentView: View {
                 LabeledContent("Renderer", value: "Metal · RGBA16Float")
                 LabeledContent("OCIO", value: StudioColorBuildIdentity.ocioVersion)
                 LabeledContent("ACES", value: StudioColorBuildIdentity.acesConfigVersion)
+            }
+            Section("Backup Hub") {
+                Button("Crear backup ahora") {
+                    do {
+                        try backup.publishManual()
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+                if let message = backup.lastPublishedMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Text("Al cerrar la aplicación se publica otro backup. Backup Hub gestiona cifrado, historial y retención.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             outputInspectorSections
         }

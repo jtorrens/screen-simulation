@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ScreenSimulationNativeApp: App {
+    @NSApplicationDelegateAdaptor(ScreenSimulationAppDelegate.self) private var appDelegate
     @StateObject private var model = WorkspaceModel()
 
     var body: some Scene {
