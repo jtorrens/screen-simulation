@@ -106,6 +106,22 @@ import Testing
     #expect(model.renderVersionSuffix == "_v12")
 }
 
+@Test func managedCurrentSceneRenderSeedsShotManagerRouteAndKeepsBrowseEditable() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(
+        source.components(separatedBy: "try applyRenderIdentityDefaults(for:").count - 1 == 2
+    )
+    #expect(source.contains("try scenes.associatedRenderTarget(for: scene.id)"))
+    #expect(source.contains("model.renderOutputDirectoryPath = associated.directoryPath"))
+    #expect(source.contains("Button(\"Browse…\", action: browseRenderOutputDirectory)"))
+    #expect(source.contains("model.renderOutputDirectoryPath = url.path"))
+}
+
 @MainActor @Test func editorialOutputSeedsEditableResolveFriendlySettings() {
     let model = WorkspaceModel()
     model.applyRenderPreset(StudioRenderPreset.builtIns.last!)

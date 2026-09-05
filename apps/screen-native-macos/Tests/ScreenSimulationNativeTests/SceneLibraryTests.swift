@@ -142,8 +142,18 @@ private func sceneCapture() throws -> SavedSceneCapture {
     let shotID = UUID().uuidString
     let projection = ShotManagerProductionProjection(
         productionId: productionID, productionSlug: "PROD", seasonSlug: "S01",
-        episodes: [.init(id: episodeID, order: 7, slug: "EP07")],
-        workstreams: [.init(name: "CG", folders: [.init(name: "renders", suffix: "_beauty")])],
+        episodes: [
+            .init(
+                id: episodeID, order: 7, slug: "EP07",
+                pathSegments: ["Shows", "Season-A", "Episode-Seven"]
+            ),
+        ],
+        workstreams: [
+            .init(name: "CG", folders: [
+                .init(name: "renders", suffix: "_beauty"),
+                .init(name: "comps", suffix: "_comp"),
+            ]),
+        ],
         shots: [.init(id: shotID, episodeId: episodeID, canonicalName: "SH010")]
     )
     let association = ShotManagerProductionAssociation(
@@ -183,9 +193,41 @@ private func sceneCapture() throws -> SavedSceneCapture {
 
     let target = try #require(try controller.associatedRenderTarget(for: scene.id))
     #expect(target.outputBaseName == "SH010_beauty_001")
-    #expect(target.directoryPath.hasSuffix("/007/CG/renders"))
+    #expect(target.directoryPath.hasSuffix("/Shows/Season-A/Episode-Seven/CG/renders"))
     #expect(FileManager.default.fileExists(atPath: target.directoryPath))
     #expect(!FileManager.default.fileExists(atPath: productionRoot.appendingPathComponent("production.json").path))
+
+    let refreshedProjection = ShotManagerProductionProjection(
+        productionId: productionID, productionSlug: "PROD", seasonSlug: "S02",
+        episodes: [
+            .init(
+                id: episodeID, order: 42, slug: "EP-RENAMED",
+                pathSegments: ["canonical", "episode-location"]
+            ),
+        ],
+        workstreams: projection.workstreams,
+        shots: projection.shots
+    )
+    let refreshedRead = ShotManagerDocumentRead(
+        documentURL: productionRoot.appendingPathComponent("production.json"),
+        rootURL: productionRoot,
+        projection: refreshedProjection
+    )
+    let refreshedAssociation = try ShotManagerAssociationService.refreshedAssociation(
+        association, from: refreshedRead
+    )
+    try controller.associateProduction(
+        production.id, association: refreshedAssociation,
+        projection: refreshedProjection, replacingProduction: false
+    )
+    let refreshedReference = try #require(
+        controller.document.productions[0].episodes[0].externalReference
+    )
+    #expect(refreshedReference.episodeOrder == 42)
+    #expect(refreshedReference.episodeSlug == "EP-RENAMED")
+    #expect(refreshedReference.episodePathSegments == ["canonical", "episode-location"])
+    let refreshedTarget = try #require(try controller.associatedRenderTarget(for: scene.id))
+    #expect(refreshedTarget.directoryPath.hasSuffix("/canonical/episode-location/CG/renders"))
 
     try controller.makeShotFree(shot.id)
     try controller.renameShot(shot.id, to: "Manual")
@@ -219,6 +261,187 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @MainActor
+@Test func repeatedNewAssociationReconnectsExistingProductionWithoutDuplicate() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-shot-manager-reconnect-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let libraryRoot = root.appendingPathComponent("library")
+    let oldProductionRoot = root.appendingPathComponent("old-root")
+    let newProductionRoot = root.appendingPathComponent("new-root")
+    try FileManager.default.createDirectory(
+        at: oldProductionRoot, withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: newProductionRoot, withIntermediateDirectories: true
+    )
+    let productionID = UUID().uuidString
+    let episodeID = UUID().uuidString
+    let shotID = UUID().uuidString
+    let workstreams = [
+        ShotManagerWorkstreamProjection(name: "CG", folders: [
+            .init(name: "renders", suffix: "_beauty"),
+            .init(name: "comps", suffix: "_comp"),
+        ]),
+    ]
+    let originalProjection = ShotManagerProductionProjection(
+        productionId: productionID, productionSlug: "PROD", seasonSlug: "S01",
+        episodes: [
+            .init(
+                id: episodeID, order: 1, slug: "EP01",
+                pathSegments: ["episodes", "EP01"]
+            ),
+        ],
+        workstreams: workstreams,
+        shots: [.init(id: shotID, episodeId: episodeID, canonicalName: "SH010")]
+    )
+    let originalRead = ShotManagerDocumentRead(
+        documentURL: oldProductionRoot.appendingPathComponent("production.json"),
+        rootURL: oldProductionRoot,
+        projection: originalProjection
+    )
+    let options = ShotManagerAssociationService.destinationOptions(in: originalProjection)
+    let originalAssociation = try ShotManagerAssociationService.makeAssociation(
+        from: originalRead, selections: [("render", options[0]), ("comps", options[1])]
+    )
+    let controller = SceneLibraryController(
+        store: try SceneLibraryStore(directoryURL: libraryRoot)
+    )
+    let production = try controller.createAssociatedProduction(
+        name: "PROD", association: originalAssociation, projection: originalProjection
+    )
+    let episode = try controller.createEpisode(in: production.id, name: "Episode")
+    try controller.associateEpisode(episode.id, with: originalProjection.episodes[0])
+    let shot = try controller.createShot(in: episode.id, name: "Shot")
+    try controller.associateShot(shot.id, with: originalProjection.shots[0])
+
+    let refreshedProjection = ShotManagerProductionProjection(
+        productionId: productionID, productionSlug: "PROD", seasonSlug: "S02",
+        episodes: [
+            .init(
+                id: episodeID, order: 2, slug: "EP02",
+                pathSegments: ["episodes", "EP02"]
+            ),
+        ],
+        workstreams: workstreams,
+        shots: [.init(id: shotID, episodeId: episodeID, canonicalName: "SH010_RENAMED")]
+    )
+    let refreshedRead = ShotManagerDocumentRead(
+        documentURL: newProductionRoot.appendingPathComponent("production.json"),
+        rootURL: newProductionRoot,
+        projection: refreshedProjection
+    )
+    let matches = controller.productionsAssociated(with: productionID)
+    let match = try #require(matches.first)
+    #expect(matches.map(\.id) == [production.id])
+    #expect(throws: SceneLibraryError.self) {
+        try controller.createAssociatedProduction(
+            name: "Duplicada", association: originalAssociation,
+            projection: originalProjection
+        )
+    }
+
+    let refreshedAssociation = try ShotManagerAssociationService.refreshedAssociation(
+        try #require(match.association), from: refreshedRead
+    )
+    try controller.associateProduction(
+        match.id, association: refreshedAssociation,
+        projection: refreshedProjection, replacingProduction: false
+    )
+
+    let stored = try #require(controller.document.productions.first)
+    let storedEpisode = try #require(stored.episodes.first)
+    let storedShot = try #require(storedEpisode.shots.first)
+    #expect(controller.document.productions.count == 1)
+    #expect(stored.id == production.id)
+    #expect(stored.association?.productionRootPath == newProductionRoot.path)
+    #expect(storedEpisode.id == episode.id)
+    #expect(storedEpisode.associationState == .associated)
+    #expect(storedEpisode.externalReference?.episodePathSegments == ["episodes", "EP02"])
+    #expect(storedShot.id == shot.id)
+    #expect(storedShot.associationState == .associated)
+    #expect(storedShot.externalReference?.canonicalName == "SH010_RENAMED")
+}
+
+@Test func productionProjectionReadsRequiredFieldsWithoutSchemaCoordination() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-shot-manager-projection-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let productionID = UUID().uuidString
+    let episodeID = UUID().uuidString
+    let shotID = UUID().uuidString
+    let documentURL = root.appendingPathComponent("production.json")
+    let document: [String: Any] = [
+        "schemaVersion": 9_999,
+        "producerOnly": ["ignored": true],
+        "productionId": productionID,
+        "productionSlug": "PROD",
+        "seasonSlug": "S01",
+        "episodes": [[
+            "id": episodeID,
+            "order": 7,
+            "slug": "EP07",
+            "pathSegments": ["productions", "season-one", "episode-seven"],
+            "producerMetadata": "ignored",
+        ]],
+        "workstreams": [[
+            "name": "CG",
+            "folders": [["name": "renders", "suffix": "_beauty"]],
+        ]],
+        "shots": [[
+            "id": shotID,
+            "episodeId": episodeID,
+            "canonicalName": "SH010",
+        ]],
+    ]
+    try JSONSerialization.data(withJSONObject: document).write(to: documentURL)
+
+    let read = try ShotManagerAssociationService.readProductionJSON(at: documentURL)
+
+    #expect(read.projection.productionId == productionID)
+    #expect(read.projection.episodes[0].pathSegments == [
+        "productions", "season-one", "episode-seven",
+    ])
+
+    var withoutSchema = document
+    withoutSchema.removeValue(forKey: "schemaVersion")
+    try JSONSerialization.data(withJSONObject: withoutSchema).write(to: documentURL)
+    #expect(
+        try ShotManagerAssociationService.readProductionJSON(at: documentURL)
+            .projection.episodes[0].pathSegments
+        == ["productions", "season-one", "episode-seven"]
+    )
+}
+
+@Test func productionProjectionRejectsMissingOrUnsafeEpisodePathSegments() throws {
+    let productionID = UUID().uuidString
+    let episodeID = UUID().uuidString
+    let base: [String: Any] = [
+        "productionId": productionID,
+        "productionSlug": "PROD",
+        "seasonSlug": "S01",
+        "workstreams": [],
+        "shots": [],
+    ]
+    let invalidPaths: [Any?] = [nil, [String](), ["safe", "..", "escape"]]
+    for pathSegments in invalidPaths {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("screen-shot-manager-invalid-path-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var document = base
+        var episode: [String: Any] = ["id": episodeID, "order": 1, "slug": "EP01"]
+        if let pathSegments { episode["pathSegments"] = pathSegments }
+        document["episodes"] = [episode]
+        let url = root.appendingPathComponent("production.json")
+        try JSONSerialization.data(withJSONObject: document).write(to: url)
+        #expect(throws: ShotManagerAssociationError.self) {
+            try ShotManagerAssociationService.readProductionJSON(at: url)
+        }
+    }
+}
+
+@MainActor
 @Test func treeInspectorEditsAndDeletesOnlyEmptyBranches() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-tree-inspector-\(UUID().uuidString)")
@@ -246,12 +469,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 27)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 28)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v27.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v28.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,

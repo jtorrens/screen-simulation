@@ -613,7 +613,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 27
+    static let currentSchemaVersion = 28
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -763,7 +763,8 @@ private extension SceneLibraryDocument {
                let current = projection.episodes.first(where: { $0.id == prior.episodeId }) {
                 episode.externalReference = .init(
                     productionId: productionID, episodeId: current.id,
-                    episodeOrder: current.order, episodeSlug: current.slug
+                    episodeOrder: current.order, episodeSlug: current.slug,
+                    episodePathSegments: current.pathSegments
                 )
                 episode.associationState = .associated
                 episode.name = current.slug
@@ -835,15 +836,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v27.json")
+        documentURL = directory.appendingPathComponent("Scenes.v28.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v26.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v27.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v26.json. Ejecuta la migración de mantenimiento v26→v27 antes de abrir la biblioteca."
+                    "Existe Scenes.v27.json. Ejecuta la migración de mantenimiento v27→v28 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -1030,7 +1031,10 @@ struct SceneLibraryStore: Sendable {
                       let shots = episode["shots"] as? [[String: Any]],
                       (episode["externalReference"] == nil || episode["externalReference"] is NSNull || {
                           guard let value = episode["externalReference"] as? [String: Any] else { return false }
-                          return Set(value.keys) == ["productionId", "episodeId", "episodeOrder", "episodeSlug"]
+                          return Set(value.keys) == [
+                              "productionId", "episodeId", "episodeOrder", "episodeSlug",
+                              "episodePathSegments",
+                          ]
                       }()) else { throw SceneLibraryError.invalidDocument("El Episodio contiene campos desconocidos.") }
                 for shot in shots {
                     guard (Set(shot.keys) == [
@@ -1329,6 +1333,11 @@ final class SceneLibraryController: ObservableObject {
         guard association.productionId == projection.productionId else {
             throw SceneLibraryError.invalidDocument("La asociación no pertenece al JSON seleccionado.")
         }
+        guard productionsAssociated(with: association.productionId).isEmpty else {
+            throw SceneLibraryError.invalidDocument(
+                "Esta Producción de Shot Manager ya está asociada. Reconecta la entrada local existente."
+            )
+        }
         let production = SceneProduction(
             name: try requiredName(name, kind: "Producción"),
             seasonSlug: association.seasonSlug, association: association
@@ -1438,6 +1447,12 @@ final class SceneLibraryController: ObservableObject {
         }
     }
 
+    func productionsAssociated(with externalProductionID: String) -> [SceneProduction] {
+        document.productions.filter {
+            $0.association?.productionId == externalProductionID
+        }
+    }
+
     func associateEpisode(_ episodeID: UUID, with external: ShotManagerEpisodeProjection) throws {
         try persist { candidate in
             guard let location = candidate.episodeLocation(id: episodeID),
@@ -1447,7 +1462,8 @@ final class SceneLibraryController: ObservableObject {
             var episode = candidate.productions[location.production].episodes[location.episode]
             episode.externalReference = .init(
                 productionId: association.productionId, episodeId: external.id,
-                episodeOrder: external.order, episodeSlug: external.slug
+                episodeOrder: external.order, episodeSlug: external.slug,
+                episodePathSegments: external.pathSegments
             )
             episode.associationState = .associated
             episode.name = try requiredName(external.slug, kind: "Episodio externo")
@@ -1488,7 +1504,7 @@ final class SceneLibraryController: ObservableObject {
               let shot = location.shot.externalReference,
               let placement = location.shot.scenes.first(where: { $0.sceneID == sceneID }) else { return nil }
         return try ShotManagerAssociationService.materializeDestination(
-            production: association, episodeOrder: episode.episodeOrder,
+            production: association, episodePathSegments: episode.episodePathSegments,
             canonicalName: shot.canonicalName, sceneOrdinal: placement.ordinal, role: role
         )
     }

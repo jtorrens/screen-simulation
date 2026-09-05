@@ -4,6 +4,7 @@ struct ShotManagerEpisodeProjection: Codable, Equatable, Identifiable, Sendable 
     let id: String
     let order: Int
     let slug: String
+    let pathSegments: [String]
 }
 
 struct ShotManagerFolderProjection: Codable, Equatable, Sendable {
@@ -46,6 +47,16 @@ struct ShotManagerProductionProjection: Codable, Equatable, Sendable {
         }
         try episodes.forEach {
             try Self.requireSafeNameFragment($0.slug, field: "episode.slug", allowEmpty: false)
+            guard !$0.pathSegments.isEmpty else {
+                throw ShotManagerAssociationError.invalidDocument(
+                    "episode.pathSegments necesita al menos un segmento."
+                )
+            }
+            try $0.pathSegments.forEach {
+                try Self.requireSafeSegment(
+                    $0, field: "episode.pathSegments", allowEmpty: false
+                )
+            }
         }
         let episodeIDs = Set(episodes.map(\.id))
         guard Set(shots.map(\.id)).count == shots.count,
@@ -151,6 +162,7 @@ struct ShotManagerEpisodeReference: Codable, Equatable, Sendable {
     let episodeId: String
     let episodeOrder: Int
     let episodeSlug: String
+    let episodePathSegments: [String]
 
     func validate() throws {
         guard UUID(uuidString: productionId) != nil, UUID(uuidString: episodeId) != nil,
@@ -159,6 +171,22 @@ struct ShotManagerEpisodeReference: Codable, Equatable, Sendable {
         try ShotManagerProductionProjection.requireSafeNameFragment(
             episodeSlug, field: "episodeSlug", allowEmpty: false
         )
+        guard !episodePathSegments.isEmpty else {
+            throw SceneLibraryError.invalidDocument(
+                "La referencia de Episodio necesita su ruta física canónica."
+            )
+        }
+        do {
+            try episodePathSegments.forEach {
+                try ShotManagerProductionProjection.requireSafeSegment(
+                    $0, field: "episodePathSegments", allowEmpty: false
+                )
+            }
+        } catch {
+            throw SceneLibraryError.invalidDocument(
+                "La referencia de Episodio contiene una ruta física no válida."
+            )
+        }
     }
 }
 
@@ -323,22 +351,21 @@ enum ShotManagerAssociationService {
 
     static func materializeDestination(
         production: ShotManagerProductionAssociation,
-        episodeOrder: Int,
+        episodePathSegments: [String],
         canonicalName: String,
         sceneOrdinal: Int,
         role: String
     ) throws -> ShotManagerAssociatedRenderTarget {
         try production.validate()
-        guard (1...999).contains(episodeOrder), (1...999).contains(sceneOrdinal),
+        guard !episodePathSegments.isEmpty, (1...999).contains(sceneOrdinal),
               let destination = production.destinations.first(where: { $0.role == role })
         else {
             throw ShotManagerAssociationError.unsafeDestination(
-                "La asociación no contiene un Episodio, ordinal o destino de render válido."
+                "La asociación no contiene una ruta de Episodio, ordinal o destino de render válido."
             )
         }
         let root = try canonicalExistingRoot(URL(fileURLWithPath: production.productionRootPath))
-        let segments = [
-            String(episodeOrder).leftPadding(toLength: 3, withPad: "0"),
+        let segments = episodePathSegments + [
             destination.workstreamName,
             destination.folderName,
         ]

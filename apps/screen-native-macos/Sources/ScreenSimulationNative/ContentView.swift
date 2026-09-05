@@ -2077,7 +2077,7 @@ struct ContentView: View {
                             Spacer()
                             Menu {
                                 Button("Nueva Producción manual…") { createManualProduction() }
-                                Button("Asociar nueva Producción…") { associateNewProduction() }
+                                Button("Asociar production.json…") { associateNewProduction() }
                             } label: {
                                 Image(systemName: "plus")
                             }
@@ -2325,7 +2325,7 @@ struct ContentView: View {
                     LabeledContent("Escenas", value: "\(scenes.document.unclassifiedSceneIDs.count)")
                     Divider()
                     Button("Nueva Producción manual…") { createManualProduction() }
-                    Button("Asociar nueva Producción…") { associateNewProduction() }
+                    Button("Asociar production.json…") { associateNewProduction() }
                 case let .production(id):
                     if let production = production(id: id) {
                         productionInspector(production)
@@ -2770,6 +2770,36 @@ struct ContentView: View {
         guard let url = chooseProductionJSON() else { return }
         do {
             let read = try ShotManagerAssociationService.readProductionJSON(at: url)
+            let matches = scenes.productionsAssociated(
+                with: read.projection.productionId
+            )
+            if !matches.isEmpty {
+                let production: SceneProduction
+                if matches.count == 1 {
+                    production = matches[0]
+                } else {
+                    guard let selected = chooseItem(
+                        "Reconectar Producción local",
+                        items: matches,
+                        label: productionReconnectLabel
+                    ) else { return }
+                    production = selected
+                }
+                guard let existing = production.association else {
+                    throw SceneLibraryError.invalidDocument(
+                        "La Producción local seleccionada no conserva su asociación."
+                    )
+                }
+                let association = try ShotManagerAssociationService.refreshedAssociation(
+                    existing, from: read
+                )
+                try scenes.associateProduction(
+                    production.id, association: association,
+                    projection: read.projection, replacingProduction: false
+                )
+                sceneTreeSelection = .production(production.id)
+                return
+            }
             let options = ShotManagerAssociationService.destinationOptions(in: read.projection)
             guard let destinations = chooseDestinations(options) else { return }
             let association = try ShotManagerAssociationService.makeAssociation(
@@ -2781,6 +2811,13 @@ struct ContentView: View {
                 projection: read.projection
             )
         } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func productionReconnectLabel(_ production: SceneProduction) -> String {
+        let root = production.association?.productionRootPath ?? "Sin raíz"
+        let episodeLabel = production.episodes.count == 1
+            ? "1 episodio" : "\(production.episodes.count) episodios"
+        return "\(production.name) · \(episodeLabel) · \(root)"
     }
 
     private func associateExistingProduction(_ production: SceneProduction) {
@@ -2921,12 +2958,7 @@ struct ContentView: View {
     private func requestSceneRender(_ scene: SavedScene) {
         do {
             try model.configureRenderRaster(for: scene)
-            if let associated = try scenes.associatedRenderTarget(for: scene.id) {
-                model.renderJobName = associated.outputBaseName
-                model.renderOutputDirectoryPath = associated.directoryPath
-            } else {
-                model.renderJobName = scene.name
-            }
+            try applyRenderIdentityDefaults(for: scene)
             model.renderVersionSuffix = ""
             if model.renderOutputDirectoryPath.isEmpty {
                 model.renderOutputDirectoryPath = FileDialogDirectory.renderOutput.url?.path ?? ""
@@ -2937,6 +2969,15 @@ struct ContentView: View {
             )
             page = .render
         } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func applyRenderIdentityDefaults(for scene: SavedScene) throws {
+        if let associated = try scenes.associatedRenderTarget(for: scene.id) {
+            model.renderJobName = associated.outputBaseName
+            model.renderOutputDirectoryPath = associated.directoryPath
+        } else {
+            model.renderJobName = scene.name
+        }
     }
 
     private func saveNewScene() {
@@ -3933,15 +3974,21 @@ struct ContentView: View {
             model.errorMessage = "La escena guardada actual ya no existe. La versión histórica sigue disponible."
             return
         }
-        if let wipID = job.configuration.wipReview?.id {
-            guard let currentWIP = library.allWIPReviewPresets.first(where: { $0.id == wipID }) else {
-                model.errorMessage = "El preset WIP Review del render histórico ya no existe en la Biblioteca Global."
-                return
+        do {
+            if let wipID = job.configuration.wipReview?.id {
+                guard let currentWIP = library.allWIPReviewPresets.first(where: { $0.id == wipID }) else {
+                    model.errorMessage = "El preset WIP Review del render histórico ya no existe en la Biblioteca Global."
+                    return
+                }
+                model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
+                model.renderWIPReviewPreset = currentWIP
+            } else {
+                model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
             }
-            model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
-            model.renderWIPReviewPreset = currentWIP
-        } else {
-            model.configureRerender(from: job.configuration, outputPlan: job.outputPlan)
+            try applyRenderIdentityDefaults(for: current)
+        } catch {
+            model.errorMessage = error.localizedDescription
+            return
         }
         renderDraft = RenderDraft(
             scene: current,

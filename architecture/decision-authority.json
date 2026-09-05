@@ -90,6 +90,8 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/migrate_scene_library_v27_to_v28.py",
+        "scripts/test_migrate_scene_library_v27_to_v28.py",
         "scripts/check_architecture.py"
       ]
     },
