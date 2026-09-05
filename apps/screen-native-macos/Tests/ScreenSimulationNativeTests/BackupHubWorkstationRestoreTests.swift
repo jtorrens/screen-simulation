@@ -3,6 +3,18 @@ import Foundation
 import Testing
 @testable import ScreenSimulationNative
 
+@Test func workstationRestoreConfirmationDefaultsToCancellation() throws {
+    #expect(
+        try workstationRestoreDecision(for: .alertFirstButtonReturn) == .cancelled
+    )
+    #expect(
+        try workstationRestoreDecision(for: .alertSecondButtonReturn) == .confirmed
+    )
+    #expect(throws: RestoreConfirmationError.self) {
+        try workstationRestoreDecision(for: .abort)
+    }
+}
+
 @Test func workstationRestoreAppliesAtomicallyAndPublishesPreviousVersion() throws {
     let fixture = try RestoreFixture()
     defer { fixture.remove() }

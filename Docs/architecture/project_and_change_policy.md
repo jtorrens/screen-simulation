@@ -43,7 +43,8 @@ consumed exclusively through Restore Handoff/Result v2 at application startup be
 any workstation store. The owner performs the v1 no-read cutoff once, claims each complete request
 by rename, and strictly revalidates request, package, summary, payload hashes and current snapshot
 semantics before showing native confirmation. Cancellation publishes `cancelled` without backup or
-live-data mutation. Confirmation first publishes `pre-restore`, prepares and validates a candidate,
+live-data mutation. The confirmation defaults to cancellation and only the explicit destructive
+Restore action confirms replacement. Confirmation first publishes `pre-restore`, prepares and validates a candidate,
 atomically swaps the complete Application Support state directory while retaining excluded local
 artifacts, verifies the live result, publishes the terminal result with `preRestorePackageId`, and
 only then retires the claimed plaintext request. A durable transaction journal rolls an interrupted

@@ -1,7 +1,17 @@
 import SwiftUI
 
-private enum RestoreConfirmationError: Error {
+enum RestoreConfirmationError: Error {
     case invalidResponse
+}
+
+func workstationRestoreDecision(
+    for response: NSApplication.ModalResponse
+) throws -> WorkstationRestoreDecision {
+    switch response {
+    case .alertFirstButtonReturn: .cancelled
+    case .alertSecondButtonReturn: .confirmed
+    default: throw RestoreConfirmationError.invalidResponse
+    }
 }
 
 @main
@@ -70,16 +80,13 @@ struct ScreenSimulationNativeApp: App {
 
         Antes de reemplazar los datos, SCREEN-SIMULATION guardará la versión actual como «Versión anterior a la restauración» para que puedas volver a ella desde Backup Hub.
         """
-        alert.addButton(withTitle: "Restaurar")
-        alert.buttons.first?.hasDestructiveAction = true
         alert.addButton(withTitle: "Cancelar")
-        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        alert.buttons.first?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalentModifierMask = []
+        alert.addButton(withTitle: "Restaurar")
+        alert.buttons.last?.hasDestructiveAction = true
         NSApplication.shared.activate(ignoringOtherApps: true)
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return .confirmed
-        case .alertSecondButtonReturn: return .cancelled
-        default: throw RestoreConfirmationError.invalidResponse
-        }
+        return try workstationRestoreDecision(for: alert.runModal())
     }
 
     private static func presentRestoreOutcome(_ record: WorkstationRestoreRecord) {
