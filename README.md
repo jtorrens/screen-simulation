@@ -14,8 +14,8 @@ Build the SwiftUI/AppKit product with:
 python3 scripts/build_native_macos.py
 ```
 
-It produces the only current application bundle at
-`dist/Screen Simulation Native.app`. The application consumes StudioColor for
+It installs the only current application bundle at
+`/Applications/SCREEN-SIMULATION.app`. The application consumes StudioColor for
 OCIO/ACES and the host-neutral Rust physical models through the native bridge.
 The retired Rust/Slint application has no packaging route.
 

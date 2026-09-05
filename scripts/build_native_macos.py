@@ -14,7 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "apps" / "screen-native-macos"
 BUILD = PACKAGE / ".build" / "arm64-apple-macosx" / "release"
-BUNDLE = ROOT / "dist" / "Screen Simulation Native.app"
+INSTALL_BUNDLE = Path("/Applications/SCREEN-SIMULATION.app")
+STAGED_BUNDLE = Path("/Applications/.SCREEN-SIMULATION.app.staging")
+PREVIOUS_BUNDLE = Path("/Applications/.SCREEN-SIMULATION.app.previous")
 EXECUTABLE = BUILD / "ScreenSimulationNative"
 RESOURCE_BUNDLE = BUILD / "StudioColor_StudioColor.bundle"
 APP_ICON = ROOT / "apps/screen-native-macos/Assets/AppIcon.icns"
@@ -110,11 +112,11 @@ def main() -> int:
     # boundary, so force SwiftPM to compile and link the exact native archive built above.
     run(["swift", "package", "clean"], PACKAGE)
     run(["swift", "build", "-c", "release"], PACKAGE)
-    if BUNDLE.exists():
-        shutil.rmtree(BUNDLE)
-    macos = BUNDLE / "Contents" / "MacOS"
-    resources = BUNDLE / "Contents" / "Resources"
-    frameworks = BUNDLE / "Contents" / "Frameworks"
+    if STAGED_BUNDLE.exists():
+        shutil.rmtree(STAGED_BUNDLE)
+    macos = STAGED_BUNDLE / "Contents" / "MacOS"
+    resources = STAGED_BUNDLE / "Contents" / "Resources"
+    frameworks = STAGED_BUNDLE / "Contents" / "Frameworks"
     macos.mkdir(parents=True)
     resources.mkdir(parents=True)
     shutil.copy2(EXECUTABLE, macos / "ScreenSimulationNative")
@@ -137,14 +139,14 @@ def main() -> int:
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
     }
-    with (BUNDLE / "Contents" / "Info.plist").open("wb") as output:
+    with (STAGED_BUNDLE / "Contents" / "Info.plist").open("wb") as output:
         plistlib.dump(info, output)
     run(
         [
             "python3",
             "scripts/check_native_macos_no_ffmpeg.py",
             str(macos / "ScreenSimulationNative"),
-            str(BUNDLE),
+            str(STAGED_BUNDLE),
         ]
     )
     run(
@@ -155,8 +157,23 @@ def main() -> int:
         ]
     )
     run(["codesign", "--force", "--sign", "-", str(macos / "screen-wip-ofx-host")])
-    run(["codesign", "--force", "--deep", "--sign", "-", str(BUNDLE)])
-    run(["codesign", "--verify", "--deep", "--strict", str(BUNDLE)])
+    run(["codesign", "--force", "--deep", "--sign", "-", str(STAGED_BUNDLE)])
+    run(["codesign", "--verify", "--deep", "--strict", str(STAGED_BUNDLE)])
+    if PREVIOUS_BUNDLE.exists():
+        shutil.rmtree(PREVIOUS_BUNDLE)
+    if INSTALL_BUNDLE.exists():
+        INSTALL_BUNDLE.rename(PREVIOUS_BUNDLE)
+    try:
+        STAGED_BUNDLE.rename(INSTALL_BUNDLE)
+        run(["codesign", "--verify", "--deep", "--strict", str(INSTALL_BUNDLE)])
+    except Exception:
+        if INSTALL_BUNDLE.exists():
+            shutil.rmtree(INSTALL_BUNDLE)
+        if PREVIOUS_BUNDLE.exists():
+            PREVIOUS_BUNDLE.rename(INSTALL_BUNDLE)
+        raise
+    if PREVIOUS_BUNDLE.exists():
+        shutil.rmtree(PREVIOUS_BUNDLE)
     return 0
 
 

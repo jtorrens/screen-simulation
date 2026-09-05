@@ -1255,6 +1255,17 @@ def validate_native_package_relinks_bridge() -> None:
         raise ValidationError(
             "native packaging must build Rust, clean SwiftPM, then relink the release executable"
         )
+    for required in (
+        'INSTALL_BUNDLE = Path("/Applications/SCREEN-SIMULATION.app")',
+        'STAGED_BUNDLE = Path("/Applications/.SCREEN-SIMULATION.app.staging")',
+        'PREVIOUS_BUNDLE = Path("/Applications/.SCREEN-SIMULATION.app.previous")',
+        "STAGED_BUNDLE.rename(INSTALL_BUNDLE)",
+        "PREVIOUS_BUNDLE.rename(INSTALL_BUNDLE)",
+    ):
+        if required not in packaging:
+            raise ValidationError(
+                "native packaging must publish recoverably to /Applications: " + required
+            )
 
 
 def main() -> int:

@@ -28,6 +28,19 @@
       ]
     },
     {
+      "id": "platform.macos-application-installation",
+      "scope": "publication of the built, signed and validated native macOS application",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Technology"
+      },
+      "enforcement": [
+        "README.md",
+        "scripts/build_native_macos.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "scene.library-hierarchy",
       "scope": "workstation Production, Episode, Shot and Saved Scene organization, placement and ordinals",
       "owner": {
