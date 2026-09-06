@@ -2127,11 +2127,11 @@ struct ContentView: View {
                                 DisclosureGroup(
                                     isExpanded: sceneTreeExpansionBinding(.production(production.id))
                                 ) {
-                                    ForEach(production.episodes) { episode in
+                                    ForEach(scenes.sortedEpisodes(production.episodes)) { episode in
                                         DisclosureGroup(
                                             isExpanded: sceneTreeExpansionBinding(.episode(episode.id))
                                         ) {
-                                            ForEach(episode.shots) { shot in
+                                            ForEach(scenes.sortedShots(episode.shots)) { shot in
                                                 DisclosureGroup(
                                                     isExpanded: sceneTreeExpansionBinding(.shot(shot.id))
                                                 ) {
@@ -2148,6 +2148,17 @@ struct ContentView: View {
                                                         onAdd: { createScene(in: shot) },
                                                         onOpen: { toggleSceneTreeBranch(.shot(shot.id)) }
                                                     )
+                                                    .contextMenu {
+                                                        Button("Duplicar plano") {
+                                                            do {
+                                                                let duplicate = try scenes.duplicateShot(shot.id)
+                                                                sceneTreeSelection = .shot(duplicate.id)
+                                                                expandedSceneTreeBranches.insert(.shot(duplicate.id))
+                                                            } catch {
+                                                                model.errorMessage = error.localizedDescription
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                                 .padding(.leading, 36)
                                                 .onDrop(of: [UTType.plainText], isTargeted: nil) { providers in

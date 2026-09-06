@@ -1006,6 +1006,12 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.removeItem(at: url)
     }
 
+    func removeAutosaves(for sceneID: UUID) throws {
+        let url = autosaveDirectory(for: sceneID)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
     private func validateStrictShape(_ data: Data) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(root.keys) == ["schemaVersion", "scenes", "productions", "unclassifiedSceneIDs"],
@@ -1316,6 +1322,24 @@ final class SceneLibraryController: ObservableObject {
         }
     }
 
+    func sortedEpisodes(_ episodes: [SceneEpisode]) -> [SceneEpisode] {
+        episodes.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame
+                ? $0.id.uuidString < $1.id.uuidString
+                : order == .orderedAscending
+        }
+    }
+
+    func sortedShots(_ shots: [SceneShot]) -> [SceneShot] {
+        shots.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame
+                ? $0.id.uuidString < $1.id.uuidString
+                : order == .orderedAscending
+        }
+    }
+
     @discardableResult
     func createProduction(name: String, seasonSlug: String = "") throws -> SceneProduction {
         let production = SceneProduction(name: try requiredName(name, kind: "Producción"), seasonSlug: seasonSlug)
@@ -1368,6 +1392,107 @@ final class SceneLibraryController: ObservableObject {
             candidate.productions[location.production].episodes[location.episode].shots.append(shot)
         }
         return shot
+    }
+
+    @discardableResult
+    func duplicateShot(_ shotID: UUID) throws -> SceneShot {
+        guard let store, let location = document.shotLocation(id: shotID) else {
+            throw SceneLibraryError.inaccessible("El Plano ya no existe.")
+        }
+        let sourceShot = document.productions[location.production].episodes[location.episode]
+            .shots[location.shot]
+        let duplicateName = "\(sourceShot.name) copia"
+        var duplicateScenes: [(scene: SavedScene, thumbnail: Data, environment: Data?)] = []
+        var copiedEnvironmentSceneIDs: [UUID] = []
+
+        do {
+            for placement in sourceShot.scenes {
+                guard let sourceScene = document.scenes.first(where: { $0.id == placement.sceneID }) else {
+                    throw SceneLibraryError.invalidDocument(
+                        "El Plano contiene una referencia a una Escena inexistente."
+                    )
+                }
+                let duplicateID = UUID()
+                let environmentData: Data?
+                let duplicateAsset: SavedSceneAsset?
+                let duplicateAbsolutePath: String?
+                if let sourceAsset = sourceScene.snapshot.generatedEnvironment {
+                    guard let source = try EnvironmentAssetLibrary.asset(
+                        sha256: sourceAsset.sha256,
+                        originalFileName: sourceAsset.fileName,
+                        libraryRoot: store.environmentLibraryRoot
+                    ) else {
+                        throw SceneLibraryError.invalidDocument(
+                            "Falta el entorno generado de ‘\(sourceScene.name)’."
+                        )
+                    }
+                    let data = try Data(contentsOf: source.url, options: .mappedIfSafe)
+                    let copied = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                        data, sceneID: duplicateID,
+                        libraryRoot: store.environmentLibraryRoot
+                    )
+                    copiedEnvironmentSceneIDs.append(duplicateID)
+                    environmentData = data
+                    duplicateAsset = .init(
+                        fileName: copied.originalFileName, sha256: copied.sha256
+                    )
+                    duplicateAbsolutePath = copied.url.path
+                } else {
+                    environmentData = nil
+                    duplicateAsset = nil
+                    duplicateAbsolutePath = nil
+                }
+                let duplicate = SavedScene(
+                    id: duplicateID,
+                    name: "\(duplicateName)_\(String(format: "%03d", placement.ordinal))",
+                    thumbnailFileName: "\(duplicateID.uuidString.lowercased()).png",
+                    snapshot: try sourceScene.snapshot.replacingGeneratedEnvironment(
+                        duplicateAsset, absolutePath: duplicateAbsolutePath
+                    )
+                )
+                try duplicate.validate()
+                duplicateScenes.append((
+                    scene: duplicate,
+                    thumbnail: try Data(contentsOf: store.thumbnailURL(for: sourceScene)),
+                    environment: environmentData
+                ))
+            }
+
+            for copied in duplicateScenes {
+                _ = try store.writeAutosave(
+                    scene: copied.scene,
+                    thumbnailPNG: copied.thumbnail,
+                    generatedEnvironmentEXR: copied.environment
+                )
+                try store.writeThumbnail(copied.thumbnail, for: copied.scene)
+            }
+
+            var duplicateShot = SceneShot(name: duplicateName)
+            duplicateShot.nextSceneOrdinal = sourceShot.nextSceneOrdinal
+            duplicateShot.scenes = zip(sourceShot.scenes, duplicateScenes).map { pair in
+                .init(sceneID: pair.1.scene.id, ordinal: pair.0.ordinal)
+            }
+            var candidate = document
+            candidate.scenes.append(contentsOf: duplicateScenes.map(\.scene))
+            candidate.productions[location.production].episodes[location.episode].shots.insert(
+                duplicateShot, at: location.shot + 1
+            )
+            try store.save(candidate)
+            document = candidate
+            return duplicateShot
+        } catch {
+            for copied in duplicateScenes {
+                try? store.removeThumbnail(for: copied.scene)
+                try? store.removeAutosaves(for: copied.scene.id)
+            }
+            for sceneID in copiedEnvironmentSceneIDs {
+                try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
+                    sceneID: sceneID,
+                    libraryRoot: store.environmentLibraryRoot
+                )
+            }
+            throw error
+        }
     }
 
     func moveScene(_ sceneID: UUID, to shotID: UUID?) throws {

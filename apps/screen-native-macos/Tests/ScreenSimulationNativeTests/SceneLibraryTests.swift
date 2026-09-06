@@ -129,6 +129,156 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @MainActor
+@Test func episodeAndShotTreePresentationIsAlphabeticalWithoutRewritingStorage() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-tree-alphabetical-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SceneLibraryStore(directoryURL: root)
+    let controller = SceneLibraryController(store: store)
+    let production = try controller.createProduction(name: "Producción")
+    let zetaEpisode = try controller.createEpisode(in: production.id, name: "Zeta")
+    _ = try controller.createEpisode(in: production.id, name: "Beta")
+    _ = try controller.createEpisode(in: production.id, name: "Alpha")
+    _ = try controller.createShot(in: zetaEpisode.id, name: "Plano 20")
+    _ = try controller.createShot(in: zetaEpisode.id, name: "Plano 3")
+    _ = try controller.createShot(in: zetaEpisode.id, name: "Plano 01")
+
+    let storedEpisodeNames = try #require(
+        controller.document.productions.first?.episodes.map(\.name)
+    )
+    let storedShotNames = try #require(
+        controller.document.productions.first?.episodes.first?.shots.map(\.name)
+    )
+    #expect(storedEpisodeNames == ["Zeta", "Beta", "Alpha"])
+    #expect(storedShotNames == ["Plano 20", "Plano 3", "Plano 01"])
+    #expect(
+        controller.sortedEpisodes(controller.document.productions[0].episodes).map(\.name)
+            == ["Alpha", "Beta", "Zeta"]
+    )
+    #expect(
+        controller.sortedShots(controller.document.productions[0].episodes[0].shots).map(\.name)
+            == ["Plano 01", "Plano 3", "Plano 20"]
+    )
+
+    let reopened = SceneLibraryController(store: try SceneLibraryStore(directoryURL: root))
+    #expect(reopened.document.productions[0].episodes.map(\.name) == storedEpisodeNames)
+    #expect(reopened.document.productions[0].episodes[0].shots.map(\.name) == storedShotNames)
+}
+
+@MainActor
+@Test func duplicatingManagedShotCopiesEverySceneAndMakesTheCopyFree() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-duplicate-shot-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let scenesRoot = root.appendingPathComponent("scenes")
+    let environmentRoot = root.appendingPathComponent("environments")
+    let productionRoot = root.appendingPathComponent("production")
+    try FileManager.default.createDirectory(at: productionRoot, withIntermediateDirectories: true)
+    let store = try SceneLibraryStore(
+        directoryURL: scenesRoot, environmentLibraryRoot: environmentRoot
+    )
+    let controller = SceneLibraryController(store: store)
+    let productionID = UUID().uuidString
+    let episodeID = UUID().uuidString
+    let shotID = UUID().uuidString
+    let projection = ShotManagerProductionProjection(
+        productionId: productionID, productionSlug: "PROD", seasonSlug: "S01",
+        episodes: [.init(id: episodeID, order: 1, slug: "EP01", pathSegments: ["EP01"])],
+        workstreams: [.init(name: "CG", folders: [
+            .init(name: "renders", suffix: "_beauty"),
+            .init(name: "comps", suffix: "_comp"),
+        ])],
+        shots: [.init(id: shotID, episodeId: episodeID, canonicalName: "SH010")]
+    )
+    let association = ShotManagerProductionAssociation(
+        productionId: productionID, productionRootPath: productionRoot.path,
+        productionSlug: "PROD", seasonSlug: "S01",
+        destinations: [
+            .init(
+                role: "render", workstreamName: "CG", folderName: "renders",
+                folderSuffix: "_beauty"
+            ),
+            .init(
+                role: "comps", workstreamName: "CG", folderName: "comps",
+                folderSuffix: "_comp"
+            ),
+        ]
+    )
+    let production = try controller.createAssociatedProduction(
+        name: "PROD", association: association, projection: projection
+    )
+    let episode = try controller.createEpisode(in: production.id, name: "Episode")
+    try controller.associateEpisode(episode.id, with: projection.episodes[0])
+    let shot = try controller.createShot(in: episode.id, name: "Shot")
+    try controller.associateShot(shot.id, with: projection.shots[0])
+    let first = try controller.add(capture: sceneCapture(), toShotID: shot.id)
+    let environmentData = Data([8, 6, 7, 5, 3, 0, 9])
+    let secondCapture = try sceneCapture()
+    let second = try controller.add(
+        capture: .init(
+            snapshot: secondCapture.snapshot,
+            thumbnailPNG: Data([4, 5, 6]),
+            generatedEnvironmentEXR: environmentData
+        ),
+        toShotID: shot.id
+    )
+    let sourceShot = try #require(
+        controller.document.productions.first?.episodes.first?.shots.first
+    )
+    let sourceScenes = [
+        try #require(controller.scene(id: first.id)),
+        try #require(controller.scene(id: second.id)),
+    ]
+
+    let duplicate = try controller.duplicateShot(shot.id)
+
+    #expect(duplicate.id != sourceShot.id)
+    #expect(duplicate.name == "SH010 copia")
+    #expect(duplicate.associationState == .free)
+    #expect(duplicate.externalReference == nil)
+    #expect(duplicate.nextSceneOrdinal == sourceShot.nextSceneOrdinal)
+    #expect(duplicate.scenes.map(\.ordinal) == sourceShot.scenes.map(\.ordinal))
+    #expect(Set(duplicate.scenes.map(\.sceneID)).isDisjoint(with: sourceShot.scenes.map(\.sceneID)))
+
+    let duplicatedScenes = try duplicate.scenes.map { placement in
+        try #require(controller.scene(id: placement.sceneID))
+    }
+    #expect(duplicatedScenes.map(\.name) == ["SH010 copia_001", "SH010 copia_002"])
+    #expect(duplicatedScenes[0].snapshot == sourceScenes[0].snapshot)
+    #expect(try Data(contentsOf: store.thumbnailURL(for: duplicatedScenes[0])) == Data([1, 2, 3]))
+    #expect(try Data(contentsOf: store.thumbnailURL(for: duplicatedScenes[1])) == Data([4, 5, 6]))
+    #expect(try store.autosaves(for: duplicatedScenes[0].id).count == 1)
+    #expect(try store.autosaves(for: duplicatedScenes[1].id).count == 1)
+
+    let sourceAsset = try #require(sourceScenes[1].snapshot.generatedEnvironment)
+    let duplicateAsset = try #require(duplicatedScenes[1].snapshot.generatedEnvironment)
+    #expect(duplicateAsset.fileName != sourceAsset.fileName)
+    #expect(duplicateAsset.sha256 == sourceAsset.sha256)
+    let copiedEnvironment = try #require(try EnvironmentAssetLibrary.asset(
+        sha256: duplicateAsset.sha256,
+        originalFileName: duplicateAsset.fileName,
+        libraryRoot: environmentRoot
+    ))
+    #expect(try Data(contentsOf: copiedEnvironment.url) == environmentData)
+    let sourceEnvironment = try #require(try EnvironmentAssetLibrary.asset(
+        sha256: sourceAsset.sha256,
+        originalFileName: sourceAsset.fileName,
+        libraryRoot: environmentRoot
+    ))
+    #expect(
+        try duplicatedScenes[1].snapshot.replacingGeneratedEnvironment(
+            sourceAsset, absolutePath: sourceEnvironment.url.path
+        ) == sourceScenes[1].snapshot
+    )
+
+    let persisted = try store.load()
+    let persistedShots = try #require(persisted.productions.first?.episodes.first?.shots)
+    #expect(persistedShots == [sourceShot, duplicate])
+    #expect(controller.scene(id: first.id) == sourceScenes[0])
+    #expect(controller.scene(id: second.id) == sourceScenes[1])
+}
+
+@MainActor
 @Test func associatedRenderUsesPersistedValuesWithoutReadingProductionJSON() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-shot-manager-offline-\(UUID().uuidString)")
