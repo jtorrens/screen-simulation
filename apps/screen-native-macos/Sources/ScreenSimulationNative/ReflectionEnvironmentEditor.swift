@@ -1,5 +1,6 @@
 import AppKit
 import ScreenPhysicalBridge
+import ScreenSimulationMacUI
 import simd
 import SwiftUI
 
@@ -271,10 +272,8 @@ private struct ReflectionEnvironmentPanel: View {
         return GridRow {
             Text(label)
             Slider(value: binding, in: range, step: step)
-            TextField(
-                label,
-                value: binding,
-                format: .number.precision(.fractionLength(0 ... 2))
+            DigitSteppingNumberField(
+                label, value: binding, range: range, fractionDigits: 0 ... 2
             )
             .textFieldStyle(.roundedBorder)
             .multilineTextAlignment(.trailing)

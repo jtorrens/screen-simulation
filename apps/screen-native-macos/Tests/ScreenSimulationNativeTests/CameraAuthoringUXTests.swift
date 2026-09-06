@@ -54,7 +54,7 @@ import Testing
     #expect(trackingSource.contains(".confirmationDialog("))
 }
 
-@Test func sceneScalarFieldsCommitOnlyAtReturnOrFocusLossAndSingleSectionsAreFlat() throws {
+@Test func sceneScalarFieldsUseTheSharedCommitBoundaryAndSingleSectionsAreFlat() throws {
     let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     let sources = tests.deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources")
@@ -70,12 +70,34 @@ import Testing
         ),
         encoding: .utf8
     )
+    let appCommands = try String(
+        contentsOf: sources.appendingPathComponent(
+            "ScreenSimulationNative/ScreenSimulationNativeApp.swift"
+        ),
+        encoding: .utf8
+    )
+    let numericField = try String(
+        contentsOf: sources.appendingPathComponent(
+            "ScreenSimulationMacUI/DigitSteppingNumberField.swift"
+        ),
+        encoding: .utf8
+    )
 
     #expect(macUI.contains("private struct CommittedTestScalarField"))
-    #expect(macUI.contains(".onSubmit { commitOrRestore() }"))
-    #expect(macUI.contains("if !isFocused { commitOrRestore() }"))
+    #expect(macUI.contains("DigitSteppingNumberField("))
     #expect(!macUI.contains("scheduleCommit()"))
     #expect(!macUI.contains("Task.sleep(for: .milliseconds(450))"))
+    #expect(numericField.contains("onSubmit: commit"))
+    #expect(numericField.contains("else { commit() }"))
+    #expect(numericField.contains("private func acceptStep(_ candidate: String)"))
+    #expect(!appCommands.contains(".keyboardShortcut(.leftArrow, modifiers: [])"))
+    #expect(!appCommands.contains(".keyboardShortcut(.rightArrow, modifiers: [])"))
+    #expect(appCommands.contains(".keyboardShortcut(.leftArrow, modifiers: [.command])"))
+    #expect(appCommands.contains(".keyboardShortcut(.rightArrow, modifiers: [.command])"))
+    #expect(appCommands.contains("Button(\"10 frames atrás\") { model.step(-10) }"))
+    #expect(appCommands.contains("Button(\"10 frames adelante\") { model.step(10) }"))
+    #expect(appCommands.contains(".keyboardShortcut(.leftArrow, modifiers: [.shift])"))
+    #expect(appCommands.contains(".keyboardShortcut(.rightArrow, modifiers: [.shift])"))
     #expect(macUI.contains("if sections.count == 1, let section = sections.first"))
     #expect(native.contains("CommittedNumberField(\n                            label: \"cd/m²\""))
     #expect(!native.contains("TextField(\"cd/m²\", value:"))

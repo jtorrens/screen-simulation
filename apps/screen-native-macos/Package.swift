@@ -64,6 +64,7 @@ let package = Package(
             name: "ScreenSimulationNativeTests",
             dependencies: [
                 "ScreenSimulationNative",
+                "ScreenSimulationMacUI",
                 .product(
                     name: "StudioVideoOutput",
                     package: "StudioVideoOutput"

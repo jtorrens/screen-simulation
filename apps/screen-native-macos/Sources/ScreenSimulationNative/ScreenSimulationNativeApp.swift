@@ -46,9 +46,13 @@ struct ScreenSimulationNativeApp: App {
                 Button(model.isPlaying ? "Pausa" : "Reproducir", action: model.togglePlayback)
                     .keyboardShortcut(.space, modifiers: [])
                 Button("Frame anterior") { model.step(-1) }
-                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .keyboardShortcut(.leftArrow, modifiers: [.command])
                 Button("Frame siguiente") { model.step(1) }
-                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .keyboardShortcut(.rightArrow, modifiers: [.command])
+                Button("10 frames atrás") { model.step(-10) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.shift])
+                Button("10 frames adelante") { model.step(10) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.shift])
                 Button("Keyframe anterior", action: model.seekPreviousSimulationOpacityKeyframe)
                     .keyboardShortcut("j", modifiers: [])
                 Button("Keyframe siguiente", action: model.seekNextSimulationOpacityKeyframe)

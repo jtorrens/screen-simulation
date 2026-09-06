@@ -720,6 +720,27 @@
       ]
     },
     {
+      "id": "ui.numeric-field-stepping",
+      "scope": "native workstation numeric-field cursor-relative Up/Down stepping and commit boundary",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "Docs/architecture/current_system.md",
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/DigitSteppingNumberField.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/TestAuthoringView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/EnvironmentReflectionFramer.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionTrackingScene.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ReflectionEnvironmentEditor.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ScreenSimulationNativeApp.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/DigitSteppingNumberFieldTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "ui.copyable-error-reporting",
       "scope": "native workstation presentation of actionable copyable Application failure detail",
       "owner": {

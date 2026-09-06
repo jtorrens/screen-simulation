@@ -6,6 +6,7 @@ import Foundation
 import Metal
 import OSLog
 import ScreenPhysicalBridge
+import ScreenSimulationMacUI
 import ScreenSimulationPresentation
 import simd
 import StudioColor
@@ -2094,8 +2095,8 @@ final class WorkspaceModel: ObservableObject {
             inputPicker.lastItem?.representedObject = input.id
         }
         inputPicker.selectItem(at: inputTransforms.firstIndex { $0.id == "linear-rec709" } ?? 0)
-        let radianceField = NSTextField(string: "100")
-        let exposureField = NSTextField(string: "-1")
+        let radianceField = DigitSteppingNSTextField(string: "100")
+        let exposureField = DigitSteppingNSTextField(string: "-1")
         let accessory = NSGridView(views: [
             [NSTextField(labelWithString: "Input Transform"), inputPicker],
             [NSTextField(labelWithString: "cd/m² por unidad"), radianceField],

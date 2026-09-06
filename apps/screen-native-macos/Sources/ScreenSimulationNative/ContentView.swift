@@ -3197,11 +3197,11 @@ struct ContentView: View {
                     GroupBox("Raster de la escena") {
                         VStack(alignment: .leading, spacing: 8) {
                         LabeledContent("Ancho") {
-                            TextField("px", value: $model.renderRasterWidth, format: .number)
+                            DigitSteppingNumberField("px", value: $model.renderRasterWidth)
                                 .frame(width: 90)
                         }
                         LabeledContent("Alto") {
-                            TextField("px", value: $model.renderRasterHeight, format: .number)
+                            DigitSteppingNumberField("px", value: $model.renderRasterHeight)
                                 .frame(width: 90)
                         }
                         Picker("Placement", selection: $model.renderRasterPlacementID) {
@@ -3270,20 +3270,24 @@ struct ContentView: View {
                         }
                         if model.fusionResolutionMode == .custom {
                             LabeledContent("Ancho activo") {
-                                TextField("px", value: $model.fusionCustomWidth, format: .number)
+                                DigitSteppingNumberField("px", value: $model.fusionCustomWidth)
                                     .frame(width: 90)
                             }
                             LabeledContent("Alto activo") {
-                                TextField("px", value: $model.fusionCustomHeight, format: .number)
+                                DigitSteppingNumberField("px", value: $model.fusionCustomHeight)
                                     .frame(width: 90)
                             }
                         }
                         LabeledContent("Threshold ACEScg lineal") {
-                            TextField("threshold", value: $model.fusionSpillThresholdSceneLinear, format: .number)
+                            DigitSteppingNumberField(
+                                "threshold", value: $model.fusionSpillThresholdSceneLinear
+                            )
                                 .frame(width: 110)
                         }
                         LabeledContent("Fade de spill") {
-                            TextField("px", value: $model.fusionSpillFadeWidthPixels, format: .number)
+                            DigitSteppingNumberField(
+                                "px", value: $model.fusionSpillFadeWidthPixels
+                            )
                                 .frame(width: 90)
                         }
                         Text("Fusion recibe un único Device con RGB físico completo y alpha de oclusión independiente. La comp aplica el nodo nativo exacto hacia ACEScg antes de reconstruir cámara, distorsión y motion blur.")
@@ -3296,11 +3300,11 @@ struct ContentView: View {
                     }
                     if model.renderRange == .inOut {
                         LabeledContent("IN") {
-                            TextField("IN", value: $model.inFrame, format: .number)
+                            DigitSteppingNumberField("IN", value: $model.inFrame)
                                 .frame(width: 90)
                         }
                         LabeledContent("OUT") {
-                            TextField("OUT", value: $model.outFrame, format: .number)
+                            DigitSteppingNumberField("OUT", value: $model.outFrame)
                                 .frame(width: 90)
                         }
                     }
@@ -4595,106 +4599,27 @@ private struct CommittedZoomField: View {
     let percentage: Double
     let onCommit: (Double) -> Void
 
-    @State private var draft = "100"
-    @FocusState private var isFocused: Bool
-
     var body: some View {
-        TextField("Zoom", text: $draft)
-            .focused($isFocused)
+        DigitSteppingNumberField(
+            "Zoom",
+            value: Binding(get: { percentage }, set: { onCommit($0) }),
+            range: 10 ... 1_600,
+            fractionDigits: 0 ... 1
+        )
             .multilineTextAlignment(.trailing)
-            .onAppear { synchronize(with: percentage) }
-            .onSubmit { commit() }
-            .onChange(of: isFocused) { _, focused in
-                if focused {
-                    synchronize(with: percentage)
-                } else {
-                    commit()
-                }
-            }
-            .onChange(of: percentage) { _, value in
-                if !isFocused { synchronize(with: value) }
-            }
-    }
-
-    private func commit() {
-        let normalized = draft
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: ",", with: ".")
-        guard let value = Double(normalized), value.isFinite else {
-            synchronize(with: percentage)
-            return
-        }
-        let clamped = min(1_600, max(10, value))
-        onCommit(clamped)
-        synchronize(with: clamped)
-    }
-
-    private func synchronize(with value: Double) {
-        draft = value.formatted(.number.precision(.fractionLength(0 ... 1)))
     }
 }
 
-private protocol CommittedNumericValue: Equatable {
-    static func parseCommittedDraft(_ text: String) -> Self?
-    var committedDraftText: String { get }
-}
-
-extension Double: CommittedNumericValue {
-    fileprivate static func parseCommittedDraft(_ text: String) -> Double? {
-        let value = Double(text.replacingOccurrences(of: ",", with: "."))
-        return value?.isFinite == true ? value : nil
-    }
-
-    fileprivate var committedDraftText: String { String(format: "%.12g", self) }
-}
-
-extension Int: CommittedNumericValue {
-    fileprivate static func parseCommittedDraft(_ text: String) -> Int? { Int(text) }
-    fileprivate var committedDraftText: String { String(self) }
-}
-
-extension UInt32: CommittedNumericValue {
-    fileprivate static func parseCommittedDraft(_ text: String) -> UInt32? { UInt32(text) }
-    fileprivate var committedDraftText: String { String(self) }
-}
-
-private struct CommittedNumberField<Value: CommittedNumericValue>: View {
+private struct CommittedNumberField<Value: DigitSteppingNumericValue>: View {
     let label: String
     let value: Value
     let onCommit: (Value) -> Void
 
-    @State private var draft = ""
-    @FocusState private var isFocused: Bool
-
     var body: some View {
-        TextField(label, text: $draft)
-            .focused($isFocused)
-            .onAppear { synchronize(with: value) }
-            .onSubmit { commit() }
-            .onChange(of: isFocused) { _, focused in
-                if focused { synchronize(with: value) }
-                else { commit() }
-            }
-            .onChange(of: value) { _, newValue in
-                synchronize(with: newValue)
-            }
-    }
-
-    private func commit() {
-        let normalized = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = Value.parseCommittedDraft(normalized) else {
-            synchronize(with: value)
-            return
-        }
-        guard parsed != value else {
-            synchronize(with: value)
-            return
-        }
-        onCommit(parsed)
-    }
-
-    private func synchronize(with value: Value) {
-        draft = value.committedDraftText
+        DigitSteppingNumberField(
+            label,
+            value: Binding(get: { value }, set: { onCommit($0) })
+        )
     }
 }
 

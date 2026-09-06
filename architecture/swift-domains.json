@@ -46,7 +46,10 @@
         {
           "name": "ScreenSimulationNativeTests",
           "owner": "native-macos-composition",
-          "allowed_target_dependencies": ["ScreenSimulationNative"],
+          "allowed_target_dependencies": [
+            "ScreenSimulationMacUI",
+            "ScreenSimulationNative"
+          ],
           "allowed_product_dependencies": ["StudioVideoOutput"]
         }
       ]

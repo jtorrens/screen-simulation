@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ScreenPhysicalBridge
+import ScreenSimulationMacUI
 import simd
 import SwiftUI
 
@@ -779,7 +780,9 @@ private struct TrackingScenePanel: View {
                     Text("Define directamente cuánto mide una unidad de SynthEyes.")
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("1 unidad SynthEyes") {
-                        TextField("Valor", value: $model.trackingSynthEyesUnitValue, format: .number)
+                        DigitSteppingNumberField(
+                            "Valor", value: $model.trackingSynthEyesUnitValue
+                        )
                             .frame(width: 90)
                         Picker("Unidad", selection: $model.trackingSynthEyesUnit) {
                             Text("m").tag("m")

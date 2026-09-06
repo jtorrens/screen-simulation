@@ -1,4 +1,5 @@
 import AppKit
+import ScreenSimulationMacUI
 import SwiftUI
 
 struct EnvironmentReflectionFraming: Equatable, Sendable {
@@ -122,7 +123,9 @@ private struct EnvironmentReflectionFramingPanel: View {
         return GridRow {
             Text(label)
             Slider(value: binding, in: range)
-            TextField(label, value: binding, format: .number.precision(.fractionLength(0 ... 3)))
+            DigitSteppingNumberField(
+                label, value: binding, range: range, fractionDigits: 0 ... 3
+            )
                 .textFieldStyle(.roundedBorder).frame(width: 74).monospacedDigit()
         }
     }
@@ -143,7 +146,9 @@ private struct EnvironmentReflectionFramingPanel: View {
         return GridRow {
             Text(label)
             Slider(value: exponent, in: exponentRange)
-            TextField(label, value: numeric, format: .number.precision(.fractionLength(0 ... 6)))
+            DigitSteppingNumberField(
+                label, value: numeric, range: valueRange, fractionDigits: 0 ... 6
+            )
                 .textFieldStyle(.roundedBorder).frame(width: 74).monospacedDigit()
         }
     }

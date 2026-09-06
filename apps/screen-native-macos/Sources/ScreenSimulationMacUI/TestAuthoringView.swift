@@ -244,55 +244,14 @@ private struct CommittedTestScalarField: View {
     let control: TestScalarControl
     let onCommit: (Double) -> Void
 
-    @State private var draft: String
-    @FocusState private var focused: Bool
-
-    init(control: TestScalarControl, onCommit: @escaping (Double) -> Void) {
-        self.control = control
-        self.onCommit = onCommit
-        _draft = State(initialValue: Self.format(control.value))
-    }
-
     var body: some View {
-        TextField(control.unit, text: $draft)
-            .focused($focused)
+        DigitSteppingNumberField(
+            control.unit,
+            value: Binding(get: { control.value }, set: { onCommit($0) }),
+            range: control.minimum ... control.maximum,
+            fractionDigits: 0 ... 6
+        )
             .frame(maxWidth: .infinity)
-            .onSubmit { commitOrRestore() }
-            .onChange(of: focused) { _, isFocused in
-                if !isFocused { commitOrRestore() }
-            }
-            .onChange(of: control.value) { _, value in
-                guard !focused else { return }
-                draft = Self.format(value)
-            }
-    }
-
-    private func commitOrRestore() {
-        if !commitIfValid() {
-            draft = Self.format(control.value)
-        }
-    }
-
-    @discardableResult
-    private func commitIfValid() -> Bool {
-        guard let value = Self.parse(draft),
-              value.isFinite,
-              control.minimum...control.maximum ~= value
-        else { return false }
-        if value != control.value { onCommit(value) }
-        return true
-    }
-
-    private static func parse(_ text: String) -> Double? {
-        let formatter = NumberFormatter()
-        formatter.locale = .current
-        formatter.numberStyle = .decimal
-        formatter.isLenient = false
-        return formatter.number(from: text)?.doubleValue
-    }
-
-    private static func format(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0...6)))
     }
 }
 
