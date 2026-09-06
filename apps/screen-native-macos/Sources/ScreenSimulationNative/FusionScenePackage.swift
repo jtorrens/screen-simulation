@@ -225,6 +225,15 @@ struct FusionLensKeyframe: Codable, Equatable, Sendable {
 enum FusionLensReconstructionKind: String, Codable, Equatable, Sendable {
     case importedSynthEyesDE4 = "imported-syntheyes-de4-radial-standard-degree4-v1"
     case applicationBrownConrady = "application-brown-conrady-v1"
+
+    static func resolve(
+        activeTrackingMethod: TrackingSceneMethod,
+        hasEnabledSelectedSynthEyesCamera: Bool
+    ) -> Self {
+        activeTrackingMethod == .fusionComposition && hasEnabledSelectedSynthEyesCamera
+            ? .importedSynthEyesDE4
+            : .applicationBrownConrady
+    }
 }
 
 struct FusionMotionBlurContract: Codable, Equatable, Sendable {

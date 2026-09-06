@@ -113,6 +113,47 @@ private func fusionConfiguration(
     }
 }
 
+@Test func fusionTrackerUsesApplicationLensWhenSynthEyesAuthoringIsRetained() throws {
+    let reconstruction = FusionLensReconstructionKind.resolve(
+        activeTrackingMethod: .fusionTrackerClipboard,
+        hasEnabledSelectedSynthEyesCamera: true
+    )
+    #expect(reconstruction == .applicationBrownConrady)
+    let configuration = fusionConfiguration()
+    let request = FusionScenePackageRequest(
+        configuration: configuration,
+        outputPlan: try RenderOutputPlan.prepare(
+            configuration: configuration, selectedDestination: temporaryDirectory()
+        ),
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        activeRaster: .init(activeWidth: 8, activeHeight: 4, pixelsPerMeter: 25),
+        sourceOverscanPixels: 2, deliveryWidth: 1920, deliveryHeight: 1080,
+        camera: [camera(frame: 1), camera(frame: 2)],
+        devicePose: [devicePose(frame: 1), devicePose(frame: 2)],
+        lens: [applicationBrownLens(frame: 1), applicationBrownLens(frame: 2)],
+        lensReconstruction: reconstruction,
+        motionBlur: .init(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: 180, shutterPhaseDegrees: 0
+        ),
+        referencePlate: nil
+    )
+    try request.validate()
+
+    #expect(FusionLensReconstructionKind.resolve(
+        activeTrackingMethod: .fusionComposition,
+        hasEnabledSelectedSynthEyesCamera: true
+    ) == .importedSynthEyesDE4)
+    #expect(FusionLensReconstructionKind.resolve(
+        activeTrackingMethod: .deviceCorners,
+        hasEnabledSelectedSynthEyesCamera: true
+    ) == .applicationBrownConrady)
+    #expect(FusionLensReconstructionKind.resolve(
+        activeTrackingMethod: .fusionComposition,
+        hasEnabledSelectedSynthEyesCamera: false
+    ) == .applicationBrownConrady)
+}
+
 @Test @MainActor func fusionDeviceTransformsRGBThenRestoresAlphaWithoutAssociation() throws {
     let configuration = fusionConfiguration()
     try configuration.validate()

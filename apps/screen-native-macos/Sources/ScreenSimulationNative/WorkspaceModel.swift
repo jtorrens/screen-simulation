@@ -6014,10 +6014,11 @@ final class WorkspaceModel: ObservableObject {
         var devicePoses: [FusionDevicePoseKeyframe] = []
         var lenses: [FusionLensKeyframe] = []
         var shutter: PhysicalPipelineAuthoringState.ShutterMotion?
-        let lensReconstruction: FusionLensReconstructionKind =
-            trackingCameraEnabled && selectedTrackingCamera != nil
-                ? .importedSynthEyesDE4
-                : .applicationBrownConrady
+        let lensReconstruction = FusionLensReconstructionKind.resolve(
+            activeTrackingMethod: trackingSceneMethod,
+            hasEnabledSelectedSynthEyesCamera: trackingCameraEnabled
+                && selectedTrackingCamera != nil
+        )
         for frame in job.configuration.frameRange {
             currentFrame = frame
             let resolved = try resolveSceneFrame(frame)
