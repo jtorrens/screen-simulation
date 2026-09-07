@@ -3926,26 +3926,30 @@ final class WorkspaceModel: ObservableObject {
         FileDialogDirectory.trackingComposition.remember(url)
         do {
             let imported = try FusionTrackingImporter().load(url)
-            setTrackingSceneMethod(.fusionComposition)
-            trackingScene = imported
-            selectedTrackingCameraID = nil
-            selectedTrackingPointGroupID = nil
-            visibleTrackingMeshIDs = Set(imported.meshes.map(\.id))
-            trackingScalePointAID = nil
-            trackingScalePointBID = nil
-            trackingMeasuredDistanceMeters = 1
-            trackingMetersPerSourceUnit = nil
-            trackingScaleSelectionSlot = nil
-            trackingSynthEyesUnitValue = 1
-            trackingSynthEyesUnit = "m"
-            trackingMetersPerSourceUnit = 1
-            cachedSceneResolver = nil
-            applyTimelineAuthority(resetRange: true)
-            physicalModel.invalidateExternalParameters(preservingQuality: true)
-            publishSetupFraming()
-            status = "Tracking importado · 1 unidad SynthEyes = 1 m"
-            persistActiveSceneAuthoringReportingFailure()
+            adoptImportedFusionTrackingScene(imported)
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    func adoptImportedFusionTrackingScene(_ imported: TrackingScene) {
+        setTrackingSceneMethod(.fusionComposition)
+        trackingScene = imported
+        selectedTrackingCameraID = imported.cameras.first?.id
+        selectedTrackingPointGroupID = imported.pointGroups.first?.id
+        visibleTrackingMeshIDs = Set(imported.meshes.map(\.id))
+        trackingScalePointAID = nil
+        trackingScalePointBID = nil
+        trackingMeasuredDistanceMeters = 1
+        trackingMetersPerSourceUnit = nil
+        trackingScaleSelectionSlot = nil
+        trackingSynthEyesUnitValue = 1
+        trackingSynthEyesUnit = "m"
+        trackingMetersPerSourceUnit = 1
+        cachedSceneResolver = nil
+        applyTimelineAuthority(resetRange: true)
+        physicalModel.invalidateExternalParameters(preservingQuality: true)
+        publishSetupFraming()
+        status = "Tracking importado · 1 unidad SynthEyes = 1 m"
+        persistActiveSceneAuthoringReportingFailure()
     }
 
     func importFusionTrackerFromClipboard() {
@@ -4307,18 +4311,39 @@ final class WorkspaceModel: ObservableObject {
         trackingScaleSelectionSlot = nil
     }
 
-    func applyTrackingUnitScale() {
-        guard trackingSynthEyesUnitValue.isFinite, trackingSynthEyesUnitValue > 0 else {
-            errorMessage = "La escala de SynthEyes debe ser positiva."
-            return
+    func commitTrackingSynthEyesUnitValue(_ value: Double) {
+        guard value != trackingSynthEyesUnitValue else { return }
+        let priorValue = trackingSynthEyesUnitValue
+        trackingSynthEyesUnitValue = value
+        do {
+            try commitTrackingUnitScale()
+        } catch {
+            trackingSynthEyesUnitValue = priorValue
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func commitTrackingSynthEyesUnit(_ unit: String) {
+        guard unit != trackingSynthEyesUnit else { return }
+        let priorUnit = trackingSynthEyesUnit
+        trackingSynthEyesUnit = unit
+        do {
+            try commitTrackingUnitScale()
+        } catch {
+            trackingSynthEyesUnit = priorUnit
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func commitTrackingUnitScale() throws {
+        guard trackingSynthEyesUnitValue.isFinite, trackingSynthEyesUnitValue > 0,
+              trackingSynthEyesUnit == "m" || trackingSynthEyesUnit == "cm" else {
+            throw FusionTrackingError.invalid("La escala de SynthEyes debe ser positiva y usar m o cm.")
         }
         let scale = trackingSynthEyesUnit == "cm"
             ? trackingSynthEyesUnitValue / 100 : trackingSynthEyesUnitValue
-        do {
-            try applyTrackingMetersPerSourceUnit(scale)
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        try applyTrackingMetersPerSourceUnit(scale)
+        status = "Escala aplicada · 1 unidad Fusion = \(scale.formatted(.number.precision(.fractionLength(6)))) m"
     }
 
     /// Changes the unit conversion for the complete imported world. Camera, point cloud,
@@ -5242,6 +5267,17 @@ final class WorkspaceModel: ObservableObject {
             }
             renderWIPReviewPreset = nil
         }
+        ensureRenderOptionsCompatible()
+    }
+
+    func configureNewRenderDraftDefaults(availablePresets: [StudioRenderPreset]) {
+        changeRenderMode(.final)
+        if let editorial = availablePresets.first(where: {
+            $0.id == StudioVFXEditorialDeliveryContract.presetID
+        }) {
+            applyRenderPreset(editorial)
+        }
+        includeFusionComposition = true
         ensureRenderOptionsCompatible()
     }
 

@@ -58,6 +58,58 @@ import Testing
     #expect(camera.sample(atTimelineFrame: 1, timelineFrameRate: 50)?.sourcePosition.x == 0.5)
 }
 
+@MainActor @Test func initialFusionImportSelectsFirstCameraAndPointGroupInSourceOrder() {
+    let firstCamera = TrackingCamera(
+        id: "camera-first", label: "First", frameRateNumerator: 24,
+        frameRateDenominator: 1, focalLengthMillimeters: 40,
+        gateWidthMillimeters: 24, gateHeightMillimeters: 13.5,
+        plateWidth: 1920, plateHeight: 1080, distortion: .pinhole,
+        samples: [.init(
+            frame: 0, sourcePosition: .init(0, 0, 1),
+            orientation: .init(0, 0, 0, 1)
+        )]
+    )
+    let secondCamera = TrackingCamera(
+        id: "camera-second", label: "Second", frameRateNumerator: 24,
+        frameRateDenominator: 1, focalLengthMillimeters: 40,
+        gateWidthMillimeters: 24, gateHeightMillimeters: 13.5,
+        plateWidth: 1920, plateHeight: 1080, distortion: .pinhole,
+        samples: [.init(
+            frame: 0, sourcePosition: .init(0, 0, 1),
+            orientation: .init(0, 0, 0, 1)
+        )]
+    )
+    let firstGroup = TrackingPointGroup(id: "points-first", label: "First", points: [])
+    let secondGroup = TrackingPointGroup(id: "points-second", label: "Second", points: [])
+    let model = WorkspaceModel()
+
+    model.adoptImportedFusionTrackingScene(.init(
+        cameras: [firstCamera, secondCamera],
+        pointGroups: [firstGroup, secondGroup], meshes: []
+    ))
+
+    #expect(model.selectedTrackingCameraID == firstCamera.id)
+    #expect(model.selectedTrackingPointGroupID == firstGroup.id)
+}
+
+@MainActor @Test func committedTrackingScaleValueAndUnitApplyWithoutAButton() {
+    let model = WorkspaceModel()
+    model.commitTrackingSynthEyesUnitValue(0.25)
+    #expect(model.trackingMetersPerSourceUnit == 0.25)
+
+    model.commitTrackingSynthEyesUnit("cm")
+    #expect(model.trackingMetersPerSourceUnit == 0.0025)
+
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/FusionTrackingScene.swift")
+    let source = try? String(contentsOf: sourceURL, encoding: .utf8)
+    #expect(source?.contains("Button(\"Aplicar escala\"") == false)
+    #expect(source?.contains("commitTrackingSynthEyesUnitValue") == true)
+    #expect(source?.contains("commitTrackingSynthEyesUnit") == true)
+}
+
 @Test func freezingTrackingCameraKeepsIntrinsicsAndAllOtherImportedAuthoring() throws {
     let camera = TrackingCamera(
         id: "camera", label: "Camera", frameRateNumerator: 25, frameRateDenominator: 1,

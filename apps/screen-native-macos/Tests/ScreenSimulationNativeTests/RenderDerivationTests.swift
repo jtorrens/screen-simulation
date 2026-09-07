@@ -146,6 +146,32 @@ import Testing
     #expect(model.renderSpillDeliveryMode == .editorialEncodedAdd)
 }
 
+@MainActor @Test func newRenderDraftDefaultsToEditorialFinalFusionWhenPresetExists() {
+    let model = WorkspaceModel()
+    let editorial = StudioRenderPreset.builtIns.first {
+        $0.id == StudioVFXEditorialDeliveryContract.presetID
+    }!
+
+    model.configureNewRenderDraftDefaults(availablePresets: [editorial])
+
+    #expect(model.renderMode == .final)
+    #expect(model.renderPreset.id == StudioVFXEditorialDeliveryContract.presetID)
+    #expect(model.includeFusionComposition)
+    #expect(model.renderComposition == .deviceAndSpillTogether)
+    #expect(model.outputFormat == .proRes4444XQ)
+    #expect(model.vfxInterchangeEncodingID
+        == StudioVFXEditorialDeliveryContract.colorEncodingID)
+}
+
+@MainActor @Test func newRenderDraftStillDefaultsToFinalFusionWithoutEditorialPreset() {
+    let model = WorkspaceModel()
+
+    model.configureNewRenderDraftDefaults(availablePresets: [])
+
+    #expect(model.renderMode == .final)
+    #expect(model.includeFusionComposition)
+}
+
 @MainActor @Test func rec709EditorialRerenderRestoresTheEditableODTChoice() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-editorial-rec709-rerender-\(UUID().uuidString)")

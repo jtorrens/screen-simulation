@@ -2987,6 +2987,9 @@ struct ContentView: View {
 
     private func requestSceneRender(_ scene: SavedScene) {
         do {
+            model.configureNewRenderDraftDefaults(
+                availablePresets: library.allRenderPresets
+            )
             try model.configureRenderRaster(for: scene)
             try applyRenderIdentityDefaults(for: scene)
             model.renderVersionSuffix = ""

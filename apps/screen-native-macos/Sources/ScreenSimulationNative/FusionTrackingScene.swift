@@ -781,16 +781,20 @@ private struct TrackingScenePanel: View {
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("1 unidad SynthEyes") {
                         DigitSteppingNumberField(
-                            "Valor", value: $model.trackingSynthEyesUnitValue
+                            "Valor", value: Binding(
+                                get: { model.trackingSynthEyesUnitValue },
+                                set: { model.commitTrackingSynthEyesUnitValue($0) }
+                            )
                         )
                             .frame(width: 90)
-                        Picker("Unidad", selection: $model.trackingSynthEyesUnit) {
+                        Picker("Unidad", selection: Binding(
+                            get: { model.trackingSynthEyesUnit },
+                            set: { model.commitTrackingSynthEyesUnit($0) }
+                        )) {
                             Text("m").tag("m")
                             Text("cm").tag("cm")
                         }.labelsHidden().frame(width: 80)
                     }
-                    Button("Aplicar escala", action: model.applyTrackingUnitScale)
-                        .buttonStyle(.borderedProminent)
                     if let scale = model.trackingMetersPerSourceUnit {
                         Text("1 unidad Fusion = \(scale.formatted(.number.precision(.fractionLength(6)))) m")
                             .font(.caption.monospacedDigit())

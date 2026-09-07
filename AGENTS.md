@@ -87,7 +87,7 @@ These rules apply to every task in this repository.
 
 - Persist stable opaque identifiers, exact rational frame rates/times, explicit units, and explicit schema versions.
 - Persist project-relative resource references; machine-specific roots and credentials are workstation state.
-- Never infer identity or ownership from names, filenames, type labels, list order, resolution, or visual position.
+- Never infer identity or ownership from names, filenames, type labels, list order, resolution, or visual position. The sole order-based authoring default is the explicitly defined initial Fusion/SynthEyes `.comp` import: it selects the first camera and first point group in source order when present, then persists their stable ids; normal Open never repeats that choice.
 - Interactive and reference evaluation consume the same immutable resolved simulation request.
 - Internal light transport remains linear float; display/output encoding occurs only at the output boundary.
 - Preserve negative and above-one values until an explicit output transform permits quantization or clipping.
@@ -104,6 +104,12 @@ These rules apply to every task in this repository.
 - Migration tests use disposable copies and prove normal startup is byte-for-byte read-only.
 - CPU reference and GPU implementations are compared with documented numeric tolerances.
 - Every changed path must have a declared validation owner; an unclassified path is an error, not a reason to run a broad fallback suite.
+
+## Mandatory final macOS publication
+
+- Every completed product-code or product-behavior change must finish by running the focused tests and architecture enforcement, then compiling, packaging, installing and validating the final Release application with `python3 scripts/build_native_macos.py`.
+- A successful debug build or `swift test` build is not final delivery. The task remains incomplete until the script has published and code-sign verified `/Applications/SCREEN-SIMULATION.app`.
+- Report the installed Release bundle as the delivered artifact. If final packaging cannot complete, report the task as blocked rather than describing the source change as finished.
 
 ## Phase-gated implementation
 
