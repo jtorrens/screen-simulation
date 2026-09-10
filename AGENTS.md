@@ -28,6 +28,9 @@ These rules apply to every task in this repository.
 ## No fallbacks or legacy routes
 
 - Never add a fallback, inferred substitute, compatibility reader, legacy key, alias, coercion, silent default, dual-path behavior, startup repair, or guessed resource route.
+- Normal runtime and startup may name, locate and validate only the exact current persisted contracts. They cannot probe for a previous filename or schema, diagnose a specific retired version, move retired state, or retain a version-cutover marker.
+- A migration implementation and its fixtures are temporary maintenance inputs. Once its destination contract becomes current, remove the migration code, tests, active-document narrative and decision-registry references in the same revision; no historical conversion tool remains in the active repository.
+- Backup Hub is the only workstation backup and restore route. Product code cannot create a second backup store, restore inbox, history, retention mechanism, migration backup or recovery path outside the exact current Backup Hub contract.
 - Missing, malformed, unknown, or obsolete required data fails explicitly at its boundary.
 - Optional values are valid only when absence has an explicit domain meaning.
 - Metadata may propose an input transform or alpha interpretation, but persisted authored selection is authoritative.
@@ -41,7 +44,8 @@ These rules apply to every task in this repository.
 - A migration updates the schema, every affected record, references, fixtures, assets, documentation, and validation together.
 - Every library-version migration preserves every user-authored item in every collection unless the user explicitly authorizes deletion or semantic replacement of identified items. Preservation includes stable identity, authored content, collection membership, ordering, lock state and references; adding or replacing bundled seeds cannot rebuild a library from defaults or omit user items.
 - Each library migration test starts with at least one user-authored item in every collection and proves those items are unchanged in the result, in addition to proving the intended schema transformation.
-- Normal readers accept only the resulting current contract. Temporary migration code is not reachable from normal open/read/render paths.
+- Normal readers accept only the resulting current contract. Temporary migration code is not reachable from normal open/read/render paths and cannot survive the revision that establishes its output as the only current world.
+- CI rejects committed migration scripts, migration fixtures and version-specific startup cutovers after that boundary.
 - Unknown schema or document versions are rejected.
 - Do not preserve an earlier evaluator, profile behavior, output result, or document reader during development.
 

@@ -176,6 +176,7 @@ struct ContentView: View {
     enum SettingsSection: String, CaseIterable, Identifiable {
         case application = "Aplicación"
         case library = "Biblioteca"
+        case externalMedia = "Media Externa"
         case monitor = "Monitor"
 
         var id: String { rawValue }
@@ -183,6 +184,7 @@ struct ContentView: View {
             switch self {
             case .application: "info.circle"
             case .library: "books.vertical"
+            case .externalMedia: "externaldrive"
             case .monitor: "rectangle.connected.to.line.below"
             }
         }
@@ -559,6 +561,8 @@ struct ContentView: View {
                     applicationSettings
                 case .library:
                     globalLibrary
+                case .externalMedia:
+                    externalMediaSettings
                 case .monitor:
                     monitorSettings
                 }
@@ -596,6 +600,84 @@ struct ContentView: View {
             outputInspectorSections
         }
         .formStyle(.grouped)
+    }
+
+    private var externalMediaSettings: some View {
+        ExternalMediaSettingsView(
+            usages: scenes.externalMediaUsages(),
+            navigate: navigateToExternalMedia,
+            replace: replaceExternalMedia,
+            changeSourceDirectory: changeExternalMediaSourceDirectory,
+            reveal: revealExternalMedia
+        )
+    }
+
+    private func navigateToExternalMedia(_ usage: ExternalMediaUsage) {
+        guard let scene = scenes.scene(id: usage.sceneID) else {
+            model.errorMessage = "La escena propietaria ya no existe."
+            return
+        }
+        sceneTreeSelection = .scene(scene.id)
+        if let location = scenes.hierarchyPath(for: scene.id) {
+            expandedSceneTreeBranches.formUnion([
+                .production(location.productionID),
+                .episode(location.episodeID),
+                .shot(location.shotID),
+            ])
+        }
+        page = .scene
+        openScene(scene)
+    }
+
+    private func replaceExternalMedia(_ usage: ExternalMediaUsage) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(
+            fileURLWithPath: usage.absoluteDirectoryPath,
+            isDirectory: true
+        )
+        panel.allowedContentTypes = switch usage.role {
+        case .environment:
+            [.image] + ["exr", "hdr"].compactMap { UTType(filenameExtension: $0) }
+        case .source, .reference:
+            [.movie, .image]
+        }
+        panel.message = "Selecciona el medio que sustituirá exactamente esta referencia."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let updated = try scenes.replaceExternalMedia(usage, with: url)
+            if model.activeSceneID == updated.id {
+                Task { await model.openSavedScene(updated, undoManager: undoManager) }
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func changeExternalMediaSourceDirectory(_ usage: ExternalMediaUsage) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(
+            fileURLWithPath: usage.absoluteDirectoryPath,
+            isDirectory: true
+        ).deletingLastPathComponent()
+        panel.message = "Selecciona el nuevo directorio raíz. No se copiará ningún archivo."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let updated = try scenes.changeExternalMediaSourceDirectory(for: usage, to: url)
+            if let activeID = model.activeSceneID,
+               let active = updated.first(where: { $0.id == activeID }) {
+                Task { await model.openSavedScene(active, undoManager: undoManager) }
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func revealExternalMedia(_ usage: ExternalMediaUsage) {
+        guard usage.exists else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            URL(fileURLWithPath: usage.authoredPath)
+        ])
     }
 
     private var testWorkspace: some View {

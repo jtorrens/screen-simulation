@@ -5,7 +5,18 @@ import StudioMedia
 import Testing
 @testable import ScreenSimulationNative
 
-private func sceneAuthoring() throws -> SceneAuthoringDocument {
+private func sceneAuthoring(
+    environmentResource: PhysicalSettingsExchange.EnvironmentResource = .init(
+        kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil
+    ),
+    referenceResource: PhysicalSettingsExchange.ReferenceResource = .init(
+        kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil,
+        alphaMode: nil, signalColorModel: nil, signalMatrix: nil,
+        signalRange: nil, placementID: nil, corners: []
+    ),
+    referencePlateID: String = "vfx-checker",
+    environmentCalibration: EnvironmentAssetCalibration? = nil
+) throws -> SceneAuthoringDocument {
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
     })
@@ -38,11 +49,11 @@ private func sceneAuthoring() throws -> SceneAuthoringDocument {
             sourcePlacementID: "fit",
             previewOutputTransformID: output.id,
             previewPhaseID: "recording-codec",
-            referencePlateID: "vfx-checker",
-            environmentResource: .init(kind: .procedural, fileName: nil, absolutePath: nil, inputTransformID: nil),
-            referenceResource: .init(kind: .none, fileName: nil, absolutePath: nil, inputTransformID: nil, alphaMode: nil, signalColorModel: nil, signalMatrix: nil, signalRange: nil, placementID: nil, corners: [])
+            referencePlateID: referencePlateID,
+            environmentResource: environmentResource,
+            referenceResource: referenceResource
         ),
-        environmentCalibration: nil
+        environmentCalibration: environmentCalibration
     )
 }
 
@@ -1568,4 +1579,129 @@ private func sceneCapture() throws -> SavedSceneCapture {
     #expect(state.0.snapshot.currentFrame == 27)
     #expect(state.1 == Data([20]))
     #expect(state.2 == updatedEnvironment)
+}
+
+@MainActor
+@Test func externalMediaInventoryReplacesExactOwnersAndReassociatesDirectoryPrefixes() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-external-media-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sceneRoot = root.appendingPathComponent("scenes")
+    let oldRoot = root.appendingPathComponent("old", isDirectory: true)
+    let oldEnvironmentDirectory = oldRoot.appendingPathComponent("lighting", isDirectory: true)
+    let newRoot = root.appendingPathComponent("new", isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: oldEnvironmentDirectory, withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(at: newRoot, withIntermediateDirectories: true)
+    let sourceURL = oldRoot.appendingPathComponent("source.mov")
+    let environmentURL = oldEnvironmentDirectory.appendingPathComponent("studio.exr")
+    let missingReferenceURL = root.appendingPathComponent("missing/reference.mov")
+    let replacementReferenceURL = root.appendingPathComponent("replacement.mov")
+    try Data([1]).write(to: sourceURL)
+    try Data([2]).write(to: environmentURL)
+    try Data([3]).write(to: replacementReferenceURL)
+
+    let reference = PhysicalSettingsExchange.ReferenceResource(
+        kind: .imageOrVideo,
+        fileName: missingReferenceURL.lastPathComponent,
+        absolutePath: missingReferenceURL.path,
+        inputTransformID: "srgb-encoded-rec709",
+        alphaMode: StudioAlphaMode.ignore.rawValue,
+        signalColorModel: StudioSignalColorModel.rgb.rawValue,
+        signalMatrix: StudioSignalMatrix.bt709.rawValue,
+        signalRange: StudioSignalRange.full.rawValue,
+        placementID: "fit",
+        corners: [
+            .init(x: 0, y: 0), .init(x: 1, y: 0),
+            .init(x: 1, y: 1), .init(x: 0, y: 1),
+        ]
+    )
+    let authoring = try sceneAuthoring(
+        environmentResource: .init(
+            kind: .image,
+            fileName: environmentURL.lastPathComponent,
+            absolutePath: environmentURL.path,
+            inputTransformID: "acescg"
+        ),
+        referenceResource: reference,
+        referencePlateID: "video-reference",
+        environmentCalibration: .init(
+            inputTransformID: "acescg",
+            sourceUnitRadianceCandelasPerSquareMeter: 100,
+            exposureEV: 0
+        )
+    )
+    let source = SavedSceneSource(
+        kind: .externalMedia,
+        patternRawValue: nil,
+        assets: [.init(absolutePath: sourceURL.path)],
+        missingMedia: .init(
+            originalName: sourceURL.lastPathComponent,
+            width: 1920,
+            height: 1080,
+            frameRateNumerator: 24,
+            frameRateDenominator: 1,
+            frameCount: 1,
+            durationNumerator: 1,
+            durationDenominator: 24
+        )
+    )
+    let controller = SceneLibraryController(
+        store: try SceneLibraryStore(directoryURL: sceneRoot)
+    )
+    let scene = try controller.add(
+        capture: .init(
+            snapshot: .init(
+                source: source,
+                currentFrame: 0,
+                viewerZoom: 1,
+                viewerPanX: 0,
+                viewerPanY: 0,
+                viewerIsFitted: true,
+                authoring: authoring,
+                trackingSceneMethod: .fusionComposition
+            ),
+            thumbnailPNG: Data([9]),
+            generatedEnvironmentEXR: nil
+        ),
+        name: "Plano externo"
+    )
+
+    var usages = controller.externalMediaUsages()
+    #expect(usages.count == 3)
+    #expect(usages.first(where: { $0.role == .source(index: 0, count: 1) })?.exists == true)
+    #expect(usages.first(where: { $0.role == .reference })?.exists == false)
+    #expect(usages.first(where: { $0.role == .environment })?.exists == true)
+
+    let referenceUsage = try #require(usages.first { $0.role == .reference })
+    let replaced = try controller.replaceExternalMedia(
+        referenceUsage,
+        with: replacementReferenceURL
+    )
+    #expect(replaced.snapshot.authoring.context.referenceResource.absolutePath
+        == replacementReferenceURL.path)
+    #expect(replaced.snapshot.authoring.context.referenceResource.fileName
+        == replacementReferenceURL.lastPathComponent)
+    #expect(replaced.snapshot.source.assets.first?.absolutePath == sourceURL.path)
+
+    usages = controller.externalMediaUsages()
+    let sourceUsage = try #require(usages.first { $0.role == .source(index: 0, count: 1) })
+    let changed = try controller.changeExternalMediaSourceDirectory(
+        for: sourceUsage,
+        to: newRoot
+    )
+    #expect(changed.map(\.id) == [scene.id])
+    let final = try #require(controller.scene(id: scene.id))
+    #expect(final.snapshot.source.assets.first?.absolutePath
+        == newRoot.appendingPathComponent("source.mov").path)
+    #expect(final.snapshot.authoring.context.environmentResource.absolutePath
+        == newRoot.appendingPathComponent("lighting/studio.exr").path)
+    #expect(final.snapshot.authoring.context.referenceResource.absolutePath
+        == replacementReferenceURL.path)
+    #expect(controller.externalMediaUsages().filter(\.exists).count == 1)
+
+    #expect(throws: SceneLibraryError.self) {
+        try controller.replaceExternalMedia(sourceUsage, with: replacementReferenceURL)
+    }
 }

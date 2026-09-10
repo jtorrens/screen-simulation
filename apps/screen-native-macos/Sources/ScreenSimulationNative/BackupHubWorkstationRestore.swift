@@ -52,8 +52,6 @@ struct WorkstationRestoreRecord {
 }
 
 enum WorkstationRestoreConsumerError: LocalizedError {
-    case invalidOwnerProtocolMarker
-    case ownerProtocolCutoverCollision
     case invalidRecoveryState
     case resultAlreadyExists
     case quarantineCollision
@@ -61,10 +59,6 @@ enum WorkstationRestoreConsumerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidOwnerProtocolMarker:
-            "El marcador propietario de restore no contiene exactamente la versión 2."
-        case .ownerProtocolCutoverCollision:
-            "Existen simultáneamente restore-processing y su retiro v1 para SCREEN-SIMULATION."
         case .invalidRecoveryState:
             "La transacción de restore interrumpida no tiene un estado recuperable."
         case .resultAlreadyExists:
@@ -132,7 +126,7 @@ struct BackupHubWorkstationRestoreConsumer {
         )
         let vault = try producer.validatedVaultURL()
         let locations = RestoreLocations(vault: vault)
-        try locations.prepareOwnership(fileManager: fileManager)
+        try locations.prepareDirectories(fileManager: fileManager)
         try claimPreparedRequests(locations: locations)
 
         var records: [WorkstationRestoreRecord] = []
@@ -863,37 +857,12 @@ private struct RestoreLocations {
     var processing: URL { vault.appendingPathComponent("restore-processing/screen-simulation", isDirectory: true) }
     var results: URL { vault.appendingPathComponent("restore-results/screen-simulation", isDirectory: true) }
     var quarantine: URL { vault.appendingPathComponent("restore-quarantine/screen-simulation", isDirectory: true) }
-    var retired: URL { vault.appendingPathComponent("restore-retired-v1-processing/screen-simulation", isDirectory: true) }
-    var ownerMarker: URL { vault.appendingPathComponent("restore-owner-protocol/screen-simulation.version") }
 
     func resultURL(_ id: UUID) -> URL {
         results.appendingPathComponent("\(id.uuidString.lowercased()).json")
     }
 
-    func prepareOwnership(fileManager: FileManager) throws {
-        let markerDirectory = ownerMarker.deletingLastPathComponent()
-        try fileManager.createDirectory(at: markerDirectory, withIntermediateDirectories: true)
-        if fileManager.fileExists(atPath: ownerMarker.path) {
-            let values = try ownerMarker.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-            guard values.isRegularFile == true,
-                  values.isSymbolicLink != true,
-                  try Data(contentsOf: ownerMarker) == Data("2\n".utf8) else {
-                throw WorkstationRestoreConsumerError.invalidOwnerProtocolMarker
-            }
-        } else {
-            let processingExists = fileManager.fileExists(atPath: processing.path)
-            let retiredExists = fileManager.fileExists(atPath: retired.path)
-            guard !(processingExists && retiredExists) else {
-                throw WorkstationRestoreConsumerError.ownerProtocolCutoverCollision
-            }
-            if processingExists {
-                try fileManager.createDirectory(
-                    at: retired.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
-                try fileManager.moveItem(at: processing, to: retired)
-            }
-            try Data("2\n".utf8).write(to: ownerMarker, options: .atomic)
-        }
+    func prepareDirectories(fileManager: FileManager) throws {
         for directory in [outbox, processing, results, quarantine] {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }

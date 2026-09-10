@@ -7,7 +7,12 @@
     "apps/screen-native-macos/Sources/ScreenSimulationNative/ModelInspectorView.swift",
     "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalDiagnosticsView.swift",
     "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalParameterControls.swift",
-    "apps/screen-native-macos/Sources/ScreenSimulationNative/ShutterPresentation.swift"
+    "apps/screen-native-macos/Sources/ScreenSimulationNative/ShutterPresentation.swift",
+    "scripts/migrate_*.py",
+    "scripts/test_migrate_*.py",
+    "scripts/migration_io.py",
+    "scripts/normalize_scene_library_*.py",
+    "scripts/test_normalize_scene_library_*.py"
   ],
   "identifiers": [
     "DevelopWhiteBalanceControls",
@@ -15,6 +20,10 @@
     "PhysicalDiagnosticsView",
     "PhysicalParameterControls",
     "ShutterPresentation",
+    "Scenes.v27.json",
+    "RenderQueue.v14.json",
+    "restore-owner-protocol/screen-simulation.version",
+    "restore-retired-v1-processing/screen-simulation",
     "eframe",
     "egui"
   ]

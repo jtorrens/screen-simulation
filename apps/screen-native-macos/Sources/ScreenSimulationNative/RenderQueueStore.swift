@@ -97,12 +97,6 @@ struct RenderQueueStore: Sendable {
 
     func load() throws -> RenderQueueDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("RenderQueue.v14.json")
-            if FileManager.default.fileExists(atPath: prior.path) {
-                throw RenderQueueStoreError.invalidDocument(
-                    "Existe RenderQueue.v14.json. Ejecuta la migración de mantenimiento v14→v15 antes de abrir la cola."
-                )
-            }
             return RenderQueueDocument()
         }
         let data = try Data(contentsOf: documentURL)

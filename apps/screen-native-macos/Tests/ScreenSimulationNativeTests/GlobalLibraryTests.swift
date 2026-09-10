@@ -56,24 +56,6 @@ import Testing
     #expect(!loaded.renderPresets.contains { StudioRenderPreset.builtIns.map(\.id).contains($0.id) })
 }
 
-@Test func explicitlySelectedMigratedGlobalLibraryLoadsWithUserDevices() throws {
-    guard let path = ProcessInfo.processInfo.environment[
-        "SCREEN_MIGRATED_GLOBAL_LIBRARY_SMOKE"
-    ] else { return }
-    let document = try GlobalLibraryStore(
-        documentURL: URL(fileURLWithPath: path)
-    ).load()
-    #expect(document.schemaVersion == 17)
-    #expect(document.wipReviewPresets.filter(\.isLocked).count == 4)
-    let expectedUserDeviceIDs = Set(
-        ProcessInfo.processInfo.environment["SCREEN_EXPECTED_USER_DEVICE_IDS"]?
-            .split(separator: ",").map(String.init) ?? []
-    )
-    #expect(!expectedUserDeviceIDs.isEmpty)
-    #expect(Set(document.devices.filter { !$0.isLocked }.map(\.id))
-        .isSuperset(of: expectedUserDeviceIDs))
-}
-
 @Test func everyCameraOwnsVFX2DAsItsDefaultLensEvaluator() throws {
     let cameras = try CameraProfileDefinition.builtIns()
     #expect(!cameras.isEmpty)

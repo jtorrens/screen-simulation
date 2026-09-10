@@ -841,12 +841,6 @@ struct SceneLibraryStore: Sendable {
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v27.json")
-            if FileManager.default.fileExists(atPath: prior.path) {
-                throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v27.json. Ejecuta la migración de mantenimiento v27→v28 antes de abrir la biblioteca."
-                )
-            }
             return SceneLibraryDocument()
         }
         let data = try Data(contentsOf: documentURL)
@@ -1314,6 +1308,13 @@ final class SceneLibraryController: ObservableObject {
         document.scenes.first { $0.id == id }
     }
 
+    func hierarchyPath(for sceneID: UUID) -> (
+        productionID: UUID, episodeID: UUID, shotID: UUID
+    )? {
+        guard let location = document.shotContaining(sceneID: sceneID) else { return nil }
+        return (location.production.id, location.episode.id, location.shot.id)
+    }
+
     func sortedScenes(_ ids: [UUID]) -> [SavedScene] {
         let selected = Set(ids)
         return document.scenes.filter { selected.contains($0.id) }.sorted {
@@ -1640,6 +1641,12 @@ final class SceneLibraryController: ObservableObject {
             throw SceneLibraryError.invalidDocument("\(kind) necesita un nombre.")
         }
         return name
+    }
+
+    func persistExternalMediaChanges(
+        _ mutation: (inout SceneLibraryDocument) throws -> Void
+    ) throws {
+        try persist(mutation)
     }
 
     private func persist(_ mutation: (inout SceneLibraryDocument) throws -> Void) throws {

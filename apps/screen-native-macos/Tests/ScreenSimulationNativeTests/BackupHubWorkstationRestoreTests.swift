@@ -49,9 +49,6 @@ import Testing
     #expect(try String(contentsOf: fixture.managedEnvironment("desired.exr"), encoding: .utf8) == "desired")
     #expect(!FileManager.default.fileExists(atPath: fixture.managedEnvironment("current.exr").path))
     #expect(try String(contentsOf: fixture.state.appendingPathComponent("Legacy.txt"), encoding: .utf8) == "preserve")
-    #expect(try Data(contentsOf: fixture.vault.appendingPathComponent(
-        "restore-owner-protocol/screen-simulation.version"
-    )) == Data("2\n".utf8))
     #expect(!FileManager.default.fileExists(atPath: fixture.processingRequest(requestID).path))
 
     let result = try fixture.result(requestID)

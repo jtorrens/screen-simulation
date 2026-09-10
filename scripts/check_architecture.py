@@ -1219,30 +1219,50 @@ def validate_wip_review_metal_contract() -> None:
             raise ValidationError("WIP Review Metal build is incomplete: " + required)
 
 
-def validate_migration_backup_contract() -> None:
-    migration_io = (ROOT / "scripts/migration_io.py").read_text(encoding="utf-8")
-    for required in (
-        "def publish_with_source_backup(",
-        "shutil.copy2(source, backup)",
-        "if backup.read_bytes() != source_bytes:",
-        "if destination.exists():",
-        "os.replace(temporary, destination)",
-    ):
-        if required not in migration_io:
-            raise ValidationError(
-                "persisted-state migrations omit recoverable publication: " + required
-            )
+def validate_current_only_persistence(paths: list[str]) -> None:
+    historical_tools = [
+        path
+        for path in paths
+        if path.startswith("scripts/migrate_")
+        or path.startswith("scripts/test_migrate_")
+        or path == "scripts/migration_io.py"
+        or path.startswith("scripts/normalize_scene_library_")
+        or path.startswith("scripts/test_normalize_scene_library_")
+    ]
+    if historical_tools:
+        raise ValidationError(
+            "historical persisted-state tools returned: " + ", ".join(historical_tools)
+        )
+
     for relative in (
-        "scripts/migrate_global_library_v14_to_v15.py",
-        "scripts/migrate_global_library_v15_to_v16.py",
-        "scripts/migrate_render_queue_v3_to_v4.py",
-        "scripts/migrate_render_queue_v4_to_v5.py",
+        "Docs/architecture/current_system.md",
+        "Docs/architecture/project_and_change_policy.md",
+        "Docs/architecture/validation.md",
     ):
-        migration = (ROOT / relative).read_text(encoding="utf-8")
-        if "publish_with_source_backup(source, destination, document)" not in migration:
-            raise ValidationError(
-                "current migration bypasses the mandatory source backup: " + relative
-            )
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        if re.search(r"\bv\d+\s*(?:→|to)\s*v\d+\b", text, re.IGNORECASE):
+            raise ValidationError(f"active architecture contains a version history in {relative}")
+        if re.search(r"\bmigrat(?:e|ed|es|ing|ion|ions)\b", text, re.IGNORECASE):
+            raise ValidationError(f"active architecture contains a migration ledger in {relative}")
+
+    policy = (ROOT / "Docs/architecture/project_and_change_policy.md").read_text(
+        encoding="utf-8"
+    )
+    for required in (
+        "It is the only\nworkstation backup and restore route.",
+        "They never probe for a previous filename,\nschema or directory",
+        "Backup Hub remains the sole backup and restore boundary.",
+    ):
+        if required not in policy:
+            raise ValidationError("current-only persistence owner is incomplete: " + required)
+
+    restore = (
+        ROOT
+        / "apps/screen-native-macos/Sources/ScreenSimulationNative/BackupHubWorkstationRestore.swift"
+    ).read_text(encoding="utf-8")
+    for forbidden in ("ownerMarker", "restore-retired", "ownerProtocolCutover"):
+        if forbidden in restore:
+            raise ValidationError("Backup Hub restore retained a historical cutover: " + forbidden)
 
 
 def validate_native_package_relinks_bridge() -> None:
@@ -1289,7 +1309,7 @@ def main() -> int:
         validate_native_workspace_navigation()
         validate_reference_matte_transport()
         validate_wip_review_metal_contract()
-        validate_migration_backup_contract()
+        validate_current_only_persistence(paths)
         validate_native_package_relinks_bridge()
         validate_phase_gated_workflow()
     except (ValidationError, DecisionAuthorityError, json.JSONDecodeError) as error:
