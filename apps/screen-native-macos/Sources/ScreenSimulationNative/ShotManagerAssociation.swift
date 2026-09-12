@@ -46,7 +46,7 @@ struct ShotManagerProductionProjection: Codable, Equatable, Sendable {
             )
         }
         try episodes.forEach {
-            try Self.requireSafeNameFragment($0.slug, field: "episode.slug", allowEmpty: false)
+            try Self.requireSafeNameFragment($0.slug, field: "episode.slug", allowEmpty: true)
             guard !$0.pathSegments.isEmpty else {
                 throw ShotManagerAssociationError.invalidDocument(
                     "episode.pathSegments necesita al menos un segmento."

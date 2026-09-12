@@ -1314,6 +1314,13 @@ final class SceneLibraryController: ObservableObject {
         document.scenes.first { $0.id == id }
     }
 
+    func hierarchyPath(for sceneID: UUID) -> (
+        productionID: UUID, episodeID: UUID, shotID: UUID
+    )? {
+        guard let location = document.shotContaining(sceneID: sceneID) else { return nil }
+        return (location.production.id, location.episode.id, location.shot.id)
+    }
+
     func sortedScenes(_ ids: [UUID]) -> [SavedScene] {
         let selected = Set(ids)
         return document.scenes.filter { selected.contains($0.id) }.sorted {
@@ -1640,6 +1647,12 @@ final class SceneLibraryController: ObservableObject {
             throw SceneLibraryError.invalidDocument("\(kind) necesita un nombre.")
         }
         return name
+    }
+
+    func persistExternalMediaChanges(
+        _ mutation: (inout SceneLibraryDocument) throws -> Void
+    ) throws {
+        try persist(mutation)
     }
 
     private func persist(_ mutation: (inout SceneLibraryDocument) throws -> Void) throws {

@@ -314,6 +314,7 @@ import Testing
     #expect(text.contains("case scene = \"Escena\""))
     #expect(text.contains("case render = \"Render\""))
     #expect(text.contains("case settings = \"Settings\""))
+    #expect(text.contains("case externalMedia = \"Media Externa\""))
     #expect(text.contains("case .render: renderWorkspace"))
     #expect(text.contains("model.setTestPageActive(destination == .scene)"))
     #expect(text.contains("renderOptionsPanel"))
@@ -333,6 +334,11 @@ import Testing
     #expect(!text.contains(".sheet(item: $pendingRenderScene)"))
     #expect(!text.contains("outputSettingsSections"))
     #expect(text.contains("outputInspectorSections"))
+    #expect(text.contains("case .externalMedia:\n                    externalMediaSettings"))
+    #expect(text.contains("usages: scenes.externalMediaUsages()"))
+    #expect(text.contains("navigate: navigateToExternalMedia"))
+    #expect(text.contains("replace: replaceExternalMedia"))
+    #expect(text.contains("changeSourceDirectory: changeExternalMediaSourceDirectory"))
     #expect(!text.contains("case main = \"Principal\""))
     #expect(!text.contains("enum SidebarTab"))
 
@@ -342,6 +348,23 @@ import Testing
     #expect(workspaceText.contains("refreshTestAuthoringDescriptor(publishPreview: false)"))
     #expect(workspaceText.contains("restoreSceneViewerPublication()"))
     #expect(workspaceText.contains("publishReferenceComposite(foreground)"))
+}
+
+@Test func externalMediaSettingsKeepsMissingRowsSortableAndContextual() throws {
+    let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let source = tests.deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ExternalMediaSettingsView.swift")
+    let text = try String(contentsOf: source, encoding: .utf8)
+
+    #expect(text.contains("Table(sortedUsages, sortOrder: $sortOrder)"))
+    #expect(text.contains("TableColumn(\"Elemento del sistema\", value: \\.systemItem)"))
+    #expect(text.contains("TableColumn(\"Ruta absoluta\", value: \\.absoluteDirectoryPath)"))
+    #expect(text.contains("TableColumn(\"Nombre de archivo\", value: \\.fileName)"))
+    #expect(text.contains("· Ausente"))
+    #expect(text.contains("Button(\"Cambiar directorio de origen…\")"))
+    #expect(text.contains("Button(\"Reemplazar medio…\")"))
+    #expect(text.contains("Button(\"Mostrar en Finder\")"))
+    #expect(text.contains(".disabled(!usage.exists)"))
 }
 
 @Test func setupNavigationRejectsWheelMomentumAndKeepsTheDeviceBoundary() throws {
