@@ -2227,6 +2227,7 @@ struct ContentView: View {
                                                             ? shot.externalReference?.canonicalName
                                                             : "Libre · Salida manual",
                                                         icon: "camera",
+                                                        isActivePath: activeShotID == shot.id,
                                                         onAdd: { createScene(in: shot) },
                                                         onOpen: { toggleSceneTreeBranch(.shot(shot.id)) }
                                                     )
@@ -2306,18 +2307,23 @@ struct ContentView: View {
 
     private func sceneTreeRow(
         _ selection: SceneTreeSelection, title: String, detail: String?, icon: String,
+        isActivePath: Bool = false,
         onAdd: (() -> Void)? = nil, imported3DScene: SavedScene? = nil,
         onOpen: (() -> Void)? = nil
     ) -> some View {
-        HStack(spacing: 7) {
+        let isHighlighted = isActivePath || sceneTreeSelection == selection
+        return HStack(spacing: 7) {
             Image(systemName: icon)
                 .frame(width: 17)
-                .foregroundStyle(sceneTreeSelection == selection ? .white : .secondary)
+                .foregroundStyle(isHighlighted ? .white : .secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).fontWeight(.medium).lineLimit(1)
+                Text(title)
+                    .fontWeight(.medium)
+                    .foregroundStyle(isHighlighted ? .white : .primary)
+                    .lineLimit(1)
                 if let detail, !detail.isEmpty {
                     Text(detail).font(.caption).foregroundStyle(
-                        sceneTreeSelection == selection ? .white.opacity(0.82) : .secondary
+                        isHighlighted ? .white.opacity(0.82) : .secondary
                     ).lineLimit(1)
                 }
             }
@@ -2326,7 +2332,7 @@ struct ContentView: View {
                 Label("3D importado", systemImage: "cube.transparent")
                     .font(.caption2)
                     .foregroundStyle(
-                        sceneTreeSelection == selection ? .white.opacity(0.9) : .secondary
+                        isHighlighted ? .white.opacity(0.9) : .secondary
                     )
                     .fixedSize()
                 Button {
@@ -2335,13 +2341,13 @@ struct ContentView: View {
                     Image(systemName: "xmark.circle")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(sceneTreeSelection == selection ? .white : .red)
+                .foregroundStyle(isHighlighted ? .white : .red)
                 .help("Eliminar el 3D importado de esta escena")
             }
             if let onAdd {
                 Button(action: onAdd) { Image(systemName: "plus") }
                     .buttonStyle(.plain)
-                    .foregroundStyle(sceneTreeSelection == selection ? .white : .secondary)
+                    .foregroundStyle(isHighlighted ? .white : .secondary)
                     .help("Añadir nivel hijo")
             }
         }
@@ -2349,7 +2355,8 @@ struct ContentView: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 5)
         .background(
-            sceneTreeSelection == selection ? Color.accentColor : .clear,
+            isActivePath ? NativeTheme.accent
+                : sceneTreeSelection == selection ? Color.accentColor : .clear,
             in: RoundedRectangle(cornerRadius: 5)
         )
         .onTapGesture {
@@ -2382,13 +2389,10 @@ struct ContentView: View {
         sceneTreeRow(
             .scene(scene.id), title: scene.name,
             detail: model.activeSceneID == scene.id ? "abierta" : nil,
-            icon: "doc.text", imported3DScene: scene
+            icon: "doc.text",
+            isActivePath: model.activeSceneID == scene.id,
+            imported3DScene: scene
         )
-        .overlay(alignment: .leading) {
-            if model.activeSceneID == scene.id {
-                RoundedRectangle(cornerRadius: 4).stroke(NativeTheme.accent, lineWidth: 1)
-            }
-        }
         .highPriorityGesture(
             TapGesture(count: 2).onEnded { requestOpenScene(scene) }
         )
@@ -3056,6 +3060,16 @@ struct ContentView: View {
               let scene = scenes.scene(id: activeSceneID)
         else { return "SCREEN-SIMULATION" }
         return scene.name
+    }
+
+    private var activeShotID: UUID? {
+        guard let activeSceneID = model.activeSceneID else { return nil }
+        return scenePlacement(activeSceneID)?.shot.id
+    }
+
+    private var activeShotName: String? {
+        guard let activeSceneID = model.activeSceneID else { return nil }
+        return scenePlacement(activeSceneID)?.shot.name
     }
 
     private func requestOpenScene(_ scene: SavedScene) {
@@ -4299,6 +4313,7 @@ struct ContentView: View {
                         zoom: model.zoom,
                         pan: model.pan,
                         fitted: model.previewIsFitted,
+                        shotName: activeShotName,
                         metadataLines: model.previewMetadataLines,
                         deviceBoundary: model.previewGizmosVisible && (model.physicalModel.quality == .setup
                                 || model.physicalModel.quality == .environmentSetup
@@ -4554,6 +4569,7 @@ struct MetalPreview: NSViewRepresentable {
     let zoom: Double
     let pan: CGSize
     let fitted: Bool
+    let shotName: String?
     let metadataLines: [String]
     let deviceBoundary: [CGPoint]
     let sensorGateBoundary: [CGPoint]
@@ -4614,6 +4630,7 @@ struct MetalPreview: NSViewRepresentable {
             zoom: zoom,
             pan: pan,
             fitted: fitted,
+            shotName: shotName,
             metadataLines: metadataLines,
             deviceBoundary: deviceBoundary,
             sensorGateBoundary: sensorGateBoundary,
@@ -4764,6 +4781,7 @@ final class MetalPreviewContainer: NSView {
     var onPlaceDeviceAtTrackingPoint: ((String) -> Void)?
     var onPlaceDeviceOnTrackingPlane: ((String) -> Void)?
     private let metadataLabel = NSTextField(labelWithString: "")
+    private let shotNameLabel = NSTextField(labelWithString: "")
     private let frameBorderLayer = CALayer()
     private let deviceBoundaryLayer = CAShapeLayer()
     private let sensorGateBoundaryLayer = CAShapeLayer()
@@ -4901,6 +4919,13 @@ final class MetalPreviewContainer: NSView {
         trackingMeshCenterLayer.zPosition = 126
         layer?.addSublayer(trackingMeshCenterLayer)
         referenceLabels.forEach { layer?.addSublayer($0) }
+        shotNameLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+        shotNameLabel.textColor = NativeTheme.nsAccent
+        shotNameLabel.alignment = .right
+        shotNameLabel.maximumNumberOfLines = 1
+        shotNameLabel.lineBreakMode = .byTruncatingHead
+        shotNameLabel.isHidden = true
+        addSubview(shotNameLabel)
         metadataLabel.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
         metadataLabel.textColor = NSColor(calibratedWhite: 0.78, alpha: 1)
         metadataLabel.alignment = .right
@@ -4948,6 +4973,7 @@ final class MetalPreviewContainer: NSView {
         zoom: Double,
         pan: CGSize,
         fitted: Bool,
+        shotName: String?,
         metadataLines: [String],
         deviceBoundary: [CGPoint],
         sensorGateBoundary: [CGPoint],
@@ -4974,6 +5000,8 @@ final class MetalPreviewContainer: NSView {
         presentationZoom = zoom
         presentationPan = pan
         presentationFitted = fitted
+        shotNameLabel.stringValue = shotName ?? ""
+        shotNameLabel.isHidden = shotName == nil || metadataLines.isEmpty
         metadataLabel.stringValue = metadataLines.joined(separator: "\n")
         metadataLabel.isHidden = metadataLines.isEmpty
         self.deviceBoundary = deviceBoundary
@@ -5500,14 +5528,21 @@ final class MetalPreviewContainer: NSView {
             let point = displayedPoint(forRaster: referenceTargetCorners[index])
             label.frame = CGRect(x: point.x - 14, y: point.y + 8, width: 28, height: 14)
         }
+        let metadataWidth = min(displayed.width, bounds.width - 24)
+        let metadataX = min(
+            max(12, displayedOriginX),
+            max(12, bounds.maxX - metadataWidth - 12)
+        )
+        let showsShotName = !shotNameLabel.isHidden
+        let metadataY = min(
+            bounds.maxY - (showsShotName ? 47 : 28),
+            max(8, displayedTopY + 4)
+        )
         metadataLabel.frame = NSRect(
-            x: min(
-                max(12, displayedOriginX),
-                max(12, bounds.maxX - min(displayed.width, bounds.width - 24) - 12)
-            ),
-            y: min(bounds.maxY - 28, max(8, displayedTopY + 4)),
-            width: min(displayed.width, bounds.width - 24),
-            height: 26
+            x: metadataX, y: metadataY, width: metadataWidth, height: 26
+        )
+        shotNameLabel.frame = NSRect(
+            x: metadataX, y: metadataY + 27, width: metadataWidth, height: 18
         )
     }
 

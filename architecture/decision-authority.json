@@ -706,7 +706,7 @@
     },
     {
       "id": "ui.active-scene-selection",
-      "scope": "native workstation active Saved Scene identity, automatic commit persistence and opening gesture",
+      "scope": "native workstation active Saved Scene and containing Shot identity presentation, automatic commit persistence and opening gesture",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Native workspace navigation"
