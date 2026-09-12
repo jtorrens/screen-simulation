@@ -348,3 +348,23 @@ import Testing
         requestedSampleCount: 3
     ) == 1)
 }
+
+@Test @MainActor func interactivePhysicalRenderDoesNotReuseRetainedExternalMediaFrame() {
+    let selected = NativeMediaSampleIdentity(frameIndex: 65)
+
+    #expect(!WorkspaceModel.mayReuseExplicitSourceFrame(
+        sourceFrameOverridePresent: false,
+        mediaIdentity: selected,
+        nominalMediaIdentity: selected
+    ))
+    #expect(WorkspaceModel.mayReuseExplicitSourceFrame(
+        sourceFrameOverridePresent: true,
+        mediaIdentity: selected,
+        nominalMediaIdentity: selected
+    ))
+    #expect(!WorkspaceModel.mayReuseExplicitSourceFrame(
+        sourceFrameOverridePresent: true,
+        mediaIdentity: .init(frameIndex: 64),
+        nominalMediaIdentity: selected
+    ))
+}

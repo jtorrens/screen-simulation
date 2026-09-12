@@ -8923,7 +8923,7 @@ final class WorkspaceModel: ObservableObject {
         publishesPreviewState: Bool = true,
         resolvedSceneFrameOverride: ResolvedSceneFrame? = nil
     ) async throws -> SubmittedPhysicalJob {
-        guard let nominalSourceFrame = sourceFrameOverride ?? sourceACEScgFrame else {
+        guard sourceFrameOverride != nil || sourceACEScgFrame != nil else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
         let resolvedFrame = try resolvedSceneFrameOverride ?? resolveSceneFrame(
@@ -8981,9 +8981,16 @@ final class WorkspaceModel: ObservableObject {
             if let mediaIdentity, let prepared = preparedMediaSamples[mediaIdentity] {
                 checkpoint = prepared
             } else {
-                let source = mediaIdentity != nil && mediaIdentity == nominalMediaIdentity
-                    ? nominalSourceFrame
-                    : try await renderFrame(at: requirement.time)
+                let source: StudioColorMetalFrame
+                if Self.mayReuseExplicitSourceFrame(
+                    sourceFrameOverridePresent: sourceFrameOverride != nil,
+                    mediaIdentity: mediaIdentity,
+                    nominalMediaIdentity: nominalMediaIdentity
+                ), let sourceFrameOverride {
+                    source = sourceFrameOverride
+                } else {
+                    source = try await renderFrame(at: requirement.time)
+                }
                 checkpoint = try DeviceSignalCheckpoint.prepare(
                     sourceACEScg: source,
                     inputTransform: inputTransform,
@@ -9075,6 +9082,16 @@ final class WorkspaceModel: ObservableObject {
         requestedSampleCount: UInt16?
     ) -> UInt16 {
         shutterMotionAmount == 0 ? 1 : (requestedSampleCount ?? authoredSampleCount)
+    }
+
+    static func mayReuseExplicitSourceFrame(
+        sourceFrameOverridePresent: Bool,
+        mediaIdentity: NativeMediaSampleIdentity?,
+        nominalMediaIdentity: NativeMediaSampleIdentity?
+    ) -> Bool {
+        sourceFrameOverridePresent
+            && mediaIdentity != nil
+            && mediaIdentity == nominalMediaIdentity
     }
 
     private func resolvedOutputSignal() throws -> StudioColorMode {
