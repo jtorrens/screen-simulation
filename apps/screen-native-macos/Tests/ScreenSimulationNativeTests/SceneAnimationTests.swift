@@ -155,6 +155,28 @@ private func opacityTrack(
     #expect(throws: SceneAnimationError.self) { try invalid.validate() }
 }
 
+@Test func authoredTransformKeyNormalizesFloatBridgeRotationWithoutRelaxingPersistence() throws {
+    let floatPrecisionRotation = [0.0, 0.0, 0.0, Double(Float(1.000_000_1))]
+    let strictTrack = SceneTransformAnimationTrack(
+        trackID: .cameraGeometry,
+        keyframes: [.init(
+            timeNumerator: 0, timeDenominator: 24,
+            position: [0, 0, 1], quaternion: floatPrecisionRotation
+        )]
+    )
+    #expect(throws: SceneAnimationError.self) { try strictTrack.validate() }
+
+    let authored = try SceneTransformKeyframe.authored(
+        timeNumerator: 0, timeDenominator: 24,
+        position: [0, 0, 1], quaternion: floatPrecisionRotation
+    )
+    let authoredTrack = SceneTransformAnimationTrack(
+        trackID: .cameraGeometry, keyframes: [authored]
+    )
+    try authoredTrack.validate()
+    #expect(abs(authored.quaternion.reduce(0) { $0 + $1 * $1 } - 1) < 1e-12)
+}
+
 @Test @MainActor func geometryStopwatchCreatesAndRemovesTheCurrentPoseTrack() throws {
     let device = try #require(try RustDeviceCatalog.builtIns().first)
     let cover = try #require(try RustCoverGlassCatalog.builtIns().first {

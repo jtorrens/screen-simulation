@@ -97,6 +97,37 @@ struct SceneTransformKeyframe: Codable, Equatable, Identifiable, Sendable {
         self.quaternion = quaternion
         self.interpolation = interpolation
     }
+
+    /// Authoring crosses a Float ABI before returning to the workstation. Re-normalize that
+    /// resolved canonical rotation once when materializing a key; persisted decoding remains
+    /// strict and never repairs malformed authored data.
+    static func authored(
+        id: UUID = UUID(), timeNumerator: Int64, timeDenominator: UInt64,
+        position: [Double], quaternion: [Double],
+        interpolation: SceneAnimationInterpolation = .smooth
+    ) throws -> Self {
+        guard position.count == 3, quaternion.count == 4,
+              position.allSatisfy(\.isFinite), quaternion.allSatisfy(\.isFinite)
+        else {
+            throw SceneAnimationError.invalidContract(
+                "La pose resuelta para el keyframe no es válida."
+            )
+        }
+        let magnitude = quaternion.reduce(0) { $0 + $1 * $1 }.squareRoot()
+        guard magnitude.isFinite, magnitude > 1e-12 else {
+            throw SceneAnimationError.invalidContract(
+                "La rotación resuelta para el keyframe no es válida."
+            )
+        }
+        return .init(
+            id: id,
+            timeNumerator: timeNumerator,
+            timeDenominator: timeDenominator,
+            position: position,
+            quaternion: quaternion.map { $0 / magnitude },
+            interpolation: interpolation
+        )
+    }
 }
 
 struct SceneTransformAnimationTrack: Codable, Equatable, Identifiable, Sendable {

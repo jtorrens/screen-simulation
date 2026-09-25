@@ -5237,7 +5237,7 @@ final class WorkspaceModel: ObservableObject {
             var animation = sceneAnimation
             animation.setTransformTrack(.init(
                 trackID: id,
-                keyframes: [.init(
+                keyframes: [try .authored(
                     timeNumerator: time.numerator,
                     timeDenominator: time.denominator,
                     position: pose.position,
@@ -5288,11 +5288,16 @@ final class WorkspaceModel: ObservableObject {
             if let index = track.keyframeIndex(
                 timeNumerator: time.numerator, timeDenominator: time.denominator
             ) {
-                track.keyframes[index].position = pose.position
-                track.keyframes[index].quaternion = pose.quaternion
-                if let interpolation { track.keyframes[index].interpolation = interpolation }
+                track.keyframes[index] = try .authored(
+                    id: track.keyframes[index].id,
+                    timeNumerator: time.numerator,
+                    timeDenominator: time.denominator,
+                    position: pose.position,
+                    quaternion: pose.quaternion,
+                    interpolation: interpolation ?? track.keyframes[index].interpolation
+                )
             } else {
-                track.keyframes.append(.init(
+                track.keyframes.append(try .authored(
                     timeNumerator: time.numerator,
                     timeDenominator: time.denominator,
                     position: pose.position,
