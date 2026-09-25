@@ -299,9 +299,8 @@ struct FusionTrackingImporter {
     }
 
     func parse(_ text: String) throws -> TrackingScene {
-        guard text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("-- Fusion Exporter:"),
-              text.contains("Composition {") else {
-            throw FusionTrackingError.invalid("El archivo no es una composición ASCII exportada por SynthEyes para Fusion.")
+        guard text.contains("Composition {") else {
+            throw FusionTrackingError.invalid("El archivo no contiene una composición Fusion ASCII.")
         }
         let format = try requiredBlock(after: "FrameFormat =", in: text)
         let width = try requiredUInt("Width", in: format)
@@ -448,13 +447,18 @@ struct FusionTrackingImporter {
         guard modelNodes.count == nodes.count else { throw FusionTrackingError.invalid("La composición contiene un modelo de distorsión no compatible.") }
         let values = try modelNodes.map { node in
             (try requiredInput("[\"DE4RadialStandardDegree4.DistortionDegree2\"]", in: node.body),
-             try requiredInput("[\"DE4RadialStandardDegree4.QuarticDistortionDegree4\"]", in: node.body))
+             try optionalInput("[\"DE4RadialStandardDegree4.QuarticDistortionDegree4\"]", in: node.body) ?? 0)
         }
         guard values.dropFirst().allSatisfy({ abs($0.0 - values[0].0) < 1e-12 && abs($0.1 - values[0].1) < 1e-12 }) else {
             throw FusionTrackingError.invalid("Los nodos de distorsión y redistorsión no coinciden.")
         }
         let value = values[0]
         return abs(value.0) < 1e-15 && abs(value.1) < 1e-15 ? .pinhole : .de4RadialStandardDegree4(degree2: value.0, degree4: value.1)
+    }
+
+    private func optionalInput(_ name: String, in text: String) throws -> Double? {
+        guard text.contains(name) else { return nil }
+        return try requiredInput(name, in: text)
     }
 
     private func vector3(prefix: String, in text: String, defaultValue: Double) throws -> SIMD3<Double> {

@@ -3,6 +3,94 @@ import simd
 import Testing
 @testable import ScreenSimulationNative
 
+private func fusionCompositionFixture(exporterHeader: Bool) -> String {
+    """
+    \(exporterHeader ? "-- Fusion Exporter: SynthEyes" : "")
+    Composition {
+        Tools = {
+            Cam1XOffset = BezierSpline { KeyFrames = { [10] = { 1.0 } } },
+            Cam1YOffset = BezierSpline { KeyFrames = { [10] = { 2.0 } } },
+            Cam1ZOffset = BezierSpline { KeyFrames = { [10] = { 3.0 } } },
+            Cam1XRotation = BezierSpline { KeyFrames = { [10] = { 0.0 } } },
+            Cam1YRotation = BezierSpline { KeyFrames = { [10] = { 0.0 } } },
+            Cam1ZRotation = BezierSpline { KeyFrames = { [10] = { 0.0 } } },
+            Cam1Cloud3D = PointCloud3D {
+                Positions = { [1] = { 0.0, 1.0, 2.0, "Point01" } }
+            },
+            Cam1UnDis = LensDistort {
+                Inputs = {
+                    Model = Input { Value = FuID { "DE4RadialStandardDegree4" } },
+                    ["DE4RadialStandardDegree4.DistortionDegree2"] = Input { Value = -0.02 }
+                }
+            },
+            Cam1ReDis = LensDistort {
+                Inputs = {
+                    Model = Input { Value = FuID { "DE4RadialStandardDegree4" } },
+                    ["DE4RadialStandardDegree4.DistortionDegree2"] = Input { Value = -0.02 }
+                }
+            },
+            Cam1 = Camera3D {
+                Inputs = {
+                    FLength = Input { Value = 40.0 },
+                    ApertureW = Input { Value = 0.9448818898 },
+                    ApertureH = Input { Value = 0.5314960630 }
+                }
+            }
+        },
+        Prefs = {
+            Comp = {
+                FrameFormat = { Width = 1920, Height = 1080, Rate = 25 }
+            }
+        }
+    }
+    """
+}
+
+@Test func fusionResavedSynthEyesCompositionDoesNotRequireExporterComment() throws {
+    let direct = try FusionTrackingImporter().parse(fusionCompositionFixture(exporterHeader: true))
+    let fusionResaved = try FusionTrackingImporter().parse(fusionCompositionFixture(exporterHeader: false))
+
+    #expect(fusionResaved == direct)
+    #expect(fusionResaved.cameras.first?.samples.first?.frame == 10)
+    #expect(fusionResaved.pointGroups.first?.points.first?.label == "Point01")
+    #expect(fusionResaved.cameras.first?.distortion == .de4RadialStandardDegree4(
+        degree2: -0.02,
+        degree4: 0
+    ))
+}
+
+@Test func actualFusionResavedSynthEyesCompositionImports() throws {
+    guard let path = ProcessInfo.processInfo.environment["SCREEN_FUSION_RESAVED_COMP"] else { return }
+    let scene = try FusionTrackingImporter().load(URL(fileURLWithPath: path))
+
+    #expect(!scene.cameras.isEmpty)
+    #expect(!scene.pointGroups.isEmpty)
+    #expect(scene.cameras.allSatisfy { !$0.samples.isEmpty })
+}
+
+@Test func fusionResavedCompositionStillRejectsMalformedOrContradictoryCalibration() throws {
+    let source = fusionCompositionFixture(exporterHeader: false)
+    let degree2 = #"["DE4RadialStandardDegree4.DistortionDegree2"] = Input { Value = -0.02 }"#
+    let malformed = source.replacingOccurrences(
+        of: degree2,
+        with: degree2 + #", ["DE4RadialStandardDegree4.QuarticDistortionDegree4"] = Input { Value = invalid }"#
+    )
+    #expect(throws: FusionTrackingError.self) {
+        try FusionTrackingImporter().parse(malformed)
+    }
+
+    let secondNode = try #require(source.range(of: "Cam1ReDis"))
+    let secondDegree2 = try #require(source.range(
+        of: "Value = -0.02",
+        range: secondNode.lowerBound..<source.endIndex
+    ))
+    var contradictory = source
+    contradictory.replaceSubrange(secondDegree2, with: "Value = -0.03")
+    #expect(throws: FusionTrackingError.self) {
+        try FusionTrackingImporter().parse(contradictory)
+    }
+}
+
 @Test func actualSynthEyesFusionCompositionImportsAtomicSolve() throws {
     guard let path = ProcessInfo.processInfo.environment["SCREEN_SYNTH_EYES_FUSION_COMP"] else { return }
     let scene = try FusionTrackingImporter().load(URL(fileURLWithPath: path))
