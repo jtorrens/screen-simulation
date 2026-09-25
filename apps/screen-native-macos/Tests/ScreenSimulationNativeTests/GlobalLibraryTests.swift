@@ -22,6 +22,29 @@ import Testing
     #expect(source.contains("else { commit() }"))
 }
 
+@Test func devicePhysicalGeometryFieldsKeepPersistentRowLabels() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/ContentView.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let start = try #require(source.range(of: "Section(\"Geometría física\")"))
+    let end = try #require(source.range(
+        of: "Section(\"Panel y emisión\")", range: start.upperBound ..< source.endIndex
+    ))
+    let geometry = source[start.lowerBound ..< end.lowerBound]
+
+    for label in [
+        "Resolución nativa — ancho (px)",
+        "Resolución nativa — alto (px)",
+        "Anchura activa (m)",
+        "Altura activa (m)",
+        "Corner Radius (mm)",
+    ] {
+        #expect(geometry.contains("LabeledContent(\"\(label)\")"))
+    }
+}
+
 @Test func globalErrorsExposeSelectableCopyableTechnicalDetail() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()

@@ -1863,20 +1863,30 @@ struct ContentView: View {
             }
 
             Section("Geometría física") {
-                CommittedNumberField(label: "Resolución nativa — ancho (px)", value: device.nativeWidth) { value in
-                    library.updateSelectedDevice { $0.nativeWidth = value }
+                LabeledContent("Resolución nativa — ancho (px)") {
+                    CommittedNumberField(label: "Resolución nativa — ancho (px)", value: device.nativeWidth) { value in
+                        library.updateSelectedDevice { $0.nativeWidth = value }
+                    }
                 }
-                CommittedNumberField(label: "Resolución nativa — alto (px)", value: device.nativeHeight) { value in
-                    library.updateSelectedDevice { $0.nativeHeight = value }
+                LabeledContent("Resolución nativa — alto (px)") {
+                    CommittedNumberField(label: "Resolución nativa — alto (px)", value: device.nativeHeight) { value in
+                        library.updateSelectedDevice { $0.nativeHeight = value }
+                    }
                 }
-                CommittedNumberField(label: "Anchura activa (m)", value: device.activeWidthMeters) { value in
-                    library.updateSelectedDevice { $0.activeWidthMeters = value }
+                LabeledContent("Anchura activa (m)") {
+                    CommittedNumberField(label: "Anchura activa (m)", value: device.activeWidthMeters) { value in
+                        library.updateSelectedDevice { $0.activeWidthMeters = value }
+                    }
                 }
-                CommittedNumberField(label: "Altura activa (m)", value: device.activeHeightMeters) { value in
-                    library.updateSelectedDevice { $0.activeHeightMeters = value }
+                LabeledContent("Altura activa (m)") {
+                    CommittedNumberField(label: "Altura activa (m)", value: device.activeHeightMeters) { value in
+                        library.updateSelectedDevice { $0.activeHeightMeters = value }
+                    }
                 }
-                CommittedNumberField(label: "Corner Radius (mm)", value: device.cornerRadiusMeters * 1_000) { value in
-                    library.updateSelectedDevice { $0.cornerRadiusMeters = value / 1_000 }
+                LabeledContent("Corner Radius (mm)") {
+                    CommittedNumberField(label: "Corner Radius (mm)", value: device.cornerRadiusMeters * 1_000) { value in
+                        library.updateSelectedDevice { $0.cornerRadiusMeters = value / 1_000 }
+                    }
                 }
                 LabeledContent("Diagonal", value: "\(device.diagonalInches.formatted(.number.precision(.fractionLength(1)))) in")
                 LabeledContent("PPI", value: device.pixelsPerInch.formatted(.number.precision(.fractionLength(1))))
