@@ -448,11 +448,29 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         )
     }
 
-    func removingImported3D() -> Self {
-        Self(
+    func removingImported3D(
+        ownership: SceneSettingsOwnership
+    ) throws -> Self {
+        let resetBlocks: Set<SceneSettingsBlock> = [.cameraTransform, .deviceTransform]
+        let retainedOverrides = try authoring.overrides.filter { override in
+            guard let block = ownership.controlBlocks[override.controlID] else {
+                throw SceneLibraryError.invalidDocument(
+                    "Application no publicó el propietario de \(override.controlID)."
+                )
+            }
+            return !resetBlocks.contains(block)
+        }
+        let resetAuthoring = SceneAuthoringDocument(
+            profiles: authoring.profiles,
+            overrides: retainedOverrides,
+            modelOverrides: authoring.modelOverrides,
+            context: authoring.context,
+            environmentCalibration: authoring.environmentCalibration
+        )
+        return Self(
             source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
-            viewerIsFitted: viewerIsFitted, authoring: authoring,
+            viewerIsFitted: viewerIsFitted, authoring: resetAuthoring,
             generatedEnvironment: generatedEnvironment, tracking: nil,
             fusionTrackerMotion: fusionTrackerMotion,
             trackingSceneMethod: trackingSceneMethod, animation: animation
@@ -1843,6 +1861,7 @@ final class SceneLibraryController: ObservableObject {
     func removeImported3D(
         _ scene: SavedScene,
         destination: SceneImported3DRemovalDestination,
+        ownership: SceneSettingsOwnership,
         undoManager: UndoManager? = nil
     ) throws -> SavedScene {
         let stored = try storedUpdate(sceneID: scene.id)
@@ -1858,7 +1877,7 @@ final class SceneLibraryController: ObservableObject {
         try update(
             scene,
             capture: SavedSceneCapture(
-                snapshot: base.snapshot.removingImported3D(),
+                snapshot: try base.snapshot.removingImported3D(ownership: ownership),
                 thumbnailPNG: base.thumbnailPNG,
                 generatedEnvironmentEXR: base.generatedEnvironmentEXR
             ),

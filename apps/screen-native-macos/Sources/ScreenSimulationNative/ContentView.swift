@@ -3205,8 +3205,22 @@ struct ContentView: View {
                 } else {
                     destination = .storedScene
                 }
+                let destinationSnapshot = switch destination {
+                case .storedScene: scene.snapshot
+                case let .activeScene(capture): capture.snapshot
+                }
+                let defaults = try model.defaultSceneSnapshot(
+                    preserving: destinationSnapshot
+                )
+                let ownership = try model.sceneSettingsOwnership(
+                    source: defaults,
+                    destination: destinationSnapshot
+                )
                 let updated = try scenes.removeImported3D(
-                    scene, destination: destination, undoManager: undoManager
+                    scene,
+                    destination: destination,
+                    ownership: ownership,
+                    undoManager: undoManager
                 )
                 if isActive {
                     Task { await model.openSavedScene(updated, undoManager: undoManager) }

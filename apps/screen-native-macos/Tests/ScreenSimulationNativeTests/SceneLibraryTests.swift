@@ -15,7 +15,8 @@ private func sceneAuthoring(
         signalRange: nil, placementID: nil, corners: []
     ),
     referencePlateID: String = "vfx-checker",
-    environmentCalibration: EnvironmentAssetCalibration? = nil
+    environmentCalibration: EnvironmentAssetCalibration? = nil,
+    overrides: [SceneControlOverride] = []
 ) throws -> SceneAuthoringDocument {
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
@@ -38,7 +39,7 @@ private func sceneAuthoring(
             deliveryID: selection.deliveryPresetID,
             recordingID: selection.recordingProfileID
         ),
-        overrides: [],
+        overrides: overrides,
         modelOverrides: .init(screen: nil, stages: []),
         context: .init(
             sourceInputTransformID: input.id,
@@ -1391,6 +1392,36 @@ private func sceneCapture() throws -> SavedSceneCapture {
         cameraEnabled: true,
         calibration: .init(unitValue: 1, unit: "m", metersPerSourceUnit: 0.01)
     )
+    let motion = try FusionTrackerPoseTrack(
+        target: .camera, anchorFrame: 7,
+        frameRateNumerator: 24, frameRateDenominator: 1,
+        samples: [
+            .init(
+                frame: 7, position: SIMD3(1, 2, 3),
+                orientation: SIMD4(0, 0, 0, 1)
+            ),
+        ]
+    )
+    let transformControlBlocks: [String: SceneSettingsBlock] = [
+        "geometry-mode": .cameraTransform,
+        "camera-distance-meters": .cameraTransform,
+        "camera-orbit-x-degrees": .cameraTransform,
+        "camera-orbit-y-degrees": .cameraTransform,
+        "camera-position-x-meters": .cameraTransform,
+        "camera-position-y-meters": .cameraTransform,
+        "camera-position-z-meters": .cameraTransform,
+        "camera-rotation-x-degrees": .cameraTransform,
+        "camera-rotation-y-degrees": .cameraTransform,
+        "camera-rotation-z-degrees": .cameraTransform,
+        "screen-position-x-meters": .deviceTransform,
+        "screen-position-y-meters": .deviceTransform,
+        "screen-position-z-meters": .deviceTransform,
+        "screen-yaw-degrees": .deviceTransform,
+        "screen-rotation-x-degrees": .deviceTransform,
+        "screen-rotation-z-degrees": .deviceTransform,
+        "white-luminance": .device,
+    ]
+    let ownership = SceneSettingsOwnership(controlBlocks: transformControlBlocks)
     let snapshot = SavedSceneSnapshot(
         source: .init(
             kind: .syntheticPattern,
@@ -1398,7 +1429,15 @@ private func sceneCapture() throws -> SavedSceneCapture {
             assets: [], missingMedia: nil
         ),
         currentFrame: 7, viewerZoom: 1.75, viewerPanX: 12, viewerPanY: -4,
-        viewerIsFitted: false, authoring: try sceneAuthoring(), tracking: tracking,
+        viewerIsFitted: false,
+        authoring: try sceneAuthoring(overrides: [
+            .choice("geometry-mode", "free"),
+            .scalar("camera-position-z-meters", 3),
+            .scalar("screen-position-z-meters", 7),
+            .scalar("white-luminance", 120),
+        ]),
+        tracking: tracking,
+        fusionTrackerMotion: motion,
         trackingSceneMethod: .fusionComposition
     )
     let scene = try controller.add(capture: .init(
@@ -1408,10 +1447,14 @@ private func sceneCapture() throws -> SavedSceneCapture {
     let undo = UndoManager()
 
     let updated = try controller.removeImported3D(
-        scene, destination: .storedScene, undoManager: undo
+        scene, destination: .storedScene, ownership: ownership, undoManager: undo
     )
 
-    #expect(updated.snapshot == snapshot.removingImported3D())
+    let expected = try snapshot.removingImported3D(ownership: ownership)
+    #expect(updated.snapshot == expected)
+    #expect(updated.snapshot.tracking == nil)
+    #expect(updated.snapshot.fusionTrackerMotion == motion)
+    #expect(updated.snapshot.authoring.overrides == [.scalar("white-luminance", 120)])
     #expect(updated.id == scene.id)
     #expect(updated.name == scene.name)
     #expect(undo.canUndo)
@@ -1419,7 +1462,7 @@ private func sceneCapture() throws -> SavedSceneCapture {
     #expect(controller.scene(id: scene.id)?.snapshot == snapshot)
     #expect(undo.canRedo)
     undo.redo()
-    #expect(controller.scene(id: scene.id)?.snapshot == snapshot.removingImported3D())
+    #expect(controller.scene(id: scene.id)?.snapshot == expected)
 
     let activeSnapshot = SavedSceneSnapshot(
         source: snapshot.source,
@@ -1438,9 +1481,11 @@ private func sceneCapture() throws -> SavedSceneCapture {
             snapshot: activeSnapshot,
             thumbnailPNG: Data([7, 8, 9]),
             generatedEnvironmentEXR: nil
-        ))
+        )),
+        ownership: ownership
     )
-    #expect(activeUpdated.snapshot == activeSnapshot.removingImported3D())
+    let activeExpected = try activeSnapshot.removingImported3D(ownership: ownership)
+    #expect(activeUpdated.snapshot == activeExpected)
     #expect(try Data(contentsOf: store.thumbnailURL(for: activeUpdated)) == Data([7, 8, 9]))
 }
 
