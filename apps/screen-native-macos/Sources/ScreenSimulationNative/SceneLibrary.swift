@@ -272,7 +272,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v26"
+    static let schema = "ScreenSimulation.SavedScene.v27"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -521,7 +521,7 @@ enum SceneImported3DRemovalDestination: Sendable {
 /// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
 /// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
-    static let schema = "ScreenSimulation.SceneAutosave.v3"
+    static let schema = "ScreenSimulation.SceneAutosave.v4"
     let schema: String
     let id: UUID
     let originalSceneID: UUID
@@ -631,7 +631,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 28
+    static let currentSchemaVersion = 29
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -854,15 +854,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v28.json")
+        documentURL = directory.appendingPathComponent("Scenes.v29.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v27.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v28.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v27.json. Ejecuta la migración de mantenimiento v27→v28 antes de abrir la biblioteca."
+                    "Existe Scenes.v28.json. Ejecuta la migración de mantenimiento v28→v29 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -914,7 +914,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v25", isDirectory: true)
+            .appendingPathComponent("Autosave.v26", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -1688,7 +1688,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v25", isDirectory: true)
+            .appendingPathComponent("Autosave.v26", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

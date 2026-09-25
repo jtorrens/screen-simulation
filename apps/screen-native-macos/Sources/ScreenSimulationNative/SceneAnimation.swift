@@ -65,6 +65,114 @@ struct SceneScalarKeyframePresentation: Equatable, Identifiable, Sendable {
     let interpolation: SceneAnimationInterpolation
 }
 
+enum SceneTransformAnimationID: String, Codable, CaseIterable, Sendable {
+    case deviceGeometry = "device-geometry"
+    case cameraGeometry = "camera-geometry"
+
+    var displayName: String {
+        switch self {
+        case .deviceGeometry: "Geometría Device"
+        case .cameraGeometry: "Geometría Camera"
+        }
+    }
+}
+
+struct SceneTransformKeyframe: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var timeNumerator: Int64
+    var timeDenominator: UInt64
+    var position: [Double]
+    var quaternion: [Double]
+    var interpolation: SceneAnimationInterpolation
+
+    init(
+        id: UUID = UUID(), timeNumerator: Int64, timeDenominator: UInt64,
+        position: [Double], quaternion: [Double],
+        interpolation: SceneAnimationInterpolation = .smooth
+    ) {
+        self.id = id
+        self.timeNumerator = timeNumerator
+        self.timeDenominator = timeDenominator
+        self.position = position
+        self.quaternion = quaternion
+        self.interpolation = interpolation
+    }
+}
+
+struct SceneTransformAnimationTrack: Codable, Equatable, Identifiable, Sendable {
+    let trackID: SceneTransformAnimationID
+    var keyframes: [SceneTransformKeyframe]
+    var id: SceneTransformAnimationID { trackID }
+
+    func validate() throws {
+        guard !keyframes.isEmpty,
+              Set(keyframes.map(\.id)).count == keyframes.count else {
+            throw SceneAnimationError.invalidContract(
+                "La pista de \(trackID.displayName) no contiene keys válidos."
+            )
+        }
+        var prior: (Int64, UInt64)?
+        for keyframe in keyframes {
+            guard keyframe.timeDenominator > 0,
+                  keyframe.timeDenominator <= UInt64(UInt32.max),
+                  keyframe.position.count == 3,
+                  keyframe.quaternion.count == 4,
+                  keyframe.position.allSatisfy(\.isFinite),
+                  keyframe.quaternion.allSatisfy(\.isFinite) else {
+                throw SceneAnimationError.invalidContract(
+                    "La pista de \(trackID.displayName) contiene una pose inválida."
+                )
+            }
+            let magnitude = keyframe.quaternion.reduce(0) { $0 + $1 * $1 }
+            guard abs(magnitude - 1) < 1e-8 else {
+                throw SceneAnimationError.invalidContract(
+                    "La rotación de \(trackID.displayName) no está normalizada."
+                )
+            }
+            if let prior {
+                let left = Decimal(prior.0) * Decimal(keyframe.timeDenominator)
+                let right = Decimal(keyframe.timeNumerator) * Decimal(prior.1)
+                guard left < right else {
+                    throw SceneAnimationError.invalidContract(
+                        "Los keys de \(trackID.displayName) no están ordenados."
+                    )
+                }
+            }
+            prior = (keyframe.timeNumerator, keyframe.timeDenominator)
+        }
+    }
+
+    func keyframeIndex(timeNumerator: Int64, timeDenominator: UInt64) -> Int? {
+        keyframes.firstIndex {
+            Decimal($0.timeNumerator) * Decimal(timeDenominator)
+                == Decimal(timeNumerator) * Decimal($0.timeDenominator)
+        }
+    }
+
+    func movingKeyframe(id: UUID, timeNumerator: Int64, timeDenominator: UInt64) throws -> Self {
+        guard timeDenominator > 0 else {
+            throw SceneAnimationError.invalidContract("El tiempo de destino no es válido.")
+        }
+        var moved = self
+        guard let source = moved.keyframes.firstIndex(where: { $0.id == id }) else {
+            throw SceneAnimationError.invalidContract("El key de geometría ya no existe.")
+        }
+        if let occupied = moved.keyframeIndex(
+            timeNumerator: timeNumerator, timeDenominator: timeDenominator
+        ), occupied != source {
+            throw SceneAnimationError.invalidContract("El frame de destino ya contiene un key.")
+        }
+        moved.keyframes[source].timeNumerator = timeNumerator
+        moved.keyframes[source].timeDenominator = timeDenominator
+        moved.keyframes.sort {
+            Decimal($0.timeNumerator) * Decimal($1.timeDenominator)
+                < Decimal($1.timeNumerator) * Decimal($0.timeDenominator)
+        }
+        try moved.validate()
+        return moved
+    }
+}
+
 enum SceneAnimationKeyframeShape: Equatable, Sendable {
     case square
     case diamond
@@ -169,13 +277,36 @@ struct SceneScalarAnimationTrack: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneAnimationDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAnimation.v1"
+    static let schema = "ScreenSimulation.SceneAnimation.v2"
     let schema: String
     var scalarTracks: [SceneScalarAnimationTrack]
+    var transformTracks: [SceneTransformAnimationTrack]
 
-    init(scalarTracks: [SceneScalarAnimationTrack] = [.defaultSimulationOpacity]) {
+    init(
+        scalarTracks: [SceneScalarAnimationTrack] = [.defaultSimulationOpacity],
+        transformTracks: [SceneTransformAnimationTrack] = []
+    ) {
         schema = Self.schema
         self.scalarTracks = scalarTracks
+        self.transformTracks = transformTracks
+    }
+
+    func transformTrack(_ id: SceneTransformAnimationID) -> SceneTransformAnimationTrack? {
+        transformTracks.first { $0.trackID == id }
+    }
+
+    mutating func setTransformTrack(_ track: SceneTransformAnimationTrack?) {
+        guard let track else { return }
+        if let index = transformTracks.firstIndex(where: { $0.trackID == track.trackID }) {
+            transformTracks[index] = track
+        } else {
+            transformTracks.append(track)
+            transformTracks.sort { $0.trackID.rawValue < $1.trackID.rawValue }
+        }
+    }
+
+    mutating func removeTransformTrack(_ id: SceneTransformAnimationID) {
+        transformTracks.removeAll { $0.trackID == id }
     }
 
     var simulationOpacityTrack: SceneScalarAnimationTrack {
@@ -183,7 +314,7 @@ struct SceneAnimationDocument: Codable, Equatable, Sendable {
             guard let track = scalarTracks.first(where: {
                 $0.propertyID == SceneScalarAnimationTrack.simulationOpacityID
             }) else {
-                preconditionFailure("SceneAnimation.v1 requires simulation-opacity")
+                preconditionFailure("SceneAnimation.v2 requires simulation-opacity")
             }
             return track
         }
@@ -202,24 +333,36 @@ struct SceneAnimationDocument: Codable, Equatable, Sendable {
         guard schema == Self.schema,
               Set(scalarTracks.map(\.propertyID)).count == scalarTracks.count,
               scalarTracks.count == 1,
-              scalarTracks[0].propertyID == SceneScalarAnimationTrack.simulationOpacityID else {
+              scalarTracks[0].propertyID == SceneScalarAnimationTrack.simulationOpacityID,
+              Set(transformTracks.map(\.trackID)).count == transformTracks.count else {
             throw SceneAnimationError.invalidContract(
                 "El documento de animación contiene propiedades desconocidas o duplicadas."
             )
         }
         try scalarTracks.forEach { try $0.validate() }
+        try transformTracks.forEach { try $0.validate() }
     }
 
     static func hasStrictShape(_ value: Any) -> Bool {
         guard let animation = value as? [String: Any],
-              Set(animation.keys) == ["schema", "scalarTracks"],
+              Set(animation.keys) == ["schema", "scalarTracks", "transformTracks"],
               animation["schema"] as? String == schema,
-              let tracks = animation["scalarTracks"] as? [[String: Any]] else { return false }
+              let tracks = animation["scalarTracks"] as? [[String: Any]],
+              let transformTracks = animation["transformTracks"] as? [[String: Any]]
+        else { return false }
         return tracks.allSatisfy { track in
             Set(track.keys) == ["propertyID", "keyframes"]
                 && (track["keyframes"] as? [[String: Any]])?.allSatisfy { keyframe in
                     Set(keyframe.keys) == [
                         "id", "timeNumerator", "timeDenominator", "value", "interpolation",
+                    ]
+                } == true
+        } && transformTracks.allSatisfy { track in
+            Set(track.keys) == ["trackID", "keyframes"]
+                && (track["keyframes"] as? [[String: Any]])?.allSatisfy { keyframe in
+                    Set(keyframe.keys) == [
+                        "id", "timeNumerator", "timeDenominator", "position",
+                        "quaternion", "interpolation",
                     ]
                 } == true
         }

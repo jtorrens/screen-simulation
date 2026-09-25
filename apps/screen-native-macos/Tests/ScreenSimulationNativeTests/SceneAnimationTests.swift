@@ -91,7 +91,26 @@ private func opacityTrack(
 }
 
 @Test func sceneAnimationRoundTripsOnlyItsCurrentStrictContract() throws {
-    let document = SceneAnimationDocument(scalarTracks: [opacityTrack(.linear)])
+    let transform = SceneTransformAnimationTrack(
+        trackID: .cameraGeometry,
+        keyframes: [
+            .init(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+                timeNumerator: 0, timeDenominator: 24,
+                position: [0, 0, 1], quaternion: [0, 0, 0, 1],
+                interpolation: .smooth
+            ),
+            .init(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000004")!,
+                timeNumerator: 24, timeDenominator: 24,
+                position: [1, 2, 3], quaternion: [0, 1, 0, 0],
+                interpolation: .hold
+            ),
+        ]
+    )
+    let document = SceneAnimationDocument(
+        scalarTracks: [opacityTrack(.linear)], transformTracks: [transform]
+    )
     try document.validate()
     let data = try JSONEncoder().encode(document)
     let decoded = try JSONDecoder().decode(SceneAnimationDocument.self, from: data)
@@ -103,6 +122,56 @@ private func opacityTrack(
     var unknown = try #require(object as? [String: Any])
     unknown["legacyOpacity"] = 1
     #expect(!SceneAnimationDocument.hasStrictShape(unknown))
+}
+
+@Test func transformAnimationRequiresACompleteCanonicalPoseAndMovesExactly() throws {
+    let identity = UUID()
+    let track = SceneTransformAnimationTrack(
+        trackID: .deviceGeometry,
+        keyframes: [
+            .init(
+                id: identity, timeNumerator: 0, timeDenominator: 1,
+                position: [0, 0, 0], quaternion: [0, 0, 0, 1]
+            ),
+            .init(
+                timeNumerator: 1, timeDenominator: 1,
+                position: [1, 0, 0], quaternion: [0, 0, 1, 0]
+            ),
+        ]
+    )
+    try track.validate()
+    let moved = try track.movingKeyframe(
+        id: identity, timeNumerator: -1001, timeDenominator: 24000
+    )
+    #expect(moved.keyframes[0].id == identity)
+    #expect(moved.keyframes[0].timeNumerator == -1001)
+    #expect(moved.keyframes[0].timeDenominator == 24000)
+
+    var invalid = track
+    invalid.keyframes[0].quaternion = [0, 0, 0, 2]
+    #expect(throws: SceneAnimationError.self) { try invalid.validate() }
+    invalid = track
+    invalid.keyframes[0].position = [0, 0]
+    #expect(throws: SceneAnimationError.self) { try invalid.validate() }
+}
+
+@Test @MainActor func geometryStopwatchCreatesAndRemovesTheCurrentPoseTrack() throws {
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    let workspace = WorkspaceModel()
+    workspace.selectModelDevice(device, coverGlass: cover)
+
+    #expect(!workspace.deviceGeometryAnimationEnabled)
+    workspace.toggleGeometryAnimation(.deviceGeometry)
+    #expect(workspace.deviceGeometryAnimationEnabled)
+    #expect(workspace.transformKeyframes(.deviceGeometry).count == 1)
+    #expect(workspace.currentTransformKeyframe(.deviceGeometry) != nil)
+
+    workspace.toggleGeometryAnimation(.deviceGeometry)
+    #expect(!workspace.deviceGeometryAnimationEnabled)
+    #expect(workspace.transformKeyframes(.deviceGeometry).isEmpty)
 }
 
 @Test func animationRejectsDuplicateKeysUnorderedTimesAndOutOfRangeValues() {

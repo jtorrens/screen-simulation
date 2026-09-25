@@ -388,7 +388,7 @@ import Testing
     #expect(throws: (any Error).self) { try store.load() }
 }
 
-@Test @MainActor func renderQueueV15StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
+@Test @MainActor func renderQueueV16StrictlyRequiresPreviewFinalRasterAndOutputIdentity() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("render-queue-v11-strict-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -403,7 +403,7 @@ import Testing
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v15")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v16")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])

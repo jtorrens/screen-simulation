@@ -294,6 +294,8 @@ final class WorkspaceModel: ObservableObject {
         else { return }
         activeSceneControlEditID = controlID
         activeSceneControlEditStart = snapshot
+        activeSceneControlAnimationStart = animatedTransformOwner(for: controlID) == nil
+            ? nil : sceneAnimation
     }
 
     func endSceneControlEdit(_ controlID: String, undoManager: UndoManager?) {
@@ -302,6 +304,15 @@ final class WorkspaceModel: ObservableObject {
         else { return }
         activeSceneControlEditID = nil
         activeSceneControlEditStart = nil
+        let priorAnimation = activeSceneControlAnimationStart
+        activeSceneControlAnimationStart = nil
+        if let priorAnimation, priorAnimation != sceneAnimation {
+            registerUndo(with: undoManager, actionName: "Editar animación") { target, manager in
+                target.replaceSceneAnimation(priorAnimation, undoManager: manager)
+            }
+            persistActiveSceneAuthoringReportingFailure()
+            return
+        }
         guard let current = sceneAuthoringEditSnapshot,
               current.selection != prior.selection
                 || current.explicitOverrideControlIDs != prior.explicitOverrideControlIDs
@@ -504,6 +515,7 @@ final class WorkspaceModel: ObservableObject {
     private var explicitSceneOverrideControlIDs: Set<String> = []
     private var activeSceneControlEditID: String?
     private var activeSceneControlEditStart: SceneAuthoringEditSnapshot?
+    private var activeSceneControlAnimationStart: SceneAnimationDocument?
     private var sceneProfileBaselineByControlID: [String: SceneControlOverride] = [:]
     private let globalLibraryStore: GlobalLibraryStore
     private var globalLibraryDocument: GlobalLibraryDocument
@@ -1280,11 +1292,12 @@ final class WorkspaceModel: ObservableObject {
                     publishSelectedTestPreview()
                 }
             case .setChoice, .setScalar, .setToggle, .reset:
-                guard let selection = currentTestAuthoringSelection() else {
+                guard var selection = currentTestAuthoringSelection() else {
                     throw TestAuthoringCoordinatorError.malformedDescriptor(
                         "Test necesita un Device resuelto."
                     )
                 }
+                selection = selectionResolvingAnimatedGeometry(selection)
                 let effectiveIntent: TestControlIntent
                 let editedControlID: String
                 let removesOverride: Bool
@@ -1320,14 +1333,24 @@ final class WorkspaceModel: ObservableObject {
                     effectiveIntent, to: selection,
                     profileContext: testAuthoringProfileContext
                 )
-                try commitSceneAuthoringEdit(
-                    selection: resolved,
-                    setting: removesOverride ? [] : [editedControlID],
-                    resetting: removesOverride ? [editedControlID] : [],
-                    undoManager: activeSceneControlEditID == editedControlID
-                        ? nil : undoManager,
-                    actionName: removesOverride ? "Restablecer parámetro" : "Editar parámetro"
-                )
+                if let transformID = animatedTransformOwner(for: editedControlID) {
+                    testAuthoringSelection = resolved
+                    setTransformKeyframe(
+                        transformID,
+                        pose: authoredPose(for: transformID, selection: resolved),
+                        undoManager: activeSceneControlEditID == editedControlID
+                            ? nil : undoManager
+                    )
+                } else {
+                    try commitSceneAuthoringEdit(
+                        selection: resolved,
+                        setting: removesOverride ? [] : [editedControlID],
+                        resetting: removesOverride ? [editedControlID] : [],
+                        undoManager: activeSceneControlEditID == editedControlID
+                            ? nil : undoManager,
+                        actionName: removesOverride ? "Restablecer parámetro" : "Editar parámetro"
+                    )
+                }
                 if let phaseToReveal,
                    let updatedSelection = currentTestAuthoringSelection() {
                     let snapshot = try RustTestAuthoringCoordinator.snapshot(
@@ -1359,6 +1382,139 @@ final class WorkspaceModel: ObservableObject {
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func animatedTransformOwner(for controlID: String) -> SceneTransformAnimationID? {
+        let cameraControls: Set<String> = [
+            "geometry-mode", "camera-distance-meters", "camera-orbit-x-degrees",
+            "camera-orbit-y-degrees", "camera-position-x-meters",
+            "camera-position-y-meters", "camera-position-z-meters",
+            "camera-rotation-x-degrees", "camera-rotation-y-degrees",
+            "camera-rotation-z-degrees",
+        ]
+        if cameraControls.contains(controlID), cameraGeometryAnimationEnabled {
+            return .cameraGeometry
+        }
+        let deviceControls: Set<String> = [
+            "screen-position-x-meters", "screen-position-y-meters",
+            "screen-position-z-meters", "screen-rotation-x-degrees",
+            "screen-yaw-degrees", "screen-rotation-z-degrees",
+        ]
+        if deviceControls.contains(controlID), deviceGeometryAnimationEnabled {
+            return .deviceGeometry
+        }
+        return nil
+    }
+
+    private func selectionResolvingAnimatedGeometry(
+        _ input: TestAuthoringResolvedSelection
+    ) -> TestAuthoringResolvedSelection {
+        guard deviceGeometryAnimationEnabled || cameraGeometryAnimationEnabled,
+              let authored = try? resolveSceneFrame(currentFrame).authored
+        else { return input }
+        var selection = input
+        if deviceGeometryAnimationEnabled {
+            selection.screenPositionXMeters = authored.screenPose.position[0]
+            selection.screenPositionYMeters = authored.screenPose.position[1]
+            selection.screenPositionZMeters = authored.screenPose.position[2]
+            let degrees = PoseRotationProjection.degrees(from: authored.screenPose.quaternion)
+            selection.screenRotationXDegrees = degrees[0]
+            selection.screenYawDegrees = degrees[1]
+            selection.screenRotationZDegrees = degrees[2]
+        }
+        if cameraGeometryAnimationEnabled {
+            if selection.geometryModeID == "look-at" {
+                selection.cameraDistanceMeters = PoseRotationProjection.distance(
+                    authored.cameraPose.position, authored.screenPose.position
+                )
+                let degrees = PoseRotationProjection.lookAtOrbitDegrees(
+                    position: authored.cameraPose.position,
+                    target: authored.screenPose.position,
+                    quaternion: authored.cameraPose.quaternion
+                )
+                selection.cameraOrbitXDegrees = degrees[0]
+                selection.cameraOrbitYDegrees = degrees[1]
+                selection.cameraRotationZDegrees = degrees[2]
+            } else {
+                selection.cameraPositionXMeters = authored.cameraPose.position[0]
+                selection.cameraPositionYMeters = authored.cameraPose.position[1]
+                selection.cameraPositionZMeters = authored.cameraPose.position[2]
+                let degrees = PoseRotationProjection.degrees(from: authored.cameraPose.quaternion)
+                selection.cameraRotationXDegrees = degrees[0]
+                selection.cameraRotationYDegrees = degrees[1]
+                selection.cameraRotationZDegrees = degrees[2]
+            }
+        }
+        return selection
+    }
+
+    private func refreshAnimatedGeometryControls() {
+        guard deviceGeometryAnimationEnabled || cameraGeometryAnimationEnabled,
+              let selection = testAuthoringSelection else { return }
+        testAuthoringSelection = selectionResolvingAnimatedGeometry(selection)
+        do {
+            try refreshTestAuthoringDescriptor(publishPreview: false)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func authoredPose(
+        for id: SceneTransformAnimationID,
+        selection: TestAuthoringResolvedSelection
+    ) -> PhysicalPipelineAuthoringState.Pose {
+        switch id {
+        case .deviceGeometry:
+            return .init(
+                position: [
+                    selection.screenPositionXMeters,
+                    selection.screenPositionYMeters,
+                    selection.screenPositionZMeters,
+                ],
+                quaternion: PoseRotationProjection.quaternion(fromDegrees: [
+                    selection.screenRotationXDegrees,
+                    selection.screenYawDegrees,
+                    selection.screenRotationZDegrees,
+                ])
+            )
+        case .cameraGeometry:
+            if selection.geometryModeID == "look-at" {
+                let target = [
+                    selection.screenPositionXMeters,
+                    selection.screenPositionYMeters,
+                    selection.screenPositionZMeters,
+                ]
+                let position = PoseRotationProjection.orbitPosition(
+                    around: target,
+                    distance: selection.cameraDistanceMeters,
+                    rotationDegrees: [
+                        selection.cameraOrbitXDegrees,
+                        selection.cameraOrbitYDegrees,
+                        0,
+                    ]
+                )
+                return .init(
+                    position: position,
+                    quaternion: PoseRotationProjection.quaternionLooking(
+                        from: position,
+                        to: target,
+                        rollDegrees: selection.cameraRotationZDegrees
+                    )
+                )
+            }
+            return .init(
+                position: [
+                    selection.cameraPositionXMeters,
+                    selection.cameraPositionYMeters,
+                    selection.cameraPositionZMeters,
+                ],
+                quaternion: PoseRotationProjection.quaternion(fromDegrees: [
+                    selection.cameraRotationXDegrees,
+                    selection.cameraRotationYDegrees,
+                    selection.cameraRotationZDegrees,
+                ])
+            )
         }
     }
 
@@ -3733,6 +3889,7 @@ final class WorkspaceModel: ObservableObject {
     func seek(toFrame frame: Int) {
         pause()
         currentFrame = min(max(0, frame), max(0, frameCount - 1))
+        refreshAnimatedGeometryControls()
         if sourceIsPattern {
             renderPattern()
             refreshReferenceFrameForCurrentTime()
@@ -4814,6 +4971,7 @@ final class WorkspaceModel: ObservableObject {
                 trackingMetersPerSourceUnit: trackingCameraEnabled
                     ? trackingMetersPerSourceUnit : nil,
                 fusionTrackerMotion: fusionTrackerMotion,
+                sceneAnimation: sceneAnimation,
                 autofocusEnabled: authoringSelection.autofocusEnabled,
                 autofocusTargetU: authoringSelection.autofocusTargetU,
                 autofocusTargetV: authoringSelection.autofocusTargetV
@@ -4984,6 +5142,251 @@ final class WorkspaceModel: ObservableObject {
         simulationOpacityKeyframes.map(\.frame)
     }
 
+    var deviceGeometryAnimationEnabled: Bool {
+        sceneAnimation.transformTrack(.deviceGeometry) != nil
+            && deviceGeometryAnimationAvailable
+    }
+
+    var cameraGeometryAnimationEnabled: Bool {
+        sceneAnimation.transformTrack(.cameraGeometry) != nil
+            && cameraGeometryAnimationAvailable
+    }
+
+    var deviceGeometryAnimationAvailable: Bool {
+        !(trackingSceneMethod == .fusionTrackerClipboard
+            && fusionTrackerMotion?.target == .device)
+    }
+
+    var cameraGeometryAnimationAvailable: Bool {
+        switch trackingSceneMethod {
+        case .deviceCorners:
+            false
+        case .fusionComposition:
+            !(trackingCameraEnabled && selectedTrackingCamera != nil)
+        case .fusionTrackerClipboard:
+            fusionTrackerMotion?.target != .camera
+        }
+    }
+
+    func geometryAnimationUnavailableReason(_ id: SceneTransformAnimationID) -> String? {
+        switch id {
+        case .deviceGeometry:
+            deviceGeometryAnimationAvailable ? nil
+                : "La geometría del Device está controlada por el Tracker importado."
+        case .cameraGeometry:
+            cameraGeometryAnimationAvailable ? nil
+                : "La geometría de Camera está controlada por la animación importada."
+        }
+    }
+
+    var animationSnapFrames: [Int] {
+        Array(Set(
+            simulationOpacityKeyframeFrames
+                + transformKeyframes(.deviceGeometry).map(\.frame)
+                + transformKeyframes(.cameraGeometry).map(\.frame)
+        )).sorted()
+    }
+
+    func transformKeyframes(
+        _ id: SceneTransformAnimationID
+    ) -> [SceneScalarKeyframePresentation] {
+        let rate = currentTimelineFrameRate
+        return (sceneAnimation.transformTrack(id)?.keyframes ?? []).compactMap { keyframe in
+            guard keyframe.timeDenominator != 0 else { return nil }
+            let frame = Double(keyframe.timeNumerator) / Double(keyframe.timeDenominator)
+                * rate.framesPerSecond
+            guard frame.isFinite else { return nil }
+            return .init(
+                id: keyframe.id,
+                frame: Int(frame.rounded()),
+                interpolation: keyframe.interpolation
+            )
+        }
+    }
+
+    func currentTransformKeyframe(_ id: SceneTransformAnimationID) -> SceneTransformKeyframe? {
+        guard let time = try? exactAnimationTime(
+            frame: currentFrame, frameRate: currentTimelineFrameRate
+        ), let track = sceneAnimation.transformTrack(id) else { return nil }
+        return track.keyframeIndex(
+            timeNumerator: time.numerator, timeDenominator: time.denominator
+        ).map { track.keyframes[$0] }
+    }
+
+    func toggleGeometryAnimation(
+        _ id: SceneTransformAnimationID,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            if sceneAnimation.transformTrack(id) != nil {
+                var animation = sceneAnimation
+                animation.removeTransformTrack(id)
+                try animation.validate()
+                replaceSceneAnimation(animation, undoManager: undoManager)
+                status = "Animación de \(id.displayName) desactivada"
+                return
+            }
+            if let reason = geometryAnimationUnavailableReason(id) {
+                throw SceneAnimationError.invalidContract(reason)
+            }
+            let time = try exactAnimationTime(
+                frame: currentFrame, frameRate: currentTimelineFrameRate
+            )
+            let resolved = try resolveSceneFrame(currentFrame).authored
+            let pose = id == .cameraGeometry ? resolved.cameraPose : resolved.screenPose
+            var animation = sceneAnimation
+            animation.setTransformTrack(.init(
+                trackID: id,
+                keyframes: [.init(
+                    timeNumerator: time.numerator,
+                    timeDenominator: time.denominator,
+                    position: pose.position,
+                    quaternion: pose.quaternion
+                )]
+            ))
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Animación de \(id.displayName) activada · frame \(currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleTransformKeyframe(
+        _ id: SceneTransformAnimationID,
+        undoManager: UndoManager? = nil
+    ) {
+        if currentTransformKeyframe(id) != nil {
+            removeCurrentTransformKeyframe(id, undoManager: undoManager)
+        } else {
+            setTransformKeyframe(id, undoManager: undoManager)
+        }
+    }
+
+    func setTransformKeyframe(
+        _ id: SceneTransformAnimationID,
+        pose explicitPose: PhysicalPipelineAuthoringState.Pose? = nil,
+        interpolation: SceneAnimationInterpolation? = nil,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            if let reason = geometryAnimationUnavailableReason(id) {
+                throw SceneAnimationError.invalidContract(reason)
+            }
+            let time = try exactAnimationTime(
+                frame: currentFrame, frameRate: currentTimelineFrameRate
+            )
+            let resolved = try resolveSceneFrame(currentFrame).authored
+            let pose = explicitPose
+                ?? (id == .cameraGeometry ? resolved.cameraPose : resolved.screenPose)
+            var animation = sceneAnimation
+            guard var track = animation.transformTrack(id) else {
+                throw SceneAnimationError.invalidContract(
+                    "Activa primero el stopwatch de \(id.displayName)."
+                )
+            }
+            if let index = track.keyframeIndex(
+                timeNumerator: time.numerator, timeDenominator: time.denominator
+            ) {
+                track.keyframes[index].position = pose.position
+                track.keyframes[index].quaternion = pose.quaternion
+                if let interpolation { track.keyframes[index].interpolation = interpolation }
+            } else {
+                track.keyframes.append(.init(
+                    timeNumerator: time.numerator,
+                    timeDenominator: time.denominator,
+                    position: pose.position,
+                    quaternion: pose.quaternion,
+                    interpolation: interpolation ?? .smooth
+                ))
+                track.keyframes.sort {
+                    Decimal($0.timeNumerator) * Decimal($1.timeDenominator)
+                        < Decimal($1.timeNumerator) * Decimal($0.timeDenominator)
+                }
+            }
+            animation.setTransformTrack(track)
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Keyframe de \(id.displayName) · frame \(currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func removeCurrentTransformKeyframe(
+        _ id: SceneTransformAnimationID,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            let time = try exactAnimationTime(
+                frame: currentFrame, frameRate: currentTimelineFrameRate
+            )
+            var animation = sceneAnimation
+            guard var track = animation.transformTrack(id),
+                  let index = track.keyframeIndex(
+                    timeNumerator: time.numerator, timeDenominator: time.denominator
+                  ) else { return }
+            guard track.keyframes.count > 1 else {
+                throw SceneAnimationError.invalidContract(
+                    "La pista debe conservar al menos un keyframe; desactiva el stopwatch para retirarla."
+                )
+            }
+            track.keyframes.remove(at: index)
+            animation.setTransformTrack(track)
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            status = "Keyframe de \(id.displayName) eliminado · frame \(currentFrame)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func setTransformInterpolation(
+        _ id: SceneTransformAnimationID,
+        keyframeID: UUID,
+        interpolation: SceneAnimationInterpolation,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            var animation = sceneAnimation
+            guard var track = animation.transformTrack(id),
+                  let index = track.keyframes.firstIndex(where: { $0.id == keyframeID })
+            else { throw SceneAnimationError.invalidContract("El keyframe ya no existe.") }
+            track.keyframes[index].interpolation = interpolation
+            animation.setTransformTrack(track)
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func moveTransformKeyframe(
+        _ id: SceneTransformAnimationID,
+        keyframeID: UUID,
+        toFrame frame: Int,
+        undoManager: UndoManager? = nil
+    ) {
+        do {
+            let destination = min(max(0, frame), max(0, frameCount - 1))
+            let time = try exactAnimationTime(
+                frame: destination, frameRate: currentTimelineFrameRate
+            )
+            var animation = sceneAnimation
+            guard let track = animation.transformTrack(id) else { return }
+            animation.setTransformTrack(try track.movingKeyframe(
+                id: keyframeID,
+                timeNumerator: time.numerator,
+                timeDenominator: time.denominator
+            ))
+            try animation.validate()
+            replaceSceneAnimation(animation, undoManager: undoManager)
+            seek(toFrame: destination)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func toggleSimulationOpacityKeyframe(undoManager: UndoManager? = nil) {
         if currentSimulationOpacityKeyframe != nil {
             removeCurrentSimulationOpacityKeyframe(undoManager: undoManager)
@@ -5122,14 +5525,14 @@ final class WorkspaceModel: ObservableObject {
 
     func seekPreviousSimulationOpacityKeyframe() {
         guard let frame = TimelineFrameGeometry.previousKeyframe(
-            before: currentFrame, keyframes: simulationOpacityKeyframeFrames
+            before: currentFrame, keyframes: animationSnapFrames
         ) else { return }
         seek(toFrame: frame)
     }
 
     func seekNextSimulationOpacityKeyframe() {
         guard let frame = TimelineFrameGeometry.nextKeyframe(
-            after: currentFrame, keyframes: simulationOpacityKeyframeFrames
+            after: currentFrame, keyframes: animationSnapFrames
         ) else { return }
         seek(toFrame: frame)
     }
@@ -5144,7 +5547,11 @@ final class WorkspaceModel: ObservableObject {
             target.replaceSceneAnimation(prior, undoManager: manager)
         }
         sceneAnimation = animation
-        persistActiveSceneAuthoringReportingFailure()
+        cachedSceneResolver = nil
+        physicalModel.invalidateExternalParameters()
+        if activeSceneControlEditID == nil {
+            persistActiveSceneAuthoringReportingFailure()
+        }
     }
 
     private var currentTimelineFrameRate: ExactFrameRate {

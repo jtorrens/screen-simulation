@@ -53,9 +53,9 @@ struct TestAuthoringResolvedSelection: Codable, Equatable, Sendable {
     let captureRasterModeID: String
     let lensEvaluationModelID: String
     var geometryModeID: String
-    let cameraDistanceMeters: Double
-    let cameraOrbitXDegrees: Double
-    let cameraOrbitYDegrees: Double
+    var cameraDistanceMeters: Double
+    var cameraOrbitXDegrees: Double
+    var cameraOrbitYDegrees: Double
     var cameraPositionXMeters: Double
     var cameraPositionYMeters: Double
     var cameraPositionZMeters: Double

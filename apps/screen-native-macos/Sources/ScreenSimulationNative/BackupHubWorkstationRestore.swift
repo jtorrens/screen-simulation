@@ -478,7 +478,7 @@ struct BackupHubWorkstationRestoreConsumer {
             _ = try GlobalLibraryStore(documentURL: global).load()
         }
         let scenesDirectory = root.appendingPathComponent("Library/Scenes", isDirectory: true)
-        let scenesDocument = scenesDirectory.appendingPathComponent("Scenes.v28.json")
+        let scenesDocument = scenesDirectory.appendingPathComponent("Scenes.v29.json")
         var sceneThumbnails = Set<String>()
         if fileManager.fileExists(atPath: scenesDocument.path) {
             let store = try SceneLibraryStore(
@@ -489,19 +489,19 @@ struct BackupHubWorkstationRestoreConsumer {
             sceneThumbnails = Set(document.scenes.map(\.thumbnailFileName))
         }
         let queueDirectory = root.appendingPathComponent("RenderQueue", isDirectory: true)
-        let queue = queueDirectory.appendingPathComponent("RenderQueue.v15.json")
+        let queue = queueDirectory.appendingPathComponent("RenderQueue.v16.json")
         if fileManager.fileExists(atPath: queue.path) {
             _ = try RenderQueueStore(directoryURL: queueDirectory).load()
         }
 
         for path in descriptor.includedStatePaths {
             let allowed = path == "GlobalLibrary.v17.json"
-                || path == "Library/Scenes/Scenes.v28.json"
+                || path == "Library/Scenes/Scenes.v29.json"
                 || (path.hasPrefix("Library/Scenes/")
                     && sceneThumbnails.contains(String(path.dropFirst("Library/Scenes/".count))))
                 || isAutosavePath(path)
                 || isManagedEnvironmentPath(path)
-                || path == "RenderQueue/RenderQueue.v15.json"
+                || path == "RenderQueue/RenderQueue.v16.json"
             guard allowed else {
                 throw RestoreFailure(.snapshotInvalid, "Ruta no admitida en snapshot: \(path)")
             }
@@ -515,7 +515,7 @@ struct BackupHubWorkstationRestoreConsumer {
     }
 
     private func validateAutosaves(root: URL) throws {
-        let autosaveRoot = root.appendingPathComponent("Library/Autosave.v25", isDirectory: true)
+        let autosaveRoot = root.appendingPathComponent("Library/Autosave.v26", isDirectory: true)
         guard fileManager.fileExists(atPath: autosaveRoot.path) else { return }
         let sceneStore = try SceneLibraryStore(
             directoryURL: root.appendingPathComponent("Library/Scenes", isDirectory: true),
@@ -530,7 +530,7 @@ struct BackupHubWorkstationRestoreConsumer {
                   values.isSymbolicLink != true,
                   let sceneID = UUID(uuidString: url.lastPathComponent),
                   sceneID.uuidString.lowercased() == url.lastPathComponent else {
-                throw RestoreFailure(.snapshotInvalid, "Autosave.v25 contiene una carpeta desconocida.")
+                throw RestoreFailure(.snapshotInvalid, "Autosave.v26 contiene una carpeta desconocida.")
             }
             let revisions = try sceneStore.autosaves(for: sceneID)
             let expectedFiles = Set(revisions.flatMap { revision in
@@ -547,7 +547,7 @@ struct BackupHubWorkstationRestoreConsumer {
             guard actualFiles == expectedFiles else {
                 throw RestoreFailure(
                     .snapshotInvalid,
-                    "Una carpeta Autosave.v25 contiene archivos sin contrato."
+                    "Una carpeta Autosave.v26 contiene archivos sin contrato."
                 )
             }
         }
@@ -556,9 +556,9 @@ struct BackupHubWorkstationRestoreConsumer {
     private func removeCurrentManagedState(from root: URL) throws {
         let fixed = [
             "GlobalLibrary.v17.json",
-            "Library/Autosave.v25",
+            "Library/Autosave.v26",
             "Library/Environments/HDRI",
-            "RenderQueue/RenderQueue.v15.json",
+            "RenderQueue/RenderQueue.v16.json",
         ]
         for relative in fixed {
             let url = root.appendingPathComponent(relative)
@@ -569,7 +569,7 @@ struct BackupHubWorkstationRestoreConsumer {
             for url in try fileManager.contentsOfDirectory(
                 at: scenes,
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-            ) where url.lastPathComponent == "Scenes.v28.json" || url.pathExtension == "png" {
+            ) where url.lastPathComponent == "Scenes.v29.json" || url.pathExtension == "png" {
                 try fileManager.removeItem(at: url)
             }
         }
@@ -590,7 +590,7 @@ struct BackupHubWorkstationRestoreConsumer {
 
     private func managedRelativePaths(_ root: URL) throws -> [String] {
         var paths: [String] = []
-        for fixed in ["GlobalLibrary.v17.json", "Library/Scenes/Scenes.v28.json", "RenderQueue/RenderQueue.v15.json"] {
+        for fixed in ["GlobalLibrary.v17.json", "Library/Scenes/Scenes.v29.json", "RenderQueue/RenderQueue.v16.json"] {
             if fileManager.fileExists(atPath: root.appendingPathComponent(fixed).path) { paths.append(fixed) }
         }
         let scenes = root.appendingPathComponent("Library/Scenes", isDirectory: true)
@@ -599,7 +599,7 @@ struct BackupHubWorkstationRestoreConsumer {
                 paths.append("Library/Scenes/\(file.lastPathComponent)")
             }
         }
-        for tree in ["Library/Autosave.v25", "Library/Environments/HDRI"] {
+        for tree in ["Library/Autosave.v26", "Library/Environments/HDRI"] {
             let url = root.appendingPathComponent(tree, isDirectory: true)
             if fileManager.fileExists(atPath: url.path) {
                 for file in try regularFiles(under: url) {
@@ -786,7 +786,7 @@ struct BackupHubWorkstationRestoreConsumer {
     }
 
     private func isAutosavePath(_ path: String) -> Bool {
-        guard path.hasPrefix("Library/Autosave.v25/") else { return false }
+        guard path.hasPrefix("Library/Autosave.v26/") else { return false }
         return ["json", "png", "exr"].contains((path as NSString).pathExtension.lowercased())
     }
 

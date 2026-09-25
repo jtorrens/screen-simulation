@@ -108,6 +108,12 @@ import Testing
     #expect(macUI.contains("if sections.count == 1, let section = sections.first"))
     #expect(native.contains("CommittedNumberField(\n                            label: \"cd/m²\""))
     #expect(!native.contains("TextField(\"cd/m²\", value:"))
+    #expect(native.contains("\"device.geometry\": AnyView(geometryAnimationControl(.deviceGeometry))"))
+    #expect(native.contains("\"camera.geometry\": AnyView(geometryAnimationControl(.cameraGeometry))"))
+    #expect(native.contains("active ? \"stopwatch.fill\" : \"stopwatch\""))
+    #expect(native.contains("transformAnimationRow(.deviceGeometry"))
+    #expect(native.contains("transformAnimationRow(.cameraGeometry"))
+    #expect(native.contains("snapFrames: model.animationSnapFrames"))
 }
 
 @Test @MainActor func activeScenePersistsOncePerCommittedScalarEdit() throws {

@@ -9,7 +9,7 @@ import Testing
     let inbox = try prepareVault(in: support)
     let state = support.appendingPathComponent("SCREEN-SIMULATION", isDirectory: true)
     let autosave = state.appendingPathComponent(
-        "Library/Autosave.v25/scene/revision.json"
+        "Library/Autosave.v26/scene/revision.json"
     )
     let environment = state.appendingPathComponent(
         "Library/Environments/HDRI/managed.exr"
@@ -68,7 +68,7 @@ import Testing
     let paths = files.compactMap { $0["path"] as? String }
     #expect(paths == [
         "snapshot.json",
-        "state/Library/Autosave.v25/scene/revision.json",
+        "state/Library/Autosave.v26/scene/revision.json",
         "state/Library/Environments/HDRI/managed.exr",
     ])
     #expect(!paths.contains(where: { $0.contains("v16") || $0.contains("backup-") }))
@@ -87,7 +87,7 @@ import Testing
     #expect(Set(snapshot.keys) == ["schema", "includedStatePaths"])
     #expect(snapshot["schema"] as? String == "ScreenSimulation.WorkstationSnapshot.v1")
     #expect(snapshot["includedStatePaths"] as? [String] == [
-        "Library/Autosave.v25/scene/revision.json",
+        "Library/Autosave.v26/scene/revision.json",
         "Library/Environments/HDRI/managed.exr",
     ])
 }
@@ -133,7 +133,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: support) }
     let inbox = try prepareVault(in: support)
     let autosaveRoot = support.appendingPathComponent(
-        "SCREEN-SIMULATION/Library/Autosave.v25", isDirectory: true
+        "SCREEN-SIMULATION/Library/Autosave.v26", isDirectory: true
     )
     try FileManager.default.createDirectory(at: autosaveRoot, withIntermediateDirectories: true)
     try FileManager.default.createSymbolicLink(

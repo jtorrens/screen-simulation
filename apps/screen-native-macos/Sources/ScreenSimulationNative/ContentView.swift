@@ -3610,6 +3610,8 @@ struct ContentView: View {
         var result: [String: AnyView] = [
             "device.source-adjustment": AnyView(originAuthoringControls),
             "device.emission": AnyView(sceneDeviceControls),
+            "device.geometry": AnyView(geometryAnimationControl(.deviceGeometry)),
+            "camera.geometry": AnyView(geometryAnimationControl(.cameraGeometry)),
         ]
         if !model.environmentSourceEvidence.isEmpty {
             result["environment.main"] = AnyView(
@@ -3625,6 +3627,33 @@ struct ContentView: View {
             )
         }
         return result
+    }
+
+    @ViewBuilder
+    private func geometryAnimationControl(_ id: SceneTransformAnimationID) -> some View {
+        let active = id == .deviceGeometry
+            ? model.deviceGeometryAnimationEnabled
+            : model.cameraGeometryAnimationEnabled
+        let available = id == .deviceGeometry
+            ? model.deviceGeometryAnimationAvailable
+            : model.cameraGeometryAnimationAvailable
+        HStack {
+            Spacer()
+            Button {
+                model.toggleGeometryAnimation(id, undoManager: undoManager)
+            } label: {
+                Label(
+                    active ? "Animación activa" : "Animar geometría",
+                    systemImage: active ? "stopwatch.fill" : "stopwatch"
+                )
+            }
+            .buttonStyle(.borderless)
+            .nativeActionState(.init(active: active))
+            .disabled(!available)
+            .help(model.geometryAnimationUnavailableReason(id)
+                ?? (active ? "Desactivar pista de geometría" : "Crear pista de geometría"))
+        }
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
@@ -4455,7 +4484,7 @@ struct ContentView: View {
                     currentFrame: model.currentFrame,
                     inFrame: model.inFrame,
                     outFrame: model.outFrame,
-                    snapFrames: model.simulationOpacityKeyframeFrames,
+                    snapFrames: model.animationSnapFrames,
                     onSeek: { model.seek(toFrame: $0) },
                     onSetIn: { model.setInFrame($0) },
                     onSetOut: { model.setOutFrame($0) }
@@ -4556,6 +4585,12 @@ struct ContentView: View {
                     )
                     .frame(height: 28)
                 }
+                if model.deviceGeometryAnimationEnabled {
+                    transformAnimationRow(.deviceGeometry, propertyColumnWidth: propertyColumnWidth)
+                }
+                if model.cameraGeometryAnimationEnabled {
+                    transformAnimationRow(.cameraGeometry, propertyColumnWidth: propertyColumnWidth)
+                }
             }
             .padding(.vertical, 4)
             .background(
@@ -4571,6 +4606,52 @@ struct ContentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func transformAnimationRow(
+        _ id: SceneTransformAnimationID,
+        propertyColumnWidth: CGFloat
+    ) -> some View {
+        let keyframe = model.currentTransformKeyframe(id)
+        let descriptor = SimulationOpacityResolver.presentation
+        return HStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(id.displayName)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button {
+                    model.toggleTransformKeyframe(id, undoManager: undoManager)
+                } label: {
+                    Image(systemName: keyframe == nil ? "diamond" : "diamond.fill")
+                }
+                .buttonStyle(.plain)
+                .help(keyframe == nil ? "Crear keyframe" : "Eliminar keyframe")
+            }
+            .padding(.horizontal, 8)
+            .frame(width: propertyColumnWidth, height: 28)
+            SimulationOpacityTrackView(
+                frameCount: model.frameCount,
+                currentFrame: model.currentFrame,
+                keyframes: model.transformKeyframes(id),
+                interpolationOptions: descriptor.supportedInterpolations.map {
+                    ($0, descriptor.interpolationLabels[$0]!)
+                },
+                onSeek: { model.seek(toFrame: $0) },
+                onMove: { keyframeID, frame in
+                    model.moveTransformKeyframe(
+                        id, keyframeID: keyframeID, toFrame: frame,
+                        undoManager: undoManager
+                    )
+                },
+                onSetInterpolation: { keyframeID, interpolation in
+                    model.setTransformInterpolation(
+                        id, keyframeID: keyframeID, interpolation: interpolation,
+                        undoManager: undoManager
+                    )
+                }
+            )
+            .frame(height: 28)
+        }
     }
 
     private func frameField(_ label: String, value: Binding<Int>) -> some View {

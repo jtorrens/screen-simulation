@@ -17,6 +17,7 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         trackingCamera: TrackingCamera?,
         trackingMetersPerSourceUnit: Double?,
         fusionTrackerMotion: FusionTrackerPoseTrack? = nil,
+        sceneAnimation: SceneAnimationDocument = .init(),
         autofocusEnabled: Bool = false,
         autofocusTargetU: Double = 0.5,
         autofocusTargetV: Double = 0.5
@@ -31,14 +32,17 @@ final class RustSceneFrameResolver: @unchecked Sendable {
             trackingCamera: activeTrackingCamera,
             trackingMetersPerSourceUnit: activeTrackingCamera == nil
                 ? nil : trackingMetersPerSourceUnit,
-            fusionTrackerMotion: activeFusionTrackerMotion
+            fusionTrackerMotion: activeFusionTrackerMotion,
+            manualTrack: trackingSceneMethod == .deviceCorners
+                ? nil : sceneAnimation.transformTrack(.cameraGeometry)
         )
         let intrinsicsKnots = try Self.intrinsicsKnots(
             resolvedPipeline: resolvedPipeline,
             trackingCamera: activeTrackingCamera
         )
         let screenKnots = try Self.screenKnots(
-            base: base, fusionTrackerMotion: activeFusionTrackerMotion
+            base: base, fusionTrackerMotion: activeFusionTrackerMotion,
+            manualTrack: sceneAnimation.transformTrack(.deviceGeometry)
         )
         let cameraTrack = cameraKnots.withUnsafeBufferPointer {
             screen_physical_camera_pose_track_v2_create($0.baseAddress, $0.count, &error)
@@ -356,10 +360,14 @@ final class RustSceneFrameResolver: @unchecked Sendable {
         base: PhysicalPipelineAuthoringState,
         trackingCamera: TrackingCamera?,
         trackingMetersPerSourceUnit: Double?,
-        fusionTrackerMotion: FusionTrackerPoseTrack?
+        fusionTrackerMotion: FusionTrackerPoseTrack?,
+        manualTrack: SceneTransformAnimationTrack?
     ) throws -> [ScreenPhysicalPoseKnotV2] {
         if let fusionTrackerMotion, fusionTrackerMotion.target == .camera {
             return try motionKnots(fusionTrackerMotion)
+        }
+        if let manualTrack, trackingCamera == nil {
+            return try manualKnots(manualTrack)
         }
         guard let trackingCamera else {
             return [poseKnot(
@@ -394,11 +402,13 @@ final class RustSceneFrameResolver: @unchecked Sendable {
 
     private static func screenKnots(
         base: PhysicalPipelineAuthoringState,
-        fusionTrackerMotion: FusionTrackerPoseTrack?
+        fusionTrackerMotion: FusionTrackerPoseTrack?,
+        manualTrack: SceneTransformAnimationTrack?
     ) throws -> [ScreenPhysicalPoseKnotV2] {
         if let fusionTrackerMotion, fusionTrackerMotion.target == .device {
             return try motionKnots(fusionTrackerMotion)
         }
+        if let manualTrack { return try manualKnots(manualTrack) }
         return [poseKnot(
             timeNumerator: 0,
             timeDenominator: 1,
@@ -406,6 +416,21 @@ final class RustSceneFrameResolver: @unchecked Sendable {
             quaternion: base.screenPose.quaternion,
             interpolation: UInt32(SCREEN_PHYSICAL_POSE_HOLD.rawValue)
         )]
+    }
+
+    private static func manualKnots(
+        _ track: SceneTransformAnimationTrack
+    ) throws -> [ScreenPhysicalPoseKnotV2] {
+        try track.validate()
+        return track.keyframes.map { keyframe in
+            poseKnot(
+                timeNumerator: keyframe.timeNumerator,
+                timeDenominator: UInt32(keyframe.timeDenominator),
+                position: keyframe.position,
+                quaternion: keyframe.quaternion,
+                interpolation: keyframe.interpolation.bridgeValue
+            )
+        }
     }
 
     private static func motionKnots(
