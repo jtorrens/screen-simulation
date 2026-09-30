@@ -484,6 +484,11 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var fusionTrackerClipboard: FusionTrackerClipboard?
     @Published private(set) var fusionTrackerAnchorFrame: Int?
     @Published private(set) var fusionTrackerMotion: FusionTrackerPoseTrack?
+    var hasSceneSolution: Bool {
+        trackingScene != nil
+            || fusionTrackerMotion != nil
+            || trackingSceneMethod == .deviceCorners
+    }
     @Published var fusionTrackerTarget = FusionTrackerTarget.camera
     @Published var fusionTrackerMovesX = true
     @Published var fusionTrackerMovesY = true
@@ -4587,170 +4592,6 @@ final class WorkspaceModel: ObservableObject {
         return trackingScene?.cameras.first { $0.id == id }
     }
 
-    var canFreezeTrackingCameraAnimation: Bool {
-        trackingCameraEnabled
-            && trackingMetersPerSourceUnit != nil
-            && (selectedTrackingCamera?.samples.count ?? 0) > 1
-    }
-
-    private struct TrackingAuthoringState {
-        let scene: TrackingScene?
-        let cameraID: String?
-        let pointGroupID: String?
-        let cameraEnabled: Bool
-        let pointsVisible: Bool
-        let geometryVisible: Bool
-        let visibleMeshIDs: Set<String>
-        let scalePointAID: String?
-        let scalePointBID: String?
-        let measuredDistanceMeters: Double
-        let metersPerSourceUnit: Double?
-        let scaleSelectionSlot: Int?
-        let unitValue: Double
-        let unit: String
-        let currentFrame: Int
-        let inFrame: Int
-        let outFrame: Int
-    }
-
-    private var trackingAuthoringState: TrackingAuthoringState {
-        TrackingAuthoringState(
-            scene: trackingScene,
-            cameraID: selectedTrackingCameraID,
-            pointGroupID: selectedTrackingPointGroupID,
-            cameraEnabled: trackingCameraEnabled,
-            pointsVisible: trackingPointsVisible,
-            geometryVisible: trackingGeometryVisible,
-            visibleMeshIDs: visibleTrackingMeshIDs,
-            scalePointAID: trackingScalePointAID,
-            scalePointBID: trackingScalePointBID,
-            measuredDistanceMeters: trackingMeasuredDistanceMeters,
-            metersPerSourceUnit: trackingMetersPerSourceUnit,
-            scaleSelectionSlot: trackingScaleSelectionSlot,
-            unitValue: trackingSynthEyesUnitValue,
-            unit: trackingSynthEyesUnit,
-            currentFrame: currentFrame,
-            inFrame: inFrame,
-            outFrame: outFrame
-        )
-    }
-
-    func freezeTrackingCameraAnimation(undoManager: UndoManager?) {
-        guard canFreezeTrackingCameraAnimation,
-              let scene = trackingScene,
-              let cameraID = selectedTrackingCameraID,
-              let scale = trackingMetersPerSourceUnit,
-              scale.isFinite, scale > 0
-        else {
-            errorMessage = "Activa una cámara tracking animada y resuelve su escala antes de congelarla."
-            return
-        }
-        do {
-            let prior = trackingAuthoringState
-            let resolved = try resolveSceneFrame(currentFrame).authored
-            let sourcePosition = SIMD3(
-                resolved.cameraPose.position[0] / scale,
-                resolved.cameraPose.position[1] / scale,
-                resolved.cameraPose.position[2] / scale
-            )
-            let orientation = simd_normalize(SIMD4(
-                resolved.cameraPose.quaternion[0], resolved.cameraPose.quaternion[1],
-                resolved.cameraPose.quaternion[2], resolved.cameraPose.quaternion[3]
-            ))
-            trackingScene = try scene.freezingCamera(
-                id: cameraID,
-                sourcePosition: sourcePosition,
-                orientation: orientation
-            )
-            applyTimelineAuthority(resetRange: true)
-            physicalModel.invalidateExternalParameters()
-            registerTrackingAuthoringUndo(
-                prior,
-                undoManager: undoManager,
-                actionName: "Eliminar animación de cámara"
-            )
-            status = "Cámara congelada en el frame actual · animación eliminada"
-            persistActiveSceneAuthoringReportingFailure()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func removeImportedTrackingScene(undoManager: UndoManager?) {
-        guard trackingScene != nil else { return }
-        let prior = trackingAuthoringState
-        trackingScene = nil
-        selectedTrackingCameraID = nil
-        selectedTrackingPointGroupID = nil
-        trackingCameraEnabled = true
-        trackingPointsVisible = true
-        trackingGeometryVisible = true
-        visibleTrackingMeshIDs = []
-        trackingScalePointAID = nil
-        trackingScalePointBID = nil
-        trackingMeasuredDistanceMeters = 1
-        trackingMetersPerSourceUnit = nil
-        trackingScaleSelectionSlot = nil
-        trackingSynthEyesUnitValue = 1
-        trackingSynthEyesUnit = "m"
-        applyTimelineAuthority(resetRange: true)
-        physicalModel.invalidateExternalParameters()
-        registerTrackingAuthoringUndo(
-            prior,
-            undoManager: undoManager,
-            actionName: "Eliminar importación 3D"
-        )
-        status = "Importación 3D eliminada"
-        persistActiveSceneAuthoringReportingFailure()
-    }
-
-    private func registerTrackingAuthoringUndo(
-        _ state: TrackingAuthoringState,
-        undoManager: UndoManager?,
-        actionName: String
-    ) {
-        registerUndo(with: undoManager, actionName: actionName) { target, manager in
-            target.restoreTrackingAuthoring(
-                state,
-                undoManager: manager,
-                actionName: actionName
-            )
-        }
-    }
-
-    private func restoreTrackingAuthoring(
-        _ state: TrackingAuthoringState,
-        undoManager: UndoManager?,
-        actionName: String
-    ) {
-        let inverse = trackingAuthoringState
-        trackingScene = state.scene
-        selectedTrackingCameraID = state.cameraID
-        selectedTrackingPointGroupID = state.pointGroupID
-        trackingCameraEnabled = state.cameraEnabled
-        trackingPointsVisible = state.pointsVisible
-        trackingGeometryVisible = state.geometryVisible
-        visibleTrackingMeshIDs = state.visibleMeshIDs
-        trackingScalePointAID = state.scalePointAID
-        trackingScalePointBID = state.scalePointBID
-        trackingMeasuredDistanceMeters = state.measuredDistanceMeters
-        trackingMetersPerSourceUnit = state.metersPerSourceUnit
-        trackingScaleSelectionSlot = state.scaleSelectionSlot
-        trackingSynthEyesUnitValue = state.unitValue
-        trackingSynthEyesUnit = state.unit
-        applyTimelineAuthority(resetRange: true)
-        currentFrame = min(max(0, state.currentFrame), frameCount - 1)
-        inFrame = min(max(0, state.inFrame), frameCount - 1)
-        outFrame = min(max(inFrame, state.outFrame), frameCount - 1)
-        physicalModel.invalidateExternalParameters()
-        persistActiveSceneAuthoringReportingFailure()
-        registerTrackingAuthoringUndo(
-            inverse,
-            undoManager: undoManager,
-            actionName: actionName
-        )
-    }
-
     private var trackingTimelineInfo: NativeVideoTimelineInfo? {
         if trackingSceneMethod == .fusionTrackerClipboard, let motion = fusionTrackerMotion {
             let rate: ExactFrameRate
@@ -7126,6 +6967,99 @@ final class WorkspaceModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func standardizedSceneSolutionSnapshot(
+        _ scene: SavedScene
+    ) async throws -> SavedSceneSnapshot {
+        guard scene.snapshot.hasSceneSolution else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena no contiene una solución 3D."
+            )
+        }
+        let staged = WorkspaceModel(globalLibraryStore: globalLibraryStore)
+        try await staged.materializeSavedScene(scene)
+        try staged.standardizeCurrentSceneSolution()
+        let snapshot = try staged.captureSavedScene().snapshot
+        guard !snapshot.hasSceneSolution else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena estándar conserva una autoridad de solución 3D."
+            )
+        }
+        return snapshot
+    }
+
+    private func standardizeCurrentSceneSolution() throws {
+        guard hasSceneSolution, var selection = testAuthoringSelection else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena no contiene una solución 3D materializada."
+            )
+        }
+        let resolved = try resolveSceneFrame(currentFrame).authored
+        let cameraDegrees = PoseRotationProjection.degrees(
+            from: resolved.cameraPose.quaternion
+        )
+        let deviceDegrees = PoseRotationProjection.degrees(
+            from: resolved.screenPose.quaternion
+        )
+        selection.geometryModeID = "free"
+        selection.cameraPositionXMeters = resolved.cameraPose.position[0]
+        selection.cameraPositionYMeters = resolved.cameraPose.position[1]
+        selection.cameraPositionZMeters = resolved.cameraPose.position[2]
+        selection.cameraRotationXDegrees = cameraDegrees[0]
+        selection.cameraRotationYDegrees = cameraDegrees[1]
+        selection.cameraRotationZDegrees = cameraDegrees[2]
+        selection.screenPositionXMeters = resolved.screenPose.position[0]
+        selection.screenPositionYMeters = resolved.screenPose.position[1]
+        selection.screenPositionZMeters = resolved.screenPose.position[2]
+        selection.screenRotationXDegrees = deviceDegrees[0]
+        selection.screenYawDegrees = deviceDegrees[1]
+        selection.screenRotationZDegrees = deviceDegrees[2]
+        selection.focalLengthMillimeters = resolved.sceneLens.focalLengthMillimeters
+
+        sceneAnimation.removeTransformTrack(.cameraGeometry)
+        sceneAnimation.removeTransformTrack(.deviceGeometry)
+        trackingScene = nil
+        selectedTrackingCameraID = nil
+        selectedTrackingPointGroupID = nil
+        trackingCameraEnabled = true
+        trackingPointsVisible = true
+        trackingGeometryVisible = true
+        visibleTrackingMeshIDs = []
+        trackingScalePointAID = nil
+        trackingScalePointBID = nil
+        trackingMeasuredDistanceMeters = 1
+        trackingMetersPerSourceUnit = nil
+        trackingScaleSelectionSlot = nil
+        trackingSynthEyesUnitValue = 1
+        trackingSynthEyesUnit = "m"
+        fusionTrackerClipboard = nil
+        fusionTrackerAnchorFrame = nil
+        fusionTrackerMotion = nil
+        fusionTrackerCornerAssignments = [:]
+        trackingSceneMethod = .fusionComposition
+        referenceMatchCorners = []
+        referenceMatchProjectedCorners = []
+        referenceMatchErrorPixels = nil
+        referenceMatchEnabled = false
+        cachedSceneResolver = nil
+
+        try commitSceneAuthoringEdit(
+            selection: selection,
+            setting: [
+                "geometry-mode", "focal-length-millimeters",
+                "camera-position-x-meters", "camera-position-y-meters",
+                "camera-position-z-meters", "camera-rotation-x-degrees",
+                "camera-rotation-y-degrees", "camera-rotation-z-degrees",
+                "screen-position-x-meters", "screen-position-y-meters",
+                "screen-position-z-meters", "screen-rotation-x-degrees",
+                "screen-yaw-degrees", "screen-rotation-z-degrees",
+            ],
+            undoManager: nil,
+            actionName: "Convertir solución 3D en escena estándar"
+        )
+        applyTimelineAuthority(resetRange: true)
+        physicalModel.invalidateExternalParameters(preservingQuality: true)
     }
 
     private func materializeSavedScene(_ scene: SavedScene) async throws {

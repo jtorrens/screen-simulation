@@ -531,24 +531,6 @@ final class TrackingScenePanelController: NSObject, ObservableObject, NSWindowDe
 private struct TrackingScenePanel: View {
     @ObservedObject var model: WorkspaceModel
     let undoManager: UndoManager?
-    @State private var pendingRemoval: TrackingRemoval?
-
-    private enum TrackingRemoval {
-        case cameraAnimation
-
-        var title: String {
-            switch self {
-            case .cameraAnimation: "¿Eliminar la animación de cámara?"
-            }
-        }
-
-        var message: String {
-            switch self {
-            case .cameraAnimation:
-                "La cámara quedará congelada con el encuadre del frame actual. Se conservarán focal, gate, distorsión, nube de puntos, geometrías y escala."
-            }
-        }
-    }
 
     var body: some View {
         Form {
@@ -576,27 +558,6 @@ private struct TrackingScenePanel: View {
         }
         .formStyle(.grouped)
         .frame(width: 440, height: 650)
-        .confirmationDialog(
-            pendingRemoval?.title ?? "Confirmar",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let removal = pendingRemoval {
-                Button("Eliminar", role: .destructive) {
-                    pendingRemoval = nil
-                    switch removal {
-                    case .cameraAnimation:
-                        model.freezeTrackingCameraAnimation(undoManager: undoManager)
-                    }
-                }
-            }
-            Button("Cancelar", role: .cancel) { pendingRemoval = nil }
-        } message: {
-            if let removal = pendingRemoval { Text(removal.message) }
-        }
     }
 
     private var fusionCompositionSection: some View {
@@ -622,10 +583,6 @@ private struct TrackingScenePanel: View {
                         get: { model.trackingCameraEnabled },
                         set: { model.setTrackingCameraEnabled($0) }
                     ))
-                    Button("Eliminar animación de cámara…", role: .destructive) {
-                        pendingRemoval = .cameraAnimation
-                    }
-                    .disabled(!model.canFreezeTrackingCameraAnimation)
                 }
             }
     }

@@ -1361,7 +1361,7 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @MainActor
-@Test func removingImported3DTargetsOneStoredSceneAndIsOneUndoableShelfMutation() throws {
+@Test func standardizingSceneSolutionTargetsOneStoredSceneAndIsOneUndoableShelfMutation() throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scene-remove-tracking-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -1402,26 +1402,6 @@ private func sceneCapture() throws -> SavedSceneCapture {
             ),
         ]
     )
-    let transformControlBlocks: [String: SceneSettingsBlock] = [
-        "geometry-mode": .cameraTransform,
-        "camera-distance-meters": .cameraTransform,
-        "camera-orbit-x-degrees": .cameraTransform,
-        "camera-orbit-y-degrees": .cameraTransform,
-        "camera-position-x-meters": .cameraTransform,
-        "camera-position-y-meters": .cameraTransform,
-        "camera-position-z-meters": .cameraTransform,
-        "camera-rotation-x-degrees": .cameraTransform,
-        "camera-rotation-y-degrees": .cameraTransform,
-        "camera-rotation-z-degrees": .cameraTransform,
-        "screen-position-x-meters": .deviceTransform,
-        "screen-position-y-meters": .deviceTransform,
-        "screen-position-z-meters": .deviceTransform,
-        "screen-yaw-degrees": .deviceTransform,
-        "screen-rotation-x-degrees": .deviceTransform,
-        "screen-rotation-z-degrees": .deviceTransform,
-        "white-luminance": .device,
-    ]
-    let ownership = SceneSettingsOwnership(controlBlocks: transformControlBlocks)
     let snapshot = SavedSceneSnapshot(
         source: .init(
             kind: .syntheticPattern,
@@ -1445,16 +1425,36 @@ private func sceneCapture() throws -> SavedSceneCapture {
         generatedEnvironmentEXR: nil
     ))
     let undo = UndoManager()
-
-    let updated = try controller.removeImported3D(
-        scene, destination: .storedScene, ownership: ownership, undoManager: undo
+    let standardized = SavedSceneSnapshot(
+        source: snapshot.source,
+        currentFrame: snapshot.currentFrame,
+        viewerZoom: snapshot.viewerZoom,
+        viewerPanX: snapshot.viewerPanX,
+        viewerPanY: snapshot.viewerPanY,
+        viewerIsFitted: snapshot.viewerIsFitted,
+        authoring: try sceneAuthoring(overrides: [
+            .choice("geometry-mode", "free"),
+            .scalar("camera-position-x-meters", 1),
+            .scalar("camera-position-y-meters", 2),
+            .scalar("camera-position-z-meters", 3),
+            .scalar("screen-position-z-meters", 7),
+            .scalar("focal-length-millimeters", 35),
+            .scalar("white-luminance", 120),
+        ]),
+        trackingSceneMethod: .fusionComposition
     )
 
-    let expected = try snapshot.removingImported3D(ownership: ownership)
-    #expect(updated.snapshot == expected)
+    let updated = try controller.removeSceneSolution(
+        scene, standardizedSnapshot: standardized, undoManager: undo
+    )
+
+    #expect(updated.snapshot == standardized)
     #expect(updated.snapshot.tracking == nil)
-    #expect(updated.snapshot.fusionTrackerMotion == motion)
-    #expect(updated.snapshot.authoring.overrides == [.scalar("white-luminance", 120)])
+    #expect(updated.snapshot.fusionTrackerMotion == nil)
+    #expect(!updated.snapshot.hasSceneSolution)
+    #expect(updated.snapshot.authoring.overrides.contains(.scalar("camera-position-z-meters", 3)))
+    #expect(updated.snapshot.authoring.overrides.contains(.scalar("screen-position-z-meters", 7)))
+    #expect(updated.snapshot.authoring.overrides.contains(.scalar("focal-length-millimeters", 35)))
     #expect(updated.id == scene.id)
     #expect(updated.name == scene.name)
     #expect(undo.canUndo)
@@ -1462,31 +1462,101 @@ private func sceneCapture() throws -> SavedSceneCapture {
     #expect(controller.scene(id: scene.id)?.snapshot == snapshot)
     #expect(undo.canRedo)
     undo.redo()
-    #expect(controller.scene(id: scene.id)?.snapshot == expected)
+    #expect(controller.scene(id: scene.id)?.snapshot == standardized)
+    #expect(try Data(contentsOf: store.thumbnailURL(for: updated)) == Data([4, 5, 6]))
+}
 
-    let activeSnapshot = SavedSceneSnapshot(
-        source: snapshot.source,
-        currentFrame: 41,
-        viewerZoom: snapshot.viewerZoom,
-        viewerPanX: snapshot.viewerPanX,
-        viewerPanY: snapshot.viewerPanY,
-        viewerIsFitted: snapshot.viewerIsFitted,
-        authoring: snapshot.authoring,
-        tracking: tracking,
+@Test func sceneSolutionStateCoversEveryCalculated3DMethod() throws {
+    let base = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 0, viewerZoom: 1, viewerPanX: 0, viewerPanY: 0,
+        viewerIsFitted: true,
+        authoring: try sceneAuthoring(),
         trackingSceneMethod: .fusionComposition
     )
-    let activeUpdated = try controller.removeImported3D(
-        scene,
-        destination: .activeScene(.init(
-            snapshot: activeSnapshot,
-            thumbnailPNG: Data([7, 8, 9]),
-            generatedEnvironmentEXR: nil
-        )),
-        ownership: ownership
+    #expect(!base.hasSceneSolution)
+
+    let deviceCorners = SavedSceneSnapshot(
+        source: base.source, currentFrame: 0, viewerZoom: 1,
+        viewerPanX: 0, viewerPanY: 0, viewerIsFitted: true,
+        authoring: base.authoring, trackingSceneMethod: .deviceCorners
     )
-    let activeExpected = try activeSnapshot.removingImported3D(ownership: ownership)
-    #expect(activeUpdated.snapshot == activeExpected)
-    #expect(try Data(contentsOf: store.thumbnailURL(for: activeUpdated)) == Data([7, 8, 9]))
+    #expect(deviceCorners.hasSceneSolution)
+
+    let fusionTracker = SavedSceneSnapshot(
+        source: base.source, currentFrame: 0, viewerZoom: 1,
+        viewerPanX: 0, viewerPanY: 0, viewerIsFitted: true,
+        authoring: base.authoring,
+        fusionTrackerMotion: try FusionTrackerPoseTrack(
+            target: .device, anchorFrame: 0,
+            frameRateNumerator: 24, frameRateDenominator: 1,
+            samples: [.init(
+                frame: 0, position: .zero,
+                orientation: SIMD4(0, 0, 0, 1)
+            )]
+        ),
+        trackingSceneMethod: .fusionTrackerClipboard
+    )
+    #expect(fusionTracker.hasSceneSolution)
+}
+
+@MainActor
+@Test func standardizingDeviceCornersBakesTheResolvedFrameAndEnablesManualAnimation() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-standardization-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let libraryStore = try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("GlobalLibrary.v17.json")
+    )
+    let id = UUID()
+    let snapshot = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 0, viewerZoom: 1.4, viewerPanX: 3, viewerPanY: -2,
+        viewerIsFitted: false,
+        authoring: try sceneAuthoring(overrides: [
+            .scalar("white-luminance", 120),
+        ]),
+        trackingSceneMethod: .deviceCorners,
+        animation: .init(transformTracks: [
+            .init(trackID: .cameraGeometry, keyframes: [.init(
+                timeNumerator: 0, timeDenominator: 1,
+                position: [0, 0, 1], quaternion: [0, 0, 0, 1]
+            )]),
+            .init(trackID: .deviceGeometry, keyframes: [.init(
+                timeNumerator: 0, timeDenominator: 1,
+                position: [0, 0, 0], quaternion: [0, 0, 0, 1]
+            )]),
+        ])
+    )
+    let scene = SavedScene(
+        id: id, name: "Device corners",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: snapshot
+    )
+    let workspace = WorkspaceModel(globalLibraryStore: libraryStore)
+
+    let standardized = try await workspace.standardizedSceneSolutionSnapshot(scene)
+    let overrideIDs = Set(standardized.authoring.overrides.map(\.controlID))
+
+    #expect(!standardized.hasSceneSolution)
+    #expect(standardized.trackingSceneMethod == .fusionComposition)
+    #expect(standardized.currentFrame == 0)
+    #expect(standardized.animation.transformTracks.isEmpty)
+    #expect(overrideIDs.contains("geometry-mode"))
+    #expect(overrideIDs.contains("focal-length-millimeters"))
+    #expect(overrideIDs.contains("camera-position-x-meters"))
+    #expect(overrideIDs.contains("camera-rotation-z-degrees"))
+    #expect(overrideIDs.contains("screen-position-x-meters"))
+    #expect(overrideIDs.contains("screen-rotation-z-degrees"))
+    #expect(standardized.authoring.overrides.contains(.scalar("white-luminance", 120)))
 }
 
 @Test func sourceAssetsPreserveTheirAuthoredAbsolutePath() throws {

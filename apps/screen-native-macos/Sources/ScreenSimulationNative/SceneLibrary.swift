@@ -448,33 +448,10 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         )
     }
 
-    func removingImported3D(
-        ownership: SceneSettingsOwnership
-    ) throws -> Self {
-        let resetBlocks: Set<SceneSettingsBlock> = [.cameraTransform, .deviceTransform]
-        let retainedOverrides = try authoring.overrides.filter { override in
-            guard let block = ownership.controlBlocks[override.controlID] else {
-                throw SceneLibraryError.invalidDocument(
-                    "Application no publicó el propietario de \(override.controlID)."
-                )
-            }
-            return !resetBlocks.contains(block)
-        }
-        let resetAuthoring = SceneAuthoringDocument(
-            profiles: authoring.profiles,
-            overrides: retainedOverrides,
-            modelOverrides: authoring.modelOverrides,
-            context: authoring.context,
-            environmentCalibration: authoring.environmentCalibration
-        )
-        return Self(
-            source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
-            viewerPanX: viewerPanX, viewerPanY: viewerPanY,
-            viewerIsFitted: viewerIsFitted, authoring: resetAuthoring,
-            generatedEnvironment: generatedEnvironment, tracking: nil,
-            fusionTrackerMotion: fusionTrackerMotion,
-            trackingSceneMethod: trackingSceneMethod, animation: animation
-        )
+    var hasSceneSolution: Bool {
+        tracking != nil
+            || fusionTrackerMotion != nil
+            || trackingSceneMethod == .deviceCorners
     }
 }
 
@@ -508,11 +485,6 @@ enum SceneSettingsPasteDestination: Sendable {
 }
 
 enum SceneDefaultResetDestination: Sendable {
-    case storedScene
-    case activeScene(SavedSceneCapture)
-}
-
-enum SceneImported3DRemovalDestination: Sendable {
     case storedScene
     case activeScene(SavedSceneCapture)
 }
@@ -1858,28 +1830,28 @@ final class SceneLibraryController: ObservableObject {
     }
 
     @discardableResult
-    func removeImported3D(
+    func removeSceneSolution(
         _ scene: SavedScene,
-        destination: SceneImported3DRemovalDestination,
-        ownership: SceneSettingsOwnership,
+        standardizedSnapshot: SavedSceneSnapshot,
         undoManager: UndoManager? = nil
     ) throws -> SavedScene {
         let stored = try storedUpdate(sceneID: scene.id)
-        let base = switch destination {
-        case .storedScene: stored.capture
-        case let .activeScene(capture): capture
-        }
-        guard base.snapshot.tracking != nil else {
+        guard stored.capture.snapshot.hasSceneSolution else {
             throw SceneLibraryError.invalidDocument(
-                "La escena no contiene una importación 3D."
+                "La escena no contiene una solución 3D."
+            )
+        }
+        guard !standardizedSnapshot.hasSceneSolution else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena estándar conserva una autoridad de solución 3D."
             )
         }
         try update(
             scene,
             capture: SavedSceneCapture(
-                snapshot: try base.snapshot.removingImported3D(ownership: ownership),
-                thumbnailPNG: base.thumbnailPNG,
-                generatedEnvironmentEXR: base.generatedEnvironmentEXR
+                snapshot: standardizedSnapshot,
+                thumbnailPNG: stored.capture.thumbnailPNG,
+                generatedEnvironmentEXR: stored.capture.generatedEnvironmentEXR
             ),
             undoManager: undoManager
         )
