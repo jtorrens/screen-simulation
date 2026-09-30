@@ -2241,6 +2241,11 @@ struct ContentView: View {
                                                         onAdd: { createScene(in: shot) },
                                                         onOpen: { toggleSceneTreeBranch(.shot(shot.id)) }
                                                     )
+                                                    .highPriorityGesture(
+                                                        TapGesture(count: 2).onEnded {
+                                                            requestOpenFirstScene(in: shot)
+                                                        }
+                                                    )
                                                     .contextMenu {
                                                         Button("Duplicar plano") {
                                                             do {
@@ -3085,6 +3090,15 @@ struct ContentView: View {
     private func requestOpenScene(_ scene: SavedScene) {
         guard scene.id != model.activeSceneID else { return }
         openScene(scene)
+    }
+
+    private func requestOpenFirstScene(in shot: SceneShot) {
+        guard let scene = scenes.sortedScenes(shot.scenes.map(\.sceneID)).first else {
+            return
+        }
+        sceneTreeSelection = .scene(scene.id)
+        expandedSceneTreeBranches.insert(.shot(shot.id))
+        requestOpenScene(scene)
     }
 
     private func openScene(_ scene: SavedScene) {
