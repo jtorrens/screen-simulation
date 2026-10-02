@@ -287,6 +287,10 @@ extension SavedSceneSnapshot {
             stages: try mergedStageOverrides()
         )
         let mergedAuthoring = SceneAuthoringDocument(
+            activeModel: blocks.contains(.general)
+                ? source.authoring.activeModel : authoring.activeModel,
+            vfxContinuity: blocks.contains(.general)
+                ? source.authoring.vfxContinuity : authoring.vfxContinuity,
             profiles: profiles,
             overrides: mergedOverrides,
             modelOverrides: modelOverrides,

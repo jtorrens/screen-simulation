@@ -237,6 +237,8 @@ extension SceneLibraryController {
             referenceResource: reference
         )
         let authoring = SceneAuthoringDocument(
+            activeModel: snapshot.authoring.activeModel,
+            vfxContinuity: snapshot.authoring.vfxContinuity,
             profiles: snapshot.authoring.profiles,
             overrides: snapshot.authoring.overrides,
             modelOverrides: snapshot.authoring.modelOverrides,

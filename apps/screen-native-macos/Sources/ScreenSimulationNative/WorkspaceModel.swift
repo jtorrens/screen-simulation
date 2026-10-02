@@ -466,6 +466,9 @@ final class WorkspaceModel: ObservableObject {
     @Published private(set) var resolvedDevice: ResolvedDevice?
     @Published private(set) var modelDeviceDefinition: DeviceDefinition?
     @Published private(set) var physicalAuthoringState: PhysicalPipelineAuthoringState?
+    @Published private(set) var simulationModel = SceneSimulationModel.physical
+    @Published private(set) var vfxContinuityState = VfxContinuityAuthoringState()
+    let simulationModelPresentation = SceneSimulationModelPresentation.current
     @Published private(set) var requestedPhysicalIntermediate = PhysicalIntermediate.developedACEScg
     @Published private(set) var sourceACEScgFrame: StudioColorMetalFrame?
     @Published private(set) var originACEScgFrame: StudioColorMetalFrame?
@@ -682,6 +685,13 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var physicalPreviewSurfaceAspect: Double? {
+        if simulationModel == .vfxContinuity,
+           requestedPhysicalIntermediate == .lensProjection {
+            guard let sensor = physicalAuthoringState?.sensor,
+                  sensor.nativeWidth > 0, sensor.nativeHeight > 0
+            else { return nil }
+            return Double(sensor.nativeWidth) / Double(sensor.nativeHeight)
+        }
         switch requestedPhysicalIntermediate {
         case .panelEmission, .subpixelRadiance, .panelUniformity, .panelLightSpread,
              .panelTemporal,
@@ -706,6 +716,11 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var physicalNativeOutputDescription: String? {
+        if simulationModel == .vfxContinuity,
+           requestedPhysicalIntermediate == .lensProjection {
+            guard let sensor = physicalAuthoringState?.sensor else { return nil }
+            return "Cámara \(sensor.nativeWidth)×\(sensor.nativeHeight)"
+        }
         switch requestedPhysicalIntermediate {
         case .sensorCollection, .sensorBloom, .sensorReadoutRaw,
              .developedACEScg, .cameraRenderedACEScg:
@@ -1230,6 +1245,45 @@ final class WorkspaceModel: ObservableObject {
 
     func selectPhysicalIntermediate(_ intermediate: PhysicalIntermediate) {
         updateRequestedPhysicalIntermediate(intermediate)
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func selectSimulationModel(
+        _ model: SceneSimulationModel,
+        undoManager: UndoManager?
+    ) {
+        guard simulationModel != model else { return }
+        let prior = simulationModel
+        simulationModel = model
+        if model == .vfxContinuity {
+            updateRequestedPhysicalIntermediate(.lensProjection)
+        } else if let phaseID = testPresentation?.selectedPhaseID,
+                  let intermediate = testPhysicalIntermediateByPhaseID[phaseID] {
+            updateRequestedPhysicalIntermediate(intermediate)
+        } else {
+            updateRequestedPhysicalIntermediate(.cameraRenderedACEScg)
+        }
+        registerUndo(with: undoManager, actionName: "Cambiar modelo de simulación") {
+            target, manager in
+            target.selectSimulationModel(prior, undoManager: manager)
+        }
+        persistActiveSceneAuthoringReportingFailure()
+        physicalModel.invalidateExternalParameters()
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func setVfxRelativePanelLevel(_ value: Double, undoManager: UndoManager?) {
+        guard value.isFinite,
+              simulationModelPresentation.relativeLevelRange.contains(value),
+              value != vfxContinuityState.relativePanelLevel else { return }
+        let prior = vfxContinuityState.relativePanelLevel
+        vfxContinuityState.relativePanelLevel = value
+        registerUndo(with: undoManager, actionName: "Editar nivel relativo VFX") {
+            target, manager in
+            target.setVfxRelativePanelLevel(prior, undoManager: manager)
+        }
+        persistActiveSceneAuthoringReportingFailure()
+        physicalModel.invalidateExternalParameters()
         rebuildPhysicalSelectedFrame()
     }
 
@@ -4736,6 +4790,8 @@ final class WorkspaceModel: ObservableObject {
     private struct SubmittedPhysicalJob {
         let job: PhysicalMetalFrameJob
         let scene: ResolvedSceneFrame
+        let authoredIntermediate: PhysicalIntermediate
+        let effectiveIntermediate: PhysicalIntermediate
     }
 
     /// The sole per-frame materialization point for the physical request. The scene authoring
@@ -6869,6 +6925,8 @@ final class WorkspaceModel: ObservableObject {
         selection: TestAuthoringResolvedSelection
     ) throws -> SceneAuthoringDocument {
         let document = SceneAuthoringDocument(
+            activeModel: simulationModel,
+            vfxContinuity: vfxContinuityState,
             profiles: .init(
                 deviceID: try requiredSceneDeviceProfileID(),
                 coverGlassID: try requiredSceneCoverGlassProfileID(),
@@ -7204,6 +7262,8 @@ final class WorkspaceModel: ObservableObject {
         resolvedDevice = staged.resolvedDevice
         modelDeviceDefinition = staged.modelDeviceDefinition
         physicalAuthoringState = staged.physicalAuthoringState
+        simulationModel = staged.simulationModel
+        vfxContinuityState = staged.vfxContinuityState
         resolvedPhysicalPipeline = staged.resolvedPhysicalPipeline
         baseModelDeviceDefinition = staged.baseModelDeviceDefinition
         basePhysicalAuthoringState = staged.basePhysicalAuthoringState
@@ -7638,6 +7698,8 @@ final class WorkspaceModel: ObservableObject {
         undoManager: UndoManager?
     ) async throws {
         let context = authoring.context
+        simulationModel = authoring.activeModel
+        vfxContinuityState = authoring.vfxContinuity
         let library = try globalLibraryStore.load()
         guard let sceneDevice = library.devices.first(where: {
             $0.id == authoring.profiles.deviceID
@@ -9291,7 +9353,16 @@ final class WorkspaceModel: ObservableObject {
             authoredSampleCount: effectiveAuthoringState.shutterMotion.temporalSamples,
             requestedSampleCount: temporalSamplesOverride
         )
-        let effectiveIntermediate = requestedIntermediateOverride ?? requestedPhysicalIntermediate
+        let requested = requestedIntermediateOverride ?? requestedPhysicalIntermediate
+        let effectiveIntermediate: PhysicalIntermediate
+        if simulationModel == .vfxContinuity,
+           [.shutterMotion, .computationalCapture, .sensorCollection, .sensorBloom, .sensorReadoutRaw,
+            .developedACEScg, .cameraRenderedACEScg, .deviceSignal, .panelEmission]
+            .contains(requested) {
+            effectiveIntermediate = .lensProjection
+        } else {
+            effectiveIntermediate = requested
+        }
         let requestedDimensions = try requestedDimensionsOverride
             ?? physicalRequestedDimensions(
                 quality: quality,
@@ -9323,6 +9394,29 @@ final class WorkspaceModel: ObservableObject {
                 timescale: CMTimeScale(requirement.time.denominator)
             )
             let mediaIdentity = sourceIsPattern ? nil : session.sampleIdentity(at: requestedTime)
+            if simulationModel == .vfxContinuity {
+                let source: StudioColorMetalFrame
+                if Self.mayReuseExplicitSourceFrame(
+                    sourceFrameOverridePresent: sourceFrameOverride != nil,
+                    mediaIdentity: mediaIdentity,
+                    nominalMediaIdentity: nominalMediaIdentity
+                ), let sourceFrameOverride {
+                    source = sourceFrameOverride
+                } else {
+                    source = try await renderFrame(at: requirement.time)
+                }
+                temporalInputs.append(.init(
+                    time: requirement.time,
+                    sourceACEScg: source,
+                    deviceSignal: source
+                ))
+                if publishesPreviewState,
+                   CMTimeCompare(requestedTime, nominalTime) == 0 {
+                    deviceSignalCheckpoint = nil
+                    publishedExactCheckpoint = true
+                }
+                continue
+            }
             let checkpoint: DeviceSignalCheckpoint
             if let mediaIdentity, let prepared = preparedMediaSamples[mediaIdentity] {
                 checkpoint = prepared
@@ -9372,7 +9466,8 @@ final class WorkspaceModel: ObservableObject {
         }) else {
             throw PhysicalEvaluationAvailabilityError.missingSelectedFrame
         }
-        if publishesPreviewState, !publishedExactCheckpoint {
+        if publishesPreviewState, !publishedExactCheckpoint,
+           simulationModel == .physical {
             deviceSignalCheckpoint = try DeviceSignalCheckpoint.prepare(
                 sourceACEScg: publicationInput.sourceACEScg,
                 inputTransform: inputTransform,
@@ -9405,6 +9500,8 @@ final class WorkspaceModel: ObservableObject {
             preparedRender: preparedRender,
             quality: quality,
             deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,
+            renderModel: simulationModel,
+            vfxRelativePanelLevel: vfxContinuityState.relativePanelLevel,
             screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
             requestedDimensions: requestedDimensions,
@@ -9419,7 +9516,12 @@ final class WorkspaceModel: ObservableObject {
             requestedIntermediate: effectiveIntermediate,
             vfxTransparency: vfxTransparency
         )
-        return SubmittedPhysicalJob(job: job, scene: resolvedFrame)
+        return SubmittedPhysicalJob(
+            job: job,
+            scene: resolvedFrame,
+            authoredIntermediate: requested,
+            effectiveIntermediate: effectiveIntermediate
+        )
     }
 
     static func effectiveTemporalSampleCount(
@@ -10005,7 +10107,8 @@ final class WorkspaceModel: ObservableObject {
             case .complete:
                 guard !setupOwnsViewerPublication,
                       snapshot.parameterRevision == physicalModel.parameterRevision,
-                      snapshot.returnedIntermediate == requestedPhysicalIntermediate,
+                      submission.authoredIntermediate == requestedPhysicalIntermediate,
+                      snapshot.returnedIntermediate == submission.effectiveIntermediate,
                       let frame = snapshot.frame,
                       let effective = snapshot.effectiveDimensions
                 else { throw CancellationError() }
@@ -10080,6 +10183,7 @@ final class WorkspaceModel: ObservableObject {
             throw PhysicalEvaluationAvailabilityError.sectionPending(.capture(.geometry))
         }
         let nativeRaster = intermediate.nativeRasterSize(
+            renderModel: simulationModel,
             deviceWidth: device.nativeWidth,
             deviceHeight: device.nativeHeight,
             captureWidth: captureWidth,

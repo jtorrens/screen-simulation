@@ -15,6 +15,34 @@
       ]
     },
     {
+      "id": "simulation.render-model",
+      "scope": "explicit per-Saved-Scene physical or VFX Continuity evaluation and retained model state",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Simulation model selection"
+      },
+      "enforcement": [
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "crates/screen-platform/shaders/physical_pipeline.metal",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneSimulationModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift",
+      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalMetalFrameEngineTests.swift",
+        "scripts/migrate_scene_library_v29_to_v30.py",
+        "scripts/migrate_render_queue_v16_to_v17.py",
+        "scripts/migrate_scene_autosaves_v26_to_v27.py",
+        "scripts/test_migrate_simulation_models.py",
+        "scripts/check_native_physical_abi.py",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "persistence.portable-project-contract",
       "scope": "strict current portable .screensim package structure, version and publication",
       "owner": {

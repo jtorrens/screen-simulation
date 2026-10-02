@@ -120,6 +120,38 @@ import Testing
     #expect(alpha.contains { $0 > 0 })
 }
 
+@Test @MainActor func vfxContinuityLensProductKeepsThePhysicalCameraFraming() async throws {
+    let fixture = try makePhysicalFixture(width: 64, height: 36)
+    let dimensions = try PhysicalDimensions(width: 80, height: 60)
+    let authored = try contributions()
+    let physical = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: authored,
+        intermediate: .lensProjection,
+        identity: 32,
+        dimensions: dimensions
+    ))
+    let continuity = try await terminalSnapshot(submit(
+        fixture: fixture,
+        screenAmount: 1,
+        contributions: authored,
+        intermediate: .lensProjection,
+        identity: 320,
+        dimensions: dimensions,
+        renderModel: .vfxContinuity
+    ))
+
+    #expect(physical.state == .complete)
+    #expect(continuity.state == .complete)
+    let physicalSupport = try alphaSupport(physical)
+    let continuitySupport = try alphaSupport(continuity)
+    #expect(
+        physicalSupport == continuitySupport,
+        "physical=\(physicalSupport) continuity=\(continuitySupport)"
+    )
+}
+
 @Test @MainActor func shutterAngleIntegratesPhysicalEnergyAndDevelopsAVisibleFrame() async throws {
     let fixture = try makePhysicalFixture(width: 64, height: 36)
     let shutter90 = try await terminalSnapshot(submit(
@@ -457,7 +489,9 @@ private func submit(
     quality: PhysicalQuality = .draft,
     dimensions: PhysicalDimensions? = nil,
     exposureSeconds: Double? = nil,
-    vfxTransparency: PhysicalVfxTransparencyRequest? = nil
+    vfxTransparency: PhysicalVfxTransparencyRequest? = nil,
+    renderModel: SceneSimulationModel = .physical,
+    vfxRelativePanelLevel: Double = 1
 ) throws -> PhysicalMetalFrameJob {
     let uniformityAmount = try #require(contributions.first {
         $0.stage == .screen(.panelUniformity)
@@ -554,6 +588,8 @@ private func submit(
         preparedRender: preparedRender,
         quality: quality,
         deviceVfxAlphaMode: "device-transparency",
+        renderModel: renderModel,
+        vfxRelativePanelLevel: vfxRelativePanelLevel,
         screenAmount: screenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,
@@ -566,6 +602,28 @@ private func submit(
         rasterPlacement: placement,
         requestedIntermediate: intermediate,
         vfxTransparency: vfxTransparency
+    )
+}
+
+@MainActor
+private func alphaSupport(
+    _ snapshot: PhysicalMetalFrameSnapshot,
+    threshold: Float = 1.0e-5
+) throws -> (minimumX: Int, minimumY: Int, maximumX: Int, maximumY: Int) {
+    let texture = try #require(snapshot.frame?.texture)
+    let values = readRGBA32(texture)
+    var points: [(Int, Int)] = []
+    for y in 0..<texture.height {
+        for x in 0..<texture.width where values[(y * texture.width + x) * 4 + 3] > threshold {
+            points.append((x, y))
+        }
+    }
+    try #require(points.isEmpty == false)
+    return (
+        try #require(points.map(\.0).min()),
+        try #require(points.map(\.1).min()),
+        try #require(points.map(\.0).max()),
+        try #require(points.map(\.1).max())
     )
 }
 

@@ -21,9 +21,11 @@ typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileContextRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 36u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 37u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
+#define SCREEN_RENDER_MODEL_PHYSICAL 0u
+#define SCREEN_RENDER_MODEL_VFX_CONTINUITY 1u
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 10u
@@ -470,6 +472,23 @@ typedef struct {
     uint32_t supported_interpolation_mask;
 } ScreenApplicationScalarPropertyDescriptorV1;
 
+typedef struct {
+    const char *physical_id;
+    const char *physical_label;
+    const char *vfx_continuity_id;
+    const char *vfx_continuity_label;
+    const char *relative_level_id;
+    const char *relative_level_label;
+    const char *relative_level_unit;
+    double relative_level_minimum;
+    double relative_level_maximum;
+    double relative_level_default;
+} ScreenSimulationModelAuthoringDescriptorV1;
+
+bool screen_application_simulation_model_descriptor_v1(
+    ScreenSimulationModelAuthoringDescriptorV1 *output
+);
+
 bool screen_application_simulation_opacity_descriptor_v1(
     ScreenApplicationScalarPropertyDescriptorV1 *output
 );
@@ -820,6 +839,8 @@ typedef struct {
     ScreenPreparedRenderV1Ref prepared_render;
     uint32_t quality;
     uint32_t device_vfx_alpha_mode;
+    uint32_t render_model;
+    float vfx_relative_panel_level;
     float screen_amount;
     const ScreenPhysicalStageContributionV3 *stage_contributions;
     size_t stage_contribution_count;

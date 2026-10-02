@@ -345,6 +345,8 @@ fn plan(
     intermediate: PhysicalIntermediate,
 ) -> PhysicalPipelineExecutionPlan {
     PhysicalPipelineExecutionPlan {
+        render_model: screen_application::SimulationRenderModel::Physical,
+        vfx_relative_panel_level: 1.0,
         panel,
         panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
         panel_light_spread,

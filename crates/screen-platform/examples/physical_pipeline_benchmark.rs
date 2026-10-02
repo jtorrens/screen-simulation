@@ -76,6 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .max(1)
             };
             let plan = PhysicalPipelineExecutionPlan {
+                render_model: screen_application::SimulationRenderModel::Physical,
+                vfx_relative_panel_level: 1.0,
                 panel: preset.profile(),
                 panel_uniformity: preset.uniformity,
                 panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,

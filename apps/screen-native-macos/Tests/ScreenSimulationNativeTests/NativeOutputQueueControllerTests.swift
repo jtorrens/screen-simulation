@@ -403,7 +403,7 @@ import Testing
     let rootObject = try #require(
         try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
     )
-    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v16")
+    #expect(rootObject["schema"] as? String == "ScreenSimulation.RenderQueue.v17")
 
     var legacy = rootObject
     var jobs = try #require(legacy["jobs"] as? [[String: Any]])

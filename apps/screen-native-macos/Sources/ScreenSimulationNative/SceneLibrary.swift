@@ -233,9 +233,11 @@ struct SceneAuthoringContext: Codable, Equatable, Sendable {
 }
 
 struct SceneAuthoringDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAuthoring.v4"
+    static let schema = "ScreenSimulation.SceneAuthoring.v5"
 
     let schema: String
+    let activeModel: SceneSimulationModel
+    let vfxContinuity: VfxContinuityAuthoringState
     let profiles: SceneProfileSelection
     let overrides: [SceneControlOverride]
     let modelOverrides: SceneModelOverrides
@@ -243,6 +245,8 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
     let environmentCalibration: EnvironmentAssetCalibration?
 
     init(
+        activeModel: SceneSimulationModel = .physical,
+        vfxContinuity: VfxContinuityAuthoringState = .init(),
         profiles: SceneProfileSelection,
         overrides: [SceneControlOverride],
         modelOverrides: SceneModelOverrides,
@@ -250,6 +254,8 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
         environmentCalibration: EnvironmentAssetCalibration?
     ) {
         schema = Self.schema
+        self.activeModel = activeModel
+        self.vfxContinuity = vfxContinuity
         self.profiles = profiles
         self.overrides = overrides
         self.modelOverrides = modelOverrides
@@ -262,6 +268,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
             throw SceneLibraryError.invalidDocument("El documento de autoría de escena no es válido.")
         }
         try profiles.validate()
+        try vfxContinuity.validate()
         guard Set(overrides.map(\.controlID)).count == overrides.count else {
             throw SceneLibraryError.invalidDocument("Hay overrides de control duplicados.")
         }
@@ -272,7 +279,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v27"
+    static let schema = "ScreenSimulation.SavedScene.v28"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -436,6 +443,8 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted,
             authoring: .init(
+                activeModel: authoring.activeModel,
+                vfxContinuity: authoring.vfxContinuity,
                 profiles: authoring.profiles,
                 overrides: authoring.overrides,
                 modelOverrides: authoring.modelOverrides,
@@ -493,7 +502,7 @@ enum SceneDefaultResetDestination: Sendable {
 /// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
 /// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
-    static let schema = "ScreenSimulation.SceneAutosave.v4"
+    static let schema = "ScreenSimulation.SceneAutosave.v5"
     let schema: String
     let id: UUID
     let originalSceneID: UUID
@@ -603,7 +612,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 29
+    static let currentSchemaVersion = 30
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -826,15 +835,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v29.json")
+        documentURL = directory.appendingPathComponent("Scenes.v30.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v28.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v29.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v28.json. Ejecuta la migración de mantenimiento v28→v29 antes de abrir la biblioteca."
+                    "Existe Scenes.v29.json. Ejecuta la migración de mantenimiento v29→v30 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -886,7 +895,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v26", isDirectory: true)
+            .appendingPathComponent("Autosave.v27", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -1057,11 +1066,15 @@ struct SceneLibraryStore: Sendable {
                   assets.allSatisfy({ Set($0.keys) == ["absolutePath"] }),
                   let authoring = snapshot["authoring"] as? [String: Any],
                   (Set(authoring.keys) == [
-                      "schema", "profiles", "overrides", "modelOverrides", "context",
+                      "schema", "activeModel", "vfxContinuity", "profiles", "overrides",
+                      "modelOverrides", "context",
                   ] || Set(authoring.keys) == [
-                      "schema", "profiles", "overrides", "modelOverrides", "context",
-                      "environmentCalibration",
+                      "schema", "activeModel", "vfxContinuity", "profiles", "overrides",
+                      "modelOverrides", "context", "environmentCalibration",
                   ]),
+                  SceneSimulationModel(rawValue: authoring["activeModel"] as? String ?? "") != nil,
+                  let vfxContinuity = authoring["vfxContinuity"] as? [String: Any],
+                  Set(vfxContinuity.keys) == ["relativePanelLevel"],
                   let profiles = authoring["profiles"] as? [String: Any],
                   Set(profiles.keys) == [
                       "deviceID", "coverGlassID", "captureID", "lensID", "environmentID",
@@ -1660,7 +1673,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v26", isDirectory: true)
+            .appendingPathComponent("Autosave.v27", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

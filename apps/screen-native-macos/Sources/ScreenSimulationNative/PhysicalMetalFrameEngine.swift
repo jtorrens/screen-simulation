@@ -283,6 +283,8 @@ final class PhysicalMetalFrameEngine {
         preparedRender: PhysicalPreparedRender,
         quality: PhysicalQuality,
         deviceVfxAlphaMode: String,
+        renderModel: SceneSimulationModel = .physical,
+        vfxRelativePanelLevel: Double = 1.0,
         screenAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
@@ -361,6 +363,13 @@ final class PhysicalMetalFrameEngine {
         raw.environment_acescg = environmentTexture
         raw.prepared_render = preparedRender.reference
         raw.quality = quality.rawValue
+        switch renderModel {
+        case .physical:
+            raw.render_model = SCREEN_RENDER_MODEL_PHYSICAL
+        case .vfxContinuity:
+            raw.render_model = SCREEN_RENDER_MODEL_VFX_CONTINUITY
+        }
+        raw.vfx_relative_panel_level = Float(vfxRelativePanelLevel)
         switch deviceVfxAlphaMode {
         case "ignore":
             raw.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_IGNORE

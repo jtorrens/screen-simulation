@@ -95,6 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene = screen_application::ResolvedSceneGeometryLensSnapshot::REFERENCE;
     scene.focus_distance_meters = 0.8;
     let base_plan = PhysicalPipelineExecutionPlan {
+        render_model: screen_application::SimulationRenderModel::Physical,
+        vfx_relative_panel_level: 1.0,
         panel: preset.profile(),
         panel_uniformity: preset.uniformity,
         panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,

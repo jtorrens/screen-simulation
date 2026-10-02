@@ -16,7 +16,9 @@ private func sceneAuthoring(
     ),
     referencePlateID: String = "vfx-checker",
     environmentCalibration: EnvironmentAssetCalibration? = nil,
-    overrides: [SceneControlOverride] = []
+    overrides: [SceneControlOverride] = [],
+    activeModel: SceneSimulationModel = .physical,
+    vfxContinuity: VfxContinuityAuthoringState = .init()
 ) throws -> SceneAuthoringDocument {
     let input = try #require(StudioColorInputTransform.catalog.first {
         $0.id == "srgb-encoded-rec709"
@@ -30,6 +32,8 @@ private func sceneAuthoring(
     )
     let coverGlass = try #require(try RustCoverGlassCatalog.builtIns().first)
     return .init(
+        activeModel: activeModel,
+        vfxContinuity: vfxContinuity,
         profiles: .init(
             deviceID: device.id,
             coverGlassID: coverGlass.id,
@@ -56,6 +60,26 @@ private func sceneAuthoring(
         ),
         environmentCalibration: environmentCalibration
     )
+}
+
+@Test func sceneRoundTripPreservesBothModelStatesAndTheExplicitSelection() throws {
+    let presentation = SceneSimulationModelPresentation.current
+    #expect(presentation.options.map(\.id) == [.physical, .vfxContinuity])
+    #expect(presentation.relativeLevelID == "vfx-relative-panel-level")
+    #expect(presentation.relativeLevelRange == 0 ... 4)
+    #expect(presentation.relativeLevelDefault == 1)
+    let authoring = try sceneAuthoring(
+        activeModel: .vfxContinuity,
+        vfxContinuity: .init(relativePanelLevel: 1.75)
+    )
+    let encoded = try JSONEncoder().encode(authoring)
+    let decoded = try JSONDecoder().decode(SceneAuthoringDocument.self, from: encoded)
+
+    #expect(decoded.activeModel == .vfxContinuity)
+    #expect(decoded.vfxContinuity.relativePanelLevel == 1.75)
+    #expect(decoded.overrides == authoring.overrides)
+    #expect(decoded.profiles == authoring.profiles)
+    #expect(decoded.context == authoring.context)
 }
 
 private func scalarControl(
@@ -638,12 +662,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 29)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 30)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v29.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v30.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,

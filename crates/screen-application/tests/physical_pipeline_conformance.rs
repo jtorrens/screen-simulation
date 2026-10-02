@@ -36,6 +36,8 @@ fn request(
         },
         render_context: screen_application::PhysicalRenderContext::full_frame(6, 3),
         plan: PhysicalPipelineExecutionPlan {
+            render_model: screen_application::SimulationRenderModel::Physical,
+            vfx_relative_panel_level: 1.0,
             panel,
             panel_uniformity: screen_panel::PanelUniformityProfile {
                 character_strength: 0.0,

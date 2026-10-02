@@ -456,12 +456,19 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
     }
 
     func nativeRasterSize(
+        renderModel: SceneSimulationModel,
         deviceWidth: Int,
         deviceHeight: Int,
         captureWidth: Int,
         captureHeight: Int
     ) -> (width: Int, height: Int) {
-        usesCaptureRaster
+        // Continuity stops before Sensor, but its lens product is still observed
+        // through the selected Camera gate. The Device raster would change the
+        // projection aspect merely by switching models.
+        if renderModel == .vfxContinuity, self == .lensProjection {
+            return (captureWidth, captureHeight)
+        }
+        return usesCaptureRaster
             ? (captureWidth, captureHeight)
             : (deviceWidth, deviceHeight)
     }

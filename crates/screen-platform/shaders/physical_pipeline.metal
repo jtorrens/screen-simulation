@@ -11,6 +11,10 @@ struct PhysicalPipelineParams {
     float4 matrix0;
     float4 matrix1;
     float4 matrix2;
+    float4 inverse_matrix0;
+    float4 inverse_matrix1;
+    float4 inverse_matrix2;
+    float4 render_model; // model, relative panel level, direct optical normalization, reserved
     float4 panel_size_meters;
     float4 uniformity_amplitudes; // broad, mid, fine, chromatic peak-to-peak
     float4 uniformity_scales; // mid mm, fine mm, low-drive emphasis, character
@@ -1366,6 +1370,29 @@ inline float native_channel(
         panel_linear_channel(code, p), channel, device_minimum, device_maximum, p);
 }
 
+inline float3 resolved_panel_native(float3 input, constant PhysicalPipelineParams& p) {
+    if (p.render_model.x < 0.5f) {
+        return float3(
+            panel_linear_channel(input.r, p),
+            panel_linear_channel(input.g, p),
+            panel_linear_channel(input.b, p));
+    }
+    const float3 native = float3(
+        dot(p.inverse_matrix0.xyz, input),
+        dot(p.inverse_matrix1.xyz, input),
+        dot(p.inverse_matrix2.xyz, input));
+    return native * p.levels.z * p.render_model.y;
+}
+
+inline float3 resolved_panel_drive(float3 input, constant PhysicalPipelineParams& p) {
+    return p.render_model.x < 0.5f
+        ? input
+        : float3(
+            dot(p.inverse_matrix0.xyz, input),
+            dot(p.inverse_matrix1.xyz, input),
+            dot(p.inverse_matrix2.xyz, input)) * p.render_model.y;
+}
+
 inline float continuous_channel(float code, constant PhysicalPipelineParams& p) {
     return panel_linear_channel(code, p);
 }
@@ -1405,10 +1432,7 @@ kernel void build_physical_glow_signal_prefix(
     for (uint x = 0; x < device_signal.get_width(); ++x) {
         const float4 code = device_signal.read(uint2(x, row));
         const float alpha = resolved_device_alpha(code.a, 1.0f, p);
-        const float3 native = float3(
-            panel_linear_channel(code.r, p),
-            panel_linear_channel(code.g, p),
-            panel_linear_channel(code.b, p)) * alpha;
+        const float3 native = resolved_panel_native(code.rgb, p) * alpha;
         const float3 rgb = float3(
             dot(p.matrix0.xyz, native),
             dot(p.matrix1.xyz, native),
@@ -1565,11 +1589,7 @@ kernel void reduce_physical_veiling_source(
     for (uint pixel = index; pixel < pixel_count; pixel += partial_count) {
         const uint2 position = uint2(pixel % p.source_panel.x, pixel / p.source_panel.x);
         const float3 code = device_signal.read(position).xyz;
-        sum += float3(
-            continuous_channel(code.r, p),
-            continuous_channel(code.g, p),
-            continuous_channel(code.b, p)
-        );
+        sum += resolved_panel_native(code, p);
     }
     partials[index] = float4(sum, 0.0f);
 }
@@ -1620,7 +1640,9 @@ kernel void finalize_physical_veiling_source(
         dot(p.matrix1.xyz, weighted_native),
         dot(p.matrix2.xyz, weighted_native)
     ) / p.levels.z;
-    gate_average[0] = float4(acescg, 0.0f);
+    const float direct_normalization = p.render_model.x < 0.5f
+        ? 1.0f : p.render_model.z;
+    gate_average[0] = float4(acescg * direct_normalization, 0.0f);
 }
 
 inline float4 evaluate_physical_pipeline_pixel(
@@ -1843,8 +1865,9 @@ inline float4 evaluate_physical_pipeline_pixel(
                 const float continuous_structured_native = native_channel_from_linear(
                     linear_emission[channel] * local_panel_coverage,
                     channel, device_minimum, device_maximum, p);
+                const float3 resolved_drive = resolved_panel_drive(code.rgb, p);
                 const float base_gain = panel_uniformity_gain(
-                    device_minimum, device_maximum, code.rgb, channel, p);
+                    device_minimum, device_maximum, resolved_drive, channel, p);
                 const float uniform_base_native = base_native * base_gain;
                 if (needs_carrier) {
                     const float4 carrier_code = area_sample(
@@ -1862,7 +1885,7 @@ inline float4 evaluate_physical_pipeline_pixel(
                     const float carrier_gain = panel_uniformity_gain(
                         carrier_minimum * float2(p.source_panel.zw),
                         carrier_maximum * float2(p.source_panel.zw),
-                        carrier_code.rgb, channel, p);
+                        resolved_panel_drive(carrier_code.rgb, p), channel, p);
                     carrier_detail_native[channel] +=
                         (preserved_carrier * carrier_gain - uniform_base_native) * optical_weight;
                 }
@@ -2052,8 +2075,13 @@ inline float4 evaluate_physical_pipeline_pixel(
         interference = residual_luminance
             + moire_saturation * (interference - residual_luminance);
     }
-    const float3 lens_resolved
+    const float3 transported_lens
         = moire_free_covered + moire_intensity * interference;
+    const float3 reflected = resolved_panel_coverage * ideal.a * reflected_environment;
+    const float direct_normalization = p.render_model.x < 0.5f
+        ? 1.0f : p.render_model.z;
+    const float3 lens_resolved = reflected
+        + (transported_lens - reflected) * direct_normalization;
     const float3 glared = mix(lens_resolved, veiling_gate_average * temporal_gain,
         p.lens_veiling_glare.x);
     const float shutter_scale = pow(p.shutter.y * exp2(-p.shutter.z), p.shutter.x);

@@ -11,8 +11,10 @@ use metal::{
 };
 use screen_application::{
     DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
-    RasterPlacement, expose_physical_pipeline_raw, physical_environment_reference_sample_count,
+    RasterPlacement, SimulationRenderModel, VFX_CONTINUITY_LEVEL_DESCRIPTOR,
+    expose_physical_pipeline_raw, physical_environment_reference_sample_count,
     placed_signal_area_fraction, resample_physical_device_matte,
+    vfx_continuity_direct_transport_normalization,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
@@ -60,6 +62,10 @@ struct PhysicalPipelineParams {
     matrix0: [f32; 4],
     matrix1: [f32; 4],
     matrix2: [f32; 4],
+    inverse_matrix0: [f32; 4],
+    inverse_matrix1: [f32; 4],
+    inverse_matrix2: [f32; 4],
+    render_model: [f32; 4],
     panel_size_meters: [f32; 4],
     uniformity_amplitudes: [f32; 4],
     uniformity_scales: [f32; 4],
@@ -114,6 +120,10 @@ struct PhysicalSignalPreparationKey {
     matrix0: [f32; 4],
     matrix1: [f32; 4],
     matrix2: [f32; 4],
+    inverse_matrix0: [f32; 4],
+    inverse_matrix1: [f32; 4],
+    inverse_matrix2: [f32; 4],
+    render_model: [f32; 4],
     panel_size_meters: [f32; 4],
     cover_glow: [f32; 4],
     glow_threshold: [f32; 4],
@@ -1233,6 +1243,7 @@ impl MetalPhysicalPipeline {
                 let height = TILE_ROWS.min(first_sampling.effective_height - origin_y);
                 let command = self.queue.new_command_buffer();
                 let shared_inputs = tile > 0
+                    && first_plan.render_model == SimulationRenderModel::Physical
                     && signal_preparations.len() == 1
                     && samples.iter().all(|sample| {
                         core::ptr::eq(sample.0, samples[0].0)
@@ -1547,6 +1558,13 @@ impl MetalPhysicalPipeline {
         if !supported(source_acescg) || !supported(device_signal) {
             return Err(MetalPhysicalPipelineError::UnsupportedTexture);
         }
+        // VFX Continuity consumes the explicitly typed linear ACEScg input.
+        // The physical Device-signal texture remains required by the stable
+        // host port but is not reinterpreted as scene-linear data.
+        let device_signal = match plan.render_model {
+            SimulationRenderModel::Physical => device_signal,
+            SimulationRenderModel::VfxContinuity => source_acescg,
+        };
         plan.environment
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
@@ -1579,24 +1597,35 @@ impl MetalPhysicalPipeline {
             .panel
             .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
-        if [
-            plan.screen_amount,
-            plan.emission_amount,
-            plan.subpixel_geometry_amount,
-            plan.moire_intensity,
-            plan.moire_saturation,
-            plan.moire_filter_strength,
-            plan.temporal_emission_amount,
-            plan.scene_geometry_amount,
-            plan.lens_amount,
-            plan.shutter_motion_amount,
-            plan.sensor_noise_amount,
-        ]
-        .into_iter()
-        .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
+        if !plan.vfx_relative_panel_level.is_finite()
+            || !(VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum as f32
+                ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
+                .contains(&plan.vfx_relative_panel_level)
+            || [
+                plan.screen_amount,
+                plan.emission_amount,
+                plan.subpixel_geometry_amount,
+                plan.moire_intensity,
+                plan.moire_saturation,
+                plan.moire_filter_strength,
+                plan.temporal_emission_amount,
+                plan.scene_geometry_amount,
+                plan.lens_amount,
+                plan.shutter_motion_amount,
+                plan.sensor_noise_amount,
+            ]
+            .into_iter()
+            .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
         {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
                 "amount must be finite and inside 0..=4".to_owned(),
+            ));
+        }
+        if plan.render_model == SimulationRenderModel::Physical
+            && plan.vfx_relative_panel_level != 1.0
+        {
+            return Err(MetalPhysicalPipelineError::InvalidPlan(
+                "physical simulation cannot apply a VFX relative panel gain".to_owned(),
             ));
         }
         if !plan.computational_character_strength.is_finite()
@@ -1758,6 +1787,20 @@ impl MetalPhysicalPipeline {
                 physical_environment_reference_sample_count(plan.quality) as f32,
             ]),
         };
+        let inverse_native = match plan.render_model {
+            SimulationRenderModel::Physical => {
+                [[1.0_f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            }
+            SimulationRenderModel::VfxContinuity => {
+                inverse3(values.native_to_acescg).ok_or_else(|| {
+                    MetalPhysicalPipelineError::InvalidPlan(
+                        "panel native-primary matrix is singular".to_owned(),
+                    )
+                })?
+            }
+        };
+        let vfx_direct_normalization = vfx_continuity_direct_transport_normalization(&plan)
+            .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let mut params = PhysicalPipelineParams {
             source_panel: [
                 source_acescg.width() as u32,
@@ -1815,6 +1858,18 @@ impl MetalPhysicalPipeline {
             matrix0: pad(values.native_to_acescg[0]),
             matrix1: pad(values.native_to_acescg[1]),
             matrix2: pad(values.native_to_acescg[2]),
+            inverse_matrix0: pad(inverse_native[0]),
+            inverse_matrix1: pad(inverse_native[1]),
+            inverse_matrix2: pad(inverse_native[2]),
+            render_model: [
+                match plan.render_model {
+                    SimulationRenderModel::Physical => 0.0,
+                    SimulationRenderModel::VfxContinuity => 1.0,
+                },
+                plan.vfx_relative_panel_level,
+                vfx_direct_normalization,
+                0.0,
+            ],
             panel_size_meters: [
                 plan.panel.active_width.0,
                 plan.panel.active_height.0,
@@ -2128,6 +2183,10 @@ impl MetalPhysicalPipeline {
             matrix0: params.matrix0,
             matrix1: params.matrix1,
             matrix2: params.matrix2,
+            inverse_matrix0: params.inverse_matrix0,
+            inverse_matrix1: params.inverse_matrix1,
+            inverse_matrix2: params.inverse_matrix2,
+            render_model: params.render_model,
             panel_size_meters: params.panel_size_meters,
             cover_glow: params.cover_glow,
             glow_threshold: params.glow_threshold,
@@ -2555,6 +2614,8 @@ mod tests {
                 environment_acescg: None,
             },
             PhysicalPipelineExecutionPlan {
+                render_model: screen_application::SimulationRenderModel::Physical,
+                vfx_relative_panel_level: 1.0,
                 panel,
                 panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
@@ -2694,6 +2755,129 @@ mod tests {
             }
         }
         eprintln!("physical pipeline CPU/Metal suite maximum absolute deviation: {suite_maximum}");
+    }
+
+    #[test]
+    fn vfx_continuity_relative_panel_route_matches_cpu_on_metal() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        for layout in [StripeLayout::Rgb, StripeLayout::Bgr] {
+            let (input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::Native,
+                layout,
+                0.2,
+                1.0,
+            );
+            plan.render_model = SimulationRenderModel::VfxContinuity;
+            plan.vfx_relative_panel_level = 1.75;
+            plan.panel_uniformity.character_strength = 0.0;
+            plan.panel_light_spread.character_strength = 0.0;
+            plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let relative_values = vec![[99.0, -99.0, 42.0, 0.0]; input.acescg.len()];
+            let relative = texture(&device, input.width, input.height, &relative_values);
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(
+                    plan.requested_width,
+                    plan.requested_height,
+                ),
+                plan,
+            })
+            .expect("VFX CPU oracle");
+            let gpu = backend
+                .evaluate(&source, &relative, plan, |_| {}, || false)
+                .expect("VFX Metal result");
+            let maximum = read(&gpu.texture)
+                .iter()
+                .zip(cpu.presentation_rgba())
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 2.0e-3,
+                "{layout:?} VFX CPU/Metal deviation {maximum}"
+            );
+        }
+    }
+
+    #[test]
+    fn vfx_continuity_lens_level_is_exposure_neutral_across_apertures() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let mut reference_luminance: Option<f32> = None;
+        for f_stop in [1.4_f32, 4.0, 11.0] {
+            let (mut input, mut plan) = fixture(
+                RasterPlacement::Stretch,
+                FlatPanelQuality::High,
+                StripeLayout::Rgb,
+                0.0,
+                1.0,
+            );
+            input.acescg.fill([1.0, 1.0, 1.0, 1.0]);
+            plan.render_model = SimulationRenderModel::VfxContinuity;
+            plan.vfx_relative_panel_level = 1.0;
+            plan.panel.active_width = screen_contracts::Meters(0.18);
+            plan.panel.active_height = screen_contracts::Meters(0.10);
+            plan.panel_uniformity.character_strength = 0.0;
+            plan.panel_light_spread.character_strength = 0.0;
+            plan.cover.glow.character_strength = 0.0;
+            plan.subpixel_geometry_amount = 0.0;
+            plan.moire_intensity = 0.0;
+            plan.scene_geometry_amount = 1.0;
+            plan.lens_amount = 1.0;
+            plan.camera_position = screen_contracts::Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.7,
+            };
+            plan.scene_geometry_lens.focal_length_millimeters = 35.0;
+            plan.scene_geometry_lens.sensor_width_millimeters = 36.0;
+            plan.scene_geometry_lens.sensor_height_millimeters = 20.25;
+            plan.scene_geometry_lens.focus_distance_meters = 0.7;
+            plan.scene_geometry_lens.f_stop = f_stop;
+            plan.requested_width = 64;
+            plan.requested_height = 36;
+            plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+            let source = texture(&device, input.width, input.height, &input.acescg);
+            let ignored_signal = texture(
+                &device,
+                input.width,
+                input.height,
+                &vec![[99.0, -99.0, 42.0, 0.0]; input.acescg.len()],
+            );
+            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                input,
+                render_context: screen_application::PhysicalRenderContext::full_frame(64, 36),
+                plan,
+            })
+            .expect("VFX aperture CPU oracle");
+            let gpu = backend
+                .evaluate(&source, &ignored_signal, plan, |_| {}, || false)
+                .expect("VFX aperture Metal result");
+            let gpu_values = read(&gpu.texture);
+            let maximum = gpu_values
+                .iter()
+                .zip(cpu.presentation_rgba())
+                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                maximum <= 3.0e-3,
+                "f/{f_stop} CPU/Metal deviation {maximum}"
+            );
+            let center = gpu_values[(18 * 64 + 32) as usize];
+            let luminance =
+                0.272_228_72 * center[0] + 0.674_081_74 * center[1] + 0.053_689_517 * center[2];
+            assert!(luminance.is_finite() && luminance > 0.0);
+            if let Some(reference) = reference_luminance {
+                assert!(
+                    (luminance / reference - 1.0).abs() <= 2.0e-3,
+                    "f/{f_stop} changed normalized center from {reference} to {luminance}"
+                );
+            } else {
+                reference_luminance = Some(luminance);
+            }
+        }
     }
 
     #[test]

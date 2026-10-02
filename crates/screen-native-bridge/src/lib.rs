@@ -25,12 +25,13 @@ use screen_application::{
     ReflectionEmitter, ReflectionEnvironmentRig, ReflectionLightAppearance,
     ReflectionPracticalLight, ReflectionSunLight, ReflectionWindowLight, RenderScale, RenderWindow,
     ResolvedRateControl, ResolvedSceneGeometryLensSnapshot, ResolvedShutterMotionSnapshot,
-    SIMULATION_OPACITY_DESCRIPTOR, ScalarInterpolation, SceneFocusAuthoring, SceneFrameAuthoring,
-    SceneFrameResolver, SceneRevision, TemporalCacheConfiguration, TestAuthoringError,
-    TestAuthoringProfileSource, TestAuthoringSelection, TestCaptureAuthoringProfile,
-    TestCaptureRasterMode, TestControlRequirement, TestCoverAuthoringProfile,
-    TestDeviceAuthoringProfile, TestEnvironmentAuthoringProfile, TestLensAuthoringProfile,
-    TestOwnedChoiceOption, TestPageDescriptor as ApplicationTestPageDescriptor,
+    SIMULATION_OPACITY_DESCRIPTOR, SIMULATION_RENDER_MODEL_DESCRIPTORS, ScalarInterpolation,
+    SceneFocusAuthoring, SceneFrameAuthoring, SceneFrameResolver, SceneRevision,
+    TemporalCacheConfiguration, TestAuthoringError, TestAuthoringProfileSource,
+    TestAuthoringSelection, TestCaptureAuthoringProfile, TestCaptureRasterMode,
+    TestControlRequirement, TestCoverAuthoringProfile, TestDeviceAuthoringProfile,
+    TestEnvironmentAuthoringProfile, TestLensAuthoringProfile, TestOwnedChoiceOption,
+    TestPageDescriptor as ApplicationTestPageDescriptor, VFX_CONTINUITY_LEVEL_DESCRIPTOR,
     WORKSTATION_RESOLVED_SCENE_CACHE_BYTES, apply_test_choice, apply_test_choice_with_profiles,
     apply_test_scalar, apply_test_scalar_with_profiles, apply_test_toggle,
     apply_test_toggle_with_profiles, compile_reflection_environment,
@@ -96,6 +97,58 @@ pub struct ScreenApplicationScalarPropertyDescriptorV1 {
     pub default_value: f64,
     pub default_interpolation: u32,
     pub supported_interpolation_mask: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ScreenSimulationModelAuthoringDescriptorV1 {
+    pub physical_id: *const c_char,
+    pub physical_label: *const c_char,
+    pub vfx_continuity_id: *const c_char,
+    pub vfx_continuity_label: *const c_char,
+    pub relative_level_id: *const c_char,
+    pub relative_level_label: *const c_char,
+    pub relative_level_unit: *const c_char,
+    pub relative_level_minimum: f64,
+    pub relative_level_maximum: f64,
+    pub relative_level_default: f64,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v1(
+    output: *mut ScreenSimulationModelAuthoringDescriptorV1,
+) -> bool {
+    static PHYSICAL_ID: OnceLock<CString> = OnceLock::new();
+    static PHYSICAL_LABEL: OnceLock<CString> = OnceLock::new();
+    static VFX_ID: OnceLock<CString> = OnceLock::new();
+    static VFX_LABEL: OnceLock<CString> = OnceLock::new();
+    static LEVEL_ID: OnceLock<CString> = OnceLock::new();
+    static LEVEL_LABEL: OnceLock<CString> = OnceLock::new();
+    static LEVEL_UNIT: OnceLock<CString> = OnceLock::new();
+    fn text(slot: &'static OnceLock<CString>, value: &'static str) -> *const c_char {
+        slot.get_or_init(|| CString::new(value).expect("descriptor strings contain no NUL"))
+            .as_ptr()
+    }
+    if output.is_null() {
+        return false;
+    }
+    let physical = SIMULATION_RENDER_MODEL_DESCRIPTORS[0];
+    let vfx = SIMULATION_RENDER_MODEL_DESCRIPTORS[1];
+    unsafe {
+        *output = ScreenSimulationModelAuthoringDescriptorV1 {
+            physical_id: text(&PHYSICAL_ID, physical.stable_id),
+            physical_label: text(&PHYSICAL_LABEL, physical.display_name),
+            vfx_continuity_id: text(&VFX_ID, vfx.stable_id),
+            vfx_continuity_label: text(&VFX_LABEL, vfx.display_name),
+            relative_level_id: text(&LEVEL_ID, VFX_CONTINUITY_LEVEL_DESCRIPTOR.stable_id),
+            relative_level_label: text(&LEVEL_LABEL, VFX_CONTINUITY_LEVEL_DESCRIPTOR.display_name),
+            relative_level_unit: text(&LEVEL_UNIT, VFX_CONTINUITY_LEVEL_DESCRIPTOR.unit),
+            relative_level_minimum: VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum,
+            relative_level_maximum: VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum,
+            relative_level_default: VFX_CONTINUITY_LEVEL_DESCRIPTOR.default_value,
+        };
+    }
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -827,9 +880,11 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 36;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 37;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
+pub const SCREEN_RENDER_MODEL_PHYSICAL: u32 = 0;
+pub const SCREEN_RENDER_MODEL_VFX_CONTINUITY: u32 = 1;
 pub const SCREEN_AUTHORING_CATALOG_ABI_VERSION: u32 = 10;
 pub const SCREEN_PHYSICAL_PARAMETER_HASH_SIZE: usize = 32;
 pub const SCREEN_PHYSICAL_RASTER_FIT: u32 = 0;
@@ -1215,6 +1270,8 @@ pub struct ScreenPhysicalFrameRequestV2 {
     prepared_render: *const ScreenPreparedRenderV1,
     quality: u32,
     device_vfx_alpha_mode: u32,
+    render_model: u32,
+    vfx_relative_panel_level: f32,
     screen_amount: f32,
     stage_contributions: *const ScreenPhysicalStageContributionV3,
     stage_contribution_count: usize,
@@ -2849,6 +2906,13 @@ unsafe fn physical_frame_submit_impl(
         || request.prepared_render.is_null()
         || quality(request.quality).is_none()
         || request.device_vfx_alpha_mode > SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY
+        || request.render_model > SCREEN_RENDER_MODEL_VFX_CONTINUITY
+        || !request.vfx_relative_panel_level.is_finite()
+        || !(VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum as f32
+            ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
+            .contains(&request.vfx_relative_panel_level)
+        || (request.render_model == SCREEN_RENDER_MODEL_PHYSICAL
+            && request.vfx_relative_panel_level != 1.0)
         || request.requested_width == 0
         || request.requested_height == 0
         || !request.screen_amount.is_finite()
@@ -3108,6 +3172,14 @@ unsafe fn physical_frame_submit_impl(
     let resolved_pipeline = resolved_center.pipeline();
     let active_sensor = resolved_center.active_sensor();
     let plan = PhysicalPipelineExecutionPlan {
+        render_model: match request.render_model {
+            SCREEN_RENDER_MODEL_PHYSICAL => screen_application::SimulationRenderModel::Physical,
+            SCREEN_RENDER_MODEL_VFX_CONTINUITY => {
+                screen_application::SimulationRenderModel::VfxContinuity
+            }
+            _ => unreachable!("validated render model"),
+        },
+        vfx_relative_panel_level: request.vfx_relative_panel_level,
         panel: device.profile,
         panel_uniformity: device.uniformity,
         panel_light_spread: device.light_spread,
@@ -8134,6 +8206,8 @@ mod tests {
             prepared_render,
             quality: 1,
             device_vfx_alpha_mode: SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY,
+            render_model: SCREEN_RENDER_MODEL_PHYSICAL,
+            vfx_relative_panel_level: 1.0,
             screen_amount: 1.0,
             stage_contributions: contributions.as_ptr(),
             stage_contribution_count: contributions.len(),

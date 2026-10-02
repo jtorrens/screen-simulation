@@ -3570,6 +3570,44 @@ struct ContentView: View {
     private var testSetupPanel: some View {
         ScrollView {
             VStack(spacing: 12) {
+                TestPhaseCard(label: "Modelo de simulación") {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        originRow("Modelo") {
+                            Picker("Modelo", selection: Binding(
+                                get: { model.simulationModel },
+                                set: { model.selectSimulationModel($0, undoManager: undoManager) }
+                            )) {
+                                ForEach(model.simulationModelPresentation.options) { option in
+                                    Text(option.label).tag(option.id)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        if model.simulationModel == .vfxContinuity {
+                            originRow(model.simulationModelPresentation.relativeLevelLabel) {
+                                HStack {
+                                    CommittedNumberField(
+                                        label: "×",
+                                        value: model.vfxContinuityState.relativePanelLevel
+                                    ) { value in
+                                        model.setVfxRelativePanelLevel(
+                                            value, undoManager: undoManager
+                                        )
+                                    }
+                                    .frame(width: 86)
+                                    Text(model.simulationModelPresentation.relativeLevelUnit)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Text(
+                                "A 1,0 la luz directa neutra conserva su nivel ACEScg tras la óptica; diafragma y presets mantienen su carácter relativo sin cambiar la exposición global."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
                 if let presentation = model.testPresentation {
                     TestAuthoringView(
                         state: presentation,

@@ -164,17 +164,35 @@ import Testing
         #expect(intermediate.usesCaptureRaster == captureOwned.contains(intermediate))
     }
     let camera = PhysicalIntermediate.cameraRenderedACEScg.nativeRasterSize(
+        renderModel: .physical,
         deviceWidth: 700, deviceHeight: 1_400,
         captureWidth: 4_608, captureHeight: 2_592
     )
     #expect(camera.width == 4_608)
     #expect(camera.height == 2_592)
     let panel = PhysicalIntermediate.panelEmission.nativeRasterSize(
+        renderModel: .physical,
         deviceWidth: 700, deviceHeight: 1_400,
         captureWidth: 4_608, captureHeight: 3_164
     )
     #expect(panel.width == 700)
     #expect(panel.height == 1_400)
+
+    let physicalLens = PhysicalIntermediate.lensProjection.nativeRasterSize(
+        renderModel: .physical,
+        deviceWidth: 1_000, deviceHeight: 1_800,
+        captureWidth: 5_712, captureHeight: 4_284
+    )
+    #expect(physicalLens.width == 1_000)
+    #expect(physicalLens.height == 1_800)
+
+    let continuityLens = PhysicalIntermediate.lensProjection.nativeRasterSize(
+        renderModel: .vfxContinuity,
+        deviceWidth: 1_000, deviceHeight: 1_800,
+        captureWidth: 5_712, captureHeight: 4_284
+    )
+    #expect(continuityLens.width == 5_712)
+    #expect(continuityLens.height == 4_284)
 }
 
 @Test func importedGateSelectsTheLargestCenteredSensorCropWithoutScaling() throws {

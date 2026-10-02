@@ -959,6 +959,53 @@ pub enum DeviceVfxAlphaMode {
     DeviceTransparency,
 }
 
+/// Selects the semantic input interpreted by the shared panel/optics evaluator.
+/// Physical simulation consumes an authored nonlinear Device signal. VFX
+/// continuity consumes the separately typed linear ACEScg input and establishes relative unity at
+/// the complete panel-cell boundary before shared geometry and optics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimulationRenderModel {
+    Physical,
+    VfxContinuity,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SimulationRenderModelDescriptor {
+    pub stable_id: &'static str,
+    pub display_name: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VfxContinuityLevelDescriptor {
+    pub stable_id: &'static str,
+    pub display_name: &'static str,
+    pub unit: &'static str,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub default_value: f64,
+}
+
+pub const SIMULATION_RENDER_MODEL_DESCRIPTORS: [SimulationRenderModelDescriptor; 2] = [
+    SimulationRenderModelDescriptor {
+        stable_id: "physical",
+        display_name: "Simulación física",
+    },
+    SimulationRenderModelDescriptor {
+        stable_id: "vfx-continuity",
+        display_name: "Continuidad VFX · unidad relativa",
+    },
+];
+
+pub const VFX_CONTINUITY_LEVEL_DESCRIPTOR: VfxContinuityLevelDescriptor =
+    VfxContinuityLevelDescriptor {
+        stable_id: "vfx-relative-panel-level",
+        display_name: "Nivel relativo del panel",
+        unit: "×",
+        minimum: 0.0,
+        maximum: 4.0,
+        default_value: 1.0,
+    };
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhysicalPipelineInput {
     pub width: u32,
@@ -966,6 +1013,7 @@ pub struct PhysicalPipelineInput {
     /// Coarse linear ACEScg RGBA entering the physical boundary.
     pub acescg: Vec<[f32; 4]>,
     /// The explicitly color-resolved device code for the same source samples.
+    /// It is required and consumed only by the physical render model.
     pub device_signal: DeviceSignalRaster,
     /// Explicit scene-linear ACEScg equirectangular incident-radiance map.
     /// It must be present exactly when the resolved environment selects the
@@ -1097,6 +1145,11 @@ impl PhysicalRenderContext {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalPipelineExecutionPlan {
+    pub render_model: SimulationRenderModel,
+    /// Unitless Device-panel level used only by `VfxContinuity`. One preserves
+    /// the complete-cell ACEScg mean. Physical simulation requires exactly one
+    /// here so this field cannot become a hidden physical gain.
+    pub vfx_relative_panel_level: f32,
     pub panel: LcdProfile,
     pub panel_uniformity: PanelUniformityProfile,
     pub panel_light_spread: PanelLightSpreadProfile,
@@ -2557,6 +2610,109 @@ fn panel_rectangle_coverage(
     covered as f32 / (GRID * GRID) as f32
 }
 
+fn dot_rgb_row(row: [f32; 3], value: [f32; 3]) -> f32 {
+    row[0] * value[0] + row[1] * value[1] + row[2] * value[2]
+}
+
+fn inverse_rgb_matrix(matrix: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let determinant = matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]);
+    if !determinant.is_finite() || determinant.abs() < 1.0e-8 {
+        return None;
+    }
+    let reciprocal = determinant.recip();
+    Some([
+        [
+            (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1]) * reciprocal,
+            (matrix[0][2] * matrix[2][1] - matrix[0][1] * matrix[2][2]) * reciprocal,
+            (matrix[0][1] * matrix[1][2] - matrix[0][2] * matrix[1][1]) * reciprocal,
+        ],
+        [
+            (matrix[1][2] * matrix[2][0] - matrix[1][0] * matrix[2][2]) * reciprocal,
+            (matrix[0][0] * matrix[2][2] - matrix[0][2] * matrix[2][0]) * reciprocal,
+            (matrix[0][2] * matrix[1][0] - matrix[0][0] * matrix[1][2]) * reciprocal,
+        ],
+        [
+            (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0]) * reciprocal,
+            (matrix[0][1] * matrix[2][0] - matrix[0][0] * matrix[2][1]) * reciprocal,
+            (matrix[0][0] * matrix[1][1] - matrix[0][1] * matrix[1][0]) * reciprocal,
+        ],
+    ])
+}
+
+/// Returns the scalar that makes VFX Continuity exposure-neutral at the optical axis.
+///
+/// The reference is a unit-neutral ACEScg emitter transported through the currently
+/// resolved panel primaries, normal-incidence panel response, cover transmission and
+/// lens pupil/transmission. Applying one scalar preserves the chain's chromatic character
+/// and all field-relative variation while removing only its absolute direct-light loss.
+/// The physical model is exact identity here and never receives a hidden gain.
+pub fn vfx_continuity_direct_transport_normalization(
+    plan: &PhysicalPipelineExecutionPlan,
+) -> Result<f32, ApplicationError> {
+    if plan.render_model == SimulationRenderModel::Physical {
+        return Ok(1.0);
+    }
+    let evaluator = plan.panel.evaluator().map_err(ApplicationError::Panel)?;
+    let parameters = evaluator.device_stage_parameters();
+    let acescg_to_native = inverse_rgb_matrix(parameters.native_to_acescg)
+        .ok_or(ApplicationError::Panel(PanelError::InvalidColorimetry))?;
+    let neutral_acescg = [1.0_f32; 3];
+    let neutral_native = [
+        dot_rgb_row(acescg_to_native[0], neutral_acescg),
+        dot_rgb_row(acescg_to_native[1], neutral_acescg),
+        dot_rgb_row(acescg_to_native[2], neutral_acescg),
+    ];
+    let (camera, _) = plan
+        .scene_geometry_lens
+        .resolve(
+            plan.camera_position,
+            plan.camera_rotation,
+            plan.screen_translation,
+            plan.screen_rotation,
+            plan.lens_amount,
+        )
+        .map_err(ApplicationError::Geometry)?;
+    let cover = plan
+        .cover
+        .evaluator(match plan.environment {
+            IncidentEnvironment::Procedural(environment) => environment,
+            IncidentEnvironment::Equirectangular(_) => ProceduralEnvironment::NONE,
+        })
+        .map_err(ApplicationError::Cover)?;
+    let transmission = cover.transmission(1.0);
+    let pupil = core::f32::consts::FRAC_PI_4 / (camera.f_stop * camera.f_stop);
+    let weighted_native = LinearRgb::new(
+        neutral_native[0]
+            * evaluator.angular_channel(1.0, 0)
+            * camera.lens.transmission_rgb[0]
+            * transmission.r
+            * pupil,
+        neutral_native[1]
+            * evaluator.angular_channel(1.0, 1)
+            * camera.lens.transmission_rgb[1]
+            * transmission.g
+            * pupil,
+        neutral_native[2]
+            * evaluator.angular_channel(1.0, 2)
+            * camera.lens.transmission_rgb[2]
+            * transmission.b
+            * pupil,
+    );
+    let transported = evaluator.native_to_acescg(weighted_native);
+    let neutral_luminance =
+        0.272_228_72 * transported.r + 0.674_081_74 * transported.g + 0.053_689_517 * transported.b;
+    if !neutral_luminance.is_finite() || neutral_luminance <= 0.0 {
+        return Err(ApplicationError::InvalidCharacterStrength);
+    }
+    let normalization = neutral_luminance.recip();
+    if !normalization.is_finite() || normalization <= 0.0 {
+        return Err(ApplicationError::InvalidCharacterStrength);
+    }
+    Ok(normalization)
+}
+
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
 /// Product composition uses the corresponding platform backend; this function
 /// owns the reference numeric result and never applies a camera or output transform.
@@ -2577,23 +2733,31 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         (IncidentEnvironment::Equirectangular(_), Some(raster)) => raster.validate()?,
         _ => return Err(ApplicationError::OpticalSampleRasterMismatch),
     }
-    if [
-        plan.screen_amount,
-        plan.emission_amount,
-        plan.subpixel_geometry_amount,
-        plan.moire_intensity,
-        plan.moire_saturation,
-        plan.moire_filter_strength,
-        plan.panel_uniformity.character_strength,
-        plan.temporal_emission_amount,
-        plan.scene_geometry_amount,
-        plan.lens_amount,
-        plan.shutter_motion_amount,
-        plan.sensor_noise_amount,
-    ]
-    .into_iter()
-    .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
+    if !plan.vfx_relative_panel_level.is_finite()
+        || !(VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum as f32
+            ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
+            .contains(&plan.vfx_relative_panel_level)
+        || [
+            plan.screen_amount,
+            plan.emission_amount,
+            plan.subpixel_geometry_amount,
+            plan.moire_intensity,
+            plan.moire_saturation,
+            plan.moire_filter_strength,
+            plan.panel_uniformity.character_strength,
+            plan.temporal_emission_amount,
+            plan.scene_geometry_amount,
+            plan.lens_amount,
+            plan.shutter_motion_amount,
+            plan.sensor_noise_amount,
+        ]
+        .into_iter()
+        .any(|amount| !amount.is_finite() || !(0.0..=4.0).contains(&amount))
         || !plan.temporal_emission_gain.is_finite()
+    {
+        return Err(ApplicationError::InvalidCharacterStrength);
+    }
+    if plan.render_model == SimulationRenderModel::Physical && plan.vfx_relative_panel_level != 1.0
     {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
@@ -2620,6 +2784,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             plan.lens_amount,
         )
         .map_err(ApplicationError::Geometry)?;
+    let vfx_direct_normalization = vfx_continuity_direct_transport_normalization(&plan)?;
     validate_finite_environment_enclosure(
         plan.environment,
         resolved_scene.0,
@@ -2656,7 +2821,32 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     let parameters = evaluator.device_stage_parameters();
     let source_width = request.input.width;
     let source_height = request.input.height;
-    let prepared = PreparedDeviceSignalRaster::new(request.input.device_signal)?;
+    let panel_input = match plan.render_model {
+        SimulationRenderModel::Physical => request.input.device_signal,
+        SimulationRenderModel::VfxContinuity => {
+            let acescg_to_native = inverse_rgb_matrix(parameters.native_to_acescg)
+                .ok_or(ApplicationError::Panel(PanelError::InvalidColorimetry))?;
+            DeviceSignalRaster {
+                width: request.input.width,
+                height: request.input.height,
+                pixels: request
+                    .input
+                    .acescg
+                    .iter()
+                    .map(|pixel| {
+                        let acescg = [pixel[0], pixel[1], pixel[2]];
+                        DeviceRgb::new(
+                            dot_rgb_row(acescg_to_native[0], acescg),
+                            dot_rgb_row(acescg_to_native[1], acescg),
+                            dot_rgb_row(acescg_to_native[2], acescg),
+                        )
+                    })
+                    .collect(),
+                alpha: request.input.acescg.iter().map(|pixel| pixel[3]).collect(),
+            }
+        }
+    };
+    let prepared = PreparedDeviceSignalRaster::new(panel_input)?;
     let resolved_device_alpha = |authored_alpha: f32, panel_coverage: f32| {
         panel_coverage
             * match plan.device_vfx_alpha_mode {
@@ -2664,17 +2854,25 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
             }
     };
+    let resolved_native = |value: DeviceRgb| match plan.render_model {
+        SimulationRenderModel::Physical => LinearRgb::new(
+            evaluator.native_channel(value, 0),
+            evaluator.native_channel(value, 1),
+            evaluator.native_channel(value, 2),
+        ),
+        SimulationRenderModel::VfxContinuity => {
+            let scale = parameters.white_level_nits * plan.vfx_relative_panel_level;
+            LinearRgb::new(value.r * scale, value.g * scale, value.b * scale)
+        }
+    };
     let emission_integral =
         DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
             let alpha = match plan.device_vfx_alpha_mode {
                 DeviceVfxAlphaMode::Ignore => 1.0,
                 DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
             };
-            DeviceRgb::new(
-                evaluator.native_channel(value, 0) * alpha,
-                evaluator.native_channel(value, 1) * alpha,
-                evaluator.native_channel(value, 2) * alpha,
-            )
+            let native = resolved_native(value);
+            DeviceRgb::new(native.r * alpha, native.g * alpha, native.b * alpha)
         });
     let glow_emission_integral =
         DeviceSignalIntegral::new_mapped_with_alpha(&prepared.source, |value, authored_alpha| {
@@ -2682,11 +2880,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 DeviceVfxAlphaMode::Ignore => 1.0,
                 DeviceVfxAlphaMode::DeviceTransparency => authored_alpha,
             };
-            let native = [
-                evaluator.native_channel(value, 0) * alpha,
-                evaluator.native_channel(value, 1) * alpha,
-                evaluator.native_channel(value, 2) * alpha,
-            ];
+            let resolved = resolved_native(value);
+            let native = [resolved.r * alpha, resolved.g * alpha, resolved.b * alpha];
             let matrix = parameters.native_to_acescg;
             let rgb = [
                 (matrix[0][0] * native[0] + matrix[0][1] * native[1] + matrix[0][2] * native[2])
@@ -3617,7 +3812,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     + resolved_panel_coverage
                         * (moire_free_covered_with_environment.b - exterior_glow.b),
             );
-            let lens_resolved = apply_moire_look(
+            let transported_lens = apply_moire_look(
                 [
                     moire_free_covered.r,
                     moire_free_covered.g,
@@ -3627,11 +3822,30 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 plan.moire_intensity,
                 plan.moire_saturation,
             );
+            let reflected = [
+                resolved_panel_coverage * local_device_matte * reflected_environment.r,
+                resolved_panel_coverage * local_device_matte * reflected_environment.g,
+                resolved_panel_coverage * local_device_matte * reflected_environment.b,
+            ];
+            let lens_resolved = if plan.render_model == SimulationRenderModel::VfxContinuity {
+                [
+                    reflected[0] + (transported_lens[0] - reflected[0]) * vfx_direct_normalization,
+                    reflected[1] + (transported_lens[1] - reflected[1]) * vfx_direct_normalization,
+                    reflected[2] + (transported_lens[2] - reflected[2]) * vfx_direct_normalization,
+                ]
+            } else {
+                transported_lens
+            };
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
+            let glare_normalization = if plan.render_model == SimulationRenderModel::VfxContinuity {
+                vfx_direct_normalization
+            } else {
+                1.0
+            };
             let temporal_gate_average = LinearRgb::new(
-                veiling_glare_gate_average.r * temporal_gain,
-                veiling_glare_gate_average.g * temporal_gain,
-                veiling_glare_gate_average.b * temporal_gain,
+                veiling_glare_gate_average.r * temporal_gain * glare_normalization,
+                veiling_glare_gate_average.g * temporal_gain * glare_normalization,
+                veiling_glare_gate_average.b * temporal_gain * glare_normalization,
             );
             let glared = LinearRgb::new(
                 lens_resolved[0] + glare_fraction * (temporal_gate_average.r - lens_resolved[0]),
@@ -9437,6 +9651,8 @@ mod tests {
             },
             render_context: PhysicalRenderContext::full_frame(4, 2),
             plan: PhysicalPipelineExecutionPlan {
+                render_model: SimulationRenderModel::Physical,
+                vfx_relative_panel_level: 1.0,
                 panel,
                 panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile {
@@ -10556,6 +10772,90 @@ mod tests {
         assert!(matrix_energy.is_finite() && matrix_energy > 0.0);
         assert!(matrix.diagnostic.sampling.subpixel_geometry_resolved);
         assert_eq!(matrix.diagnostic.geometry.pitch_x_meters, 0.002);
+    }
+
+    #[test]
+    fn vfx_continuity_panel_cell_has_exact_relative_unity_for_extended_range() {
+        for stripe_layout in [
+            screen_panel::StripeLayout::Rgb,
+            screen_panel::StripeLayout::Bgr,
+        ] {
+            let source = [1.5_f32, -0.25_f32, 2.0_f32];
+            let mut request =
+                flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::Native, 1.0);
+            request.plan.render_model = SimulationRenderModel::VfxContinuity;
+            request.plan.vfx_relative_panel_level = 1.0;
+            request.plan.panel.native_width = 1;
+            request.plan.panel.native_height = 1;
+            request.plan.panel.stripe_layout = stripe_layout;
+            request.plan.panel_uniformity.character_strength = 0.0;
+            request.plan.panel_light_spread.character_strength = 0.0;
+            request.plan.temporal_emission_amount = 0.0;
+            request.plan.requested_width = 1;
+            request.plan.requested_height = 1;
+            request.plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
+            request.render_context = PhysicalRenderContext::full_frame(1, 1);
+            request.input.width = 1;
+            request.input.height = 1;
+            request.input.acescg = vec![[source[0], source[1], source[2], 1.0]];
+            request.input.device_signal = DeviceSignalRaster {
+                width: 1,
+                height: 1,
+                pixels: vec![DeviceRgb::new(99.0, -99.0, 42.0)],
+                alpha: vec![0.0],
+            };
+
+            let result =
+                evaluate_physical_pipeline_cpu_oracle(request).expect("VFX relative panel cell");
+            assert_eq!((result.width(), result.height()), (3, 3));
+            for channel in 0..3 {
+                let mean = result
+                    .presentation_rgba()
+                    .iter()
+                    .map(|pixel| pixel[channel])
+                    .sum::<f32>()
+                    / result.presentation_rgba().len() as f32;
+                assert!(
+                    (mean - source[channel]).abs() <= 1.0e-5,
+                    "{stripe_layout:?} channel {channel}: {mean} != {}",
+                    source[channel]
+                );
+            }
+            assert!(
+                result
+                    .presentation_rgba()
+                    .iter()
+                    .all(|pixel| pixel[3] == 1.0)
+            );
+        }
+    }
+
+    #[test]
+    fn vfx_continuity_optical_normalization_tracks_aperture_without_panel_luminance() {
+        let mut plan =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0).plan;
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.lens_amount = 1.0;
+        plan.scene_geometry_lens.f_stop = 2.0;
+        let at_f2 = vfx_continuity_direct_transport_normalization(&plan)
+            .expect("valid f/2 VFX normalization");
+        plan.scene_geometry_lens.f_stop = 8.0;
+        let at_f8 = vfx_continuity_direct_transport_normalization(&plan)
+            .expect("valid f/8 VFX normalization");
+        assert!((at_f8 / at_f2 - 16.0).abs() <= 2.0e-5);
+
+        let original = at_f8;
+        plan.panel.white_level_nits *= 3.0;
+        let brighter_panel = vfx_continuity_direct_transport_normalization(&plan)
+            .expect("panel luminance does not define relative VFX exposure");
+        assert!((brighter_panel - original).abs() <= 2.0e-5);
+
+        plan.render_model = SimulationRenderModel::Physical;
+        assert_eq!(
+            vfx_continuity_direct_transport_normalization(&plan)
+                .expect("physical route owns no relative normalization"),
+            1.0
+        );
     }
 
     #[test]
