@@ -38,6 +38,10 @@
         "scripts/migrate_render_queue_v16_to_v17.py",
         "scripts/migrate_scene_autosaves_v26_to_v27.py",
         "scripts/test_migrate_simulation_models.py",
+        "scripts/migrate_scene_library_v30_to_v31.py",
+        "scripts/migrate_render_queue_v17_to_v18.py",
+        "scripts/migrate_scene_autosaves_v27_to_v28.py",
+        "scripts/test_migrate_vfx_optical_character.py",
         "scripts/check_native_physical_abi.py",
         "scripts/check_architecture.py"
       ]

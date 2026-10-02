@@ -197,22 +197,22 @@ struct BackupHubWorkstationProducer {
         let scenesDirectory = stateRoot
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Scenes", isDirectory: true)
-        let scenesDocument = scenesDirectory.appendingPathComponent("Scenes.v30.json")
+        let scenesDocument = scenesDirectory.appendingPathComponent("Scenes.v31.json")
         if fileManager.fileExists(atPath: scenesDocument.path) {
             let store = try SceneLibraryStore(
                 directoryURL: scenesDirectory,
                 environmentLibraryRoot: applicationSupportURL
             )
             let document = try store.load()
-            sources.append(("Library/Scenes/Scenes.v30.json", scenesDocument))
+            sources.append(("Library/Scenes/Scenes.v31.json", scenesDocument))
             for scene in document.scenes {
                 sources.append(("Library/Scenes/\(scene.thumbnailFileName)", store.thumbnailURL(for: scene)))
             }
         }
 
         try appendTree(
-            at: stateRoot.appendingPathComponent("Library/Autosave.v27", isDirectory: true),
-            relativeRoot: "Library/Autosave.v27",
+            at: stateRoot.appendingPathComponent("Library/Autosave.v28", isDirectory: true),
+            relativeRoot: "Library/Autosave.v28",
             to: &sources
         )
         try appendTree(
@@ -222,10 +222,10 @@ struct BackupHubWorkstationProducer {
         )
 
         let queueDirectory = stateRoot.appendingPathComponent("RenderQueue", isDirectory: true)
-        let queueDocument = queueDirectory.appendingPathComponent("RenderQueue.v17.json")
+        let queueDocument = queueDirectory.appendingPathComponent("RenderQueue.v18.json")
         if fileManager.fileExists(atPath: queueDocument.path) {
             _ = try RenderQueueStore(directoryURL: queueDirectory).load()
-            sources.append(("RenderQueue/RenderQueue.v17.json", queueDocument))
+            sources.append(("RenderQueue/RenderQueue.v18.json", queueDocument))
         }
 
         let ordered = sources.sorted { $0.relativePath < $1.relativePath }

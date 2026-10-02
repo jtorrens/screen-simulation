@@ -233,7 +233,7 @@ struct SceneAuthoringContext: Codable, Equatable, Sendable {
 }
 
 struct SceneAuthoringDocument: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SceneAuthoring.v5"
+    static let schema = "ScreenSimulation.SceneAuthoring.v6"
 
     let schema: String
     let activeModel: SceneSimulationModel
@@ -279,7 +279,7 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v28"
+    static let schema = "ScreenSimulation.SavedScene.v29"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
@@ -502,7 +502,7 @@ enum SceneDefaultResetDestination: Sendable {
 /// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
 /// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
-    static let schema = "ScreenSimulation.SceneAutosave.v5"
+    static let schema = "ScreenSimulation.SceneAutosave.v6"
     let schema: String
     let id: UUID
     let originalSceneID: UUID
@@ -612,7 +612,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 30
+    static let currentSchemaVersion = 31
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -835,15 +835,15 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
-        documentURL = directory.appendingPathComponent("Scenes.v30.json")
+        documentURL = directory.appendingPathComponent("Scenes.v31.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v29.json")
+            let prior = directoryURL.appendingPathComponent("Scenes.v30.json")
             if FileManager.default.fileExists(atPath: prior.path) {
                 throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v29.json. Ejecuta la migración de mantenimiento v29→v30 antes de abrir la biblioteca."
+                    "Existe Scenes.v30.json. Ejecuta la migración de mantenimiento v30→v31 antes de abrir la biblioteca."
                 )
             }
             return SceneLibraryDocument()
@@ -895,7 +895,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v27", isDirectory: true)
+            .appendingPathComponent("Autosave.v28", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -1074,7 +1074,9 @@ struct SceneLibraryStore: Sendable {
                   ]),
                   SceneSimulationModel(rawValue: authoring["activeModel"] as? String ?? "") != nil,
                   let vfxContinuity = authoring["vfxContinuity"] as? [String: Any],
-                  Set(vfxContinuity.keys) == ["relativePanelLevel"],
+                  Set(vfxContinuity.keys) == [
+                      "relativePanelLevel", "emissionPresence", "chromaticFringe",
+                  ],
                   let profiles = authoring["profiles"] as? [String: Any],
                   Set(profiles.keys) == [
                       "deviceID", "coverGlassID", "captureID", "lensID", "environmentID",
@@ -1673,7 +1675,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v27", isDirectory: true)
+            .appendingPathComponent("Autosave.v28", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]

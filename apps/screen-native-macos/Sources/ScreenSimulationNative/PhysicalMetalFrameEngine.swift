@@ -285,6 +285,8 @@ final class PhysicalMetalFrameEngine {
         deviceVfxAlphaMode: String,
         renderModel: SceneSimulationModel = .physical,
         vfxRelativePanelLevel: Double = 1.0,
+        vfxEmissionPresence: Double = 1.0,
+        vfxChromaticFringe: Double = 1.0,
         screenAmount: Double,
         contributions: [PhysicalStageContribution],
         requestedDimensions: PhysicalDimensions,
@@ -370,6 +372,8 @@ final class PhysicalMetalFrameEngine {
             raw.render_model = SCREEN_RENDER_MODEL_VFX_CONTINUITY
         }
         raw.vfx_relative_panel_level = Float(vfxRelativePanelLevel)
+        raw.vfx_emission_presence = Float(vfxEmissionPresence)
+        raw.vfx_chromatic_fringe = Float(vfxChromaticFringe)
         switch deviceVfxAlphaMode {
         case "ignore":
             raw.device_vfx_alpha_mode = SCREEN_DEVICE_VFX_ALPHA_IGNORE

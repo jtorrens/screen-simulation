@@ -1006,6 +1006,31 @@ pub const VFX_CONTINUITY_LEVEL_DESCRIPTOR: VfxContinuityLevelDescriptor =
         default_value: 1.0,
     };
 
+pub const VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR: VfxContinuityLevelDescriptor =
+    VfxContinuityLevelDescriptor {
+        stable_id: "vfx-emission-presence",
+        display_name: "Presencia de emisión",
+        unit: "×",
+        minimum: 0.0,
+        maximum: 4.0,
+        default_value: 1.0,
+    };
+
+pub const VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR: VfxContinuityLevelDescriptor =
+    VfxContinuityLevelDescriptor {
+        stable_id: "vfx-chromatic-fringe",
+        display_name: "Fringe cromático",
+        unit: "×",
+        minimum: 0.0,
+        maximum: 4.0,
+        default_value: 1.0,
+    };
+
+/// Model calibration which makes the separately transported additive halo read as
+/// emitted light after a neutral VFX core reaches the display-transform shoulder.
+/// It never changes physical evaluation or the direct/core normalization.
+pub const VFX_CONTINUITY_EMISSION_CALIBRATION: f32 = 1.5;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhysicalPipelineInput {
     pub width: u32,
@@ -1150,6 +1175,12 @@ pub struct PhysicalPipelineExecutionPlan {
     /// the complete-cell ACEScg mean. Physical simulation requires exactly one
     /// here so this field cannot become a hidden physical gain.
     pub vfx_relative_panel_level: f32,
+    /// VFX-only multiplier of the calibrated additive emission residual. One is
+    /// the model calibration; zero removes only the soft emission halo.
+    pub vfx_emission_presence: f32,
+    /// VFX-only multiplier of the selected Lens chromatic displacement around
+    /// its neutral optical axis. One preserves the standard Lens unchanged.
+    pub vfx_chromatic_fringe: f32,
     pub panel: LcdProfile,
     pub panel_uniformity: PanelUniformityProfile,
     pub panel_light_spread: PanelLightSpreadProfile,
@@ -2738,6 +2769,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
             .contains(&plan.vfx_relative_panel_level)
         || [
+            plan.vfx_emission_presence,
+            plan.vfx_chromatic_fringe,
             plan.screen_amount,
             plan.emission_amount,
             plan.subpixel_geometry_amount,
@@ -2757,7 +2790,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
     {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
-    if plan.render_model == SimulationRenderModel::Physical && plan.vfx_relative_panel_level != 1.0
+    if plan.render_model == SimulationRenderModel::Physical
+        && (plan.vfx_relative_panel_level != 1.0
+            || plan.vfx_emission_presence != 1.0
+            || plan.vfx_chromatic_fringe != 1.0)
     {
         return Err(ApplicationError::InvalidCharacterStrength);
     }
@@ -2774,7 +2810,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             IncidentEnvironment::Equirectangular(_) => ProceduralEnvironment::NONE,
         })
         .map_err(ApplicationError::Cover)?;
-    let resolved_scene = plan
+    let mut resolved_scene = plan
         .scene_geometry_lens
         .resolve(
             plan.camera_position,
@@ -2784,6 +2820,15 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             plan.lens_amount,
         )
         .map_err(ApplicationError::Geometry)?;
+    if plan.render_model == SimulationRenderModel::VfxContinuity {
+        for channel in 0..3 {
+            resolved_scene.0.lens.longitudinal_chromatic_meters[channel] *=
+                plan.vfx_chromatic_fringe;
+            resolved_scene.0.lens.lateral_chromatic_scale[channel] = 1.0
+                + (resolved_scene.0.lens.lateral_chromatic_scale[channel] - 1.0)
+                    * plan.vfx_chromatic_fringe;
+        }
+    }
     let vfx_direct_normalization = vfx_continuity_direct_transport_normalization(&plan)?;
     validate_finite_environment_enclosure(
         plan.environment,
@@ -3599,8 +3644,15 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             // pixel transitions continuously without changing covered bloom.
             let exterior_glow_gain =
                 1.0 + (plan.cover_glow_exterior_intensity - 1.0) * (1.0 - ideal[3].clamp(0.0, 1.0));
-            let glow_strength =
-                glow_profile.intensity * glow_profile.character_strength * exterior_glow_gain;
+            let vfx_emission_gain = if plan.render_model == SimulationRenderModel::VfxContinuity {
+                VFX_CONTINUITY_EMISSION_CALIBRATION * plan.vfx_emission_presence
+            } else {
+                1.0
+            };
+            let glow_strength = glow_profile.intensity
+                * glow_profile.character_strength
+                * exterior_glow_gain
+                * vfx_emission_gain;
             let halo = prepared_emission_glow.sample(glow_center);
             let soft_glow = [
                 glow_strength * halo[0],
@@ -9653,6 +9705,8 @@ mod tests {
             plan: PhysicalPipelineExecutionPlan {
                 render_model: SimulationRenderModel::Physical,
                 vfx_relative_panel_level: 1.0,
+                vfx_emission_presence: 1.0,
+                vfx_chromatic_fringe: 1.0,
                 panel,
                 panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile {
@@ -10856,6 +10910,75 @@ mod tests {
                 .expect("physical route owns no relative normalization"),
             1.0
         );
+    }
+
+    #[test]
+    fn vfx_optical_character_separates_emission_residue_from_chromatic_fringe() {
+        let mut base = flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::High, 1.0);
+        base.plan.render_model = SimulationRenderModel::VfxContinuity;
+        base.plan.requested_width = 64;
+        base.plan.requested_height = 36;
+        base.render_context = PhysicalRenderContext::full_frame(64, 36);
+        base.plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+        base.plan.panel.active_width = Meters(0.18);
+        base.plan.panel.active_height = Meters(0.10);
+        base.plan.panel_uniformity.character_strength = 0.0;
+        base.plan.panel_light_spread.character_strength = 0.0;
+        base.plan.subpixel_geometry_amount = 0.0;
+        base.plan.moire_intensity = 0.0;
+        base.plan.scene_geometry_amount = 1.0;
+        base.plan.lens_amount = 1.0;
+        base.plan.camera_position = Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.7,
+        };
+        base.plan.scene_geometry_lens.focus_distance_meters = 0.7;
+        base.plan.cover = screen_cover::cover_glass_preset("cover-matte-ar")
+            .expect("calibrated glow cover")
+            .profile;
+
+        let mut no_emission = base.clone();
+        no_emission.plan.vfx_emission_presence = 0.0;
+        no_emission.plan.vfx_chromatic_fringe = 0.0;
+        let no_emission = evaluate_physical_pipeline_cpu_oracle(no_emission)
+            .expect("neutral VFX optical character");
+        let mut calibrated_emission = base.clone();
+        calibrated_emission.plan.vfx_emission_presence = 1.0;
+        calibrated_emission.plan.vfx_chromatic_fringe = 0.0;
+        let calibrated_emission = evaluate_physical_pipeline_cpu_oracle(calibrated_emission)
+            .expect("calibrated VFX emission");
+        let energy = |result: &PhysicalPipelineCpuResult| {
+            result
+                .presentation_rgba()
+                .iter()
+                .map(|pixel| pixel[0] + pixel[1] + pixel[2])
+                .sum::<f32>()
+        };
+        assert!(energy(&calibrated_emission) > energy(&no_emission));
+
+        let mut authored_fringe = base;
+        authored_fringe.plan.vfx_emission_presence = 0.0;
+        authored_fringe.plan.vfx_chromatic_fringe = 1.0;
+        let authored_fringe = evaluate_physical_pipeline_cpu_oracle(authored_fringe)
+            .expect("authored standard Lens fringe");
+        let fringe_difference = authored_fringe
+            .presentation_rgba()
+            .iter()
+            .zip(no_emission.presentation_rgba())
+            .flat_map(|(authored, neutral)| {
+                authored[..3]
+                    .iter()
+                    .zip(&neutral[..3])
+                    .map(|(authored, neutral)| (authored - neutral).abs())
+            })
+            .sum::<f32>();
+        assert!(fringe_difference > 1.0e-4);
+
+        let mut invalid_physical =
+            flat_panel_request(RasterPlacement::Stretch, FlatPanelQuality::Native, 1.0);
+        invalid_physical.plan.vfx_emission_presence = 0.0;
+        assert!(evaluate_physical_pipeline_cpu_oracle(invalid_physical).is_err());
     }
 
     #[test]

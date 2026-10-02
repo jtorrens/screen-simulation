@@ -38,6 +38,8 @@ fn request(
         plan: PhysicalPipelineExecutionPlan {
             render_model: screen_application::SimulationRenderModel::Physical,
             vfx_relative_panel_level: 1.0,
+            vfx_emission_presence: 1.0,
+            vfx_chromatic_fringe: 1.0,
             panel,
             panel_uniformity: screen_panel::PanelUniformityProfile {
                 character_strength: 0.0,

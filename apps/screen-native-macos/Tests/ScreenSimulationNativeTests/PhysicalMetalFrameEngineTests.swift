@@ -152,6 +152,32 @@ import Testing
     )
 }
 
+@Test @MainActor func vfxOpticalCharacterCrossesTheNativeFrameABIIndependently() async throws {
+    let fixture = try makePhysicalFixture(width: 64, height: 36, chromaticLens: true)
+    let dimensions = try PhysicalDimensions(width: 80, height: 60)
+    let authored = try contributions()
+    func pixels(emission: Double, fringe: Double, identity: UInt64) async throws -> [Float] {
+        let snapshot = try await terminalSnapshot(submit(
+            fixture: fixture,
+            screenAmount: 1,
+            contributions: authored,
+            intermediate: .lensProjection,
+            identity: identity,
+            dimensions: dimensions,
+            renderModel: .vfxContinuity,
+            vfxEmissionPresence: emission,
+            vfxChromaticFringe: fringe
+        ))
+        #expect(snapshot.state == .complete)
+        return readRGBA32(try #require(snapshot.frame?.texture))
+    }
+    let neutral = try await pixels(emission: 0, fringe: 0, identity: 321)
+    let emission = try await pixels(emission: 1, fringe: 0, identity: 322)
+    let fringe = try await pixels(emission: 0, fringe: 1, identity: 323)
+    #expect(zip(neutral, emission).contains { pair in pair.0 != pair.1 })
+    #expect(zip(neutral, fringe).contains { pair in pair.0 != pair.1 })
+}
+
 @Test @MainActor func shutterAngleIntegratesPhysicalEnergyAndDevelopsAVisibleFrame() async throws {
     let fixture = try makePhysicalFixture(width: 64, height: 36)
     let shutter90 = try await terminalSnapshot(submit(
@@ -380,7 +406,8 @@ private func makePhysicalFixture(
     blackMatrix: Double = 0.12,
     useNativeDeviceRaster: Bool = false,
     width: Int = 4,
-    height: Int = 4
+    height: Int = 4,
+    chromaticLens: Bool = false
 ) throws -> PhysicalFixture {
     let display = try StudioColorMetalDisplay()
     let pixelCount = width * height
@@ -427,6 +454,10 @@ private func makePhysicalFixture(
         device: device,
         coverGlass: cover
     )
+    if chromaticLens {
+        authoring.sceneLens.longitudinalChromaticMeters = [0.0012, 0, -0.0015]
+        authoring.sceneLens.lateralChromaticScale = [1.0008, 1, 0.9991]
+    }
     authoring.sensor.nativeWidth = UInt32(width)
     authoring.sensor.nativeHeight = UInt32(height)
     let pipeline = try authoring.resolvedPipeline()
@@ -491,7 +522,9 @@ private func submit(
     exposureSeconds: Double? = nil,
     vfxTransparency: PhysicalVfxTransparencyRequest? = nil,
     renderModel: SceneSimulationModel = .physical,
-    vfxRelativePanelLevel: Double = 1
+    vfxRelativePanelLevel: Double = 1,
+    vfxEmissionPresence: Double = 1,
+    vfxChromaticFringe: Double = 1
 ) throws -> PhysicalMetalFrameJob {
     let uniformityAmount = try #require(contributions.first {
         $0.stage == .screen(.panelUniformity)
@@ -590,6 +623,8 @@ private func submit(
         deviceVfxAlphaMode: "device-transparency",
         renderModel: renderModel,
         vfxRelativePanelLevel: vfxRelativePanelLevel,
+        vfxEmissionPresence: vfxEmissionPresence,
+        vfxChromaticFringe: vfxChromaticFringe,
         screenAmount: screenAmount,
         contributions: contributions,
         requestedDimensions: requestedDimensions,

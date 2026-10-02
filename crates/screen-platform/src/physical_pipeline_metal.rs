@@ -11,10 +11,10 @@ use metal::{
 };
 use screen_application::{
     DeviceVfxAlphaMode, LensEvaluationModel, PhysicalIntermediate, PhysicalPipelineExecutionPlan,
-    RasterPlacement, SimulationRenderModel, VFX_CONTINUITY_LEVEL_DESCRIPTOR,
-    expose_physical_pipeline_raw, physical_environment_reference_sample_count,
-    placed_signal_area_fraction, resample_physical_device_matte,
-    vfx_continuity_direct_transport_normalization,
+    RasterPlacement, SimulationRenderModel, VFX_CONTINUITY_EMISSION_CALIBRATION,
+    VFX_CONTINUITY_LEVEL_DESCRIPTOR, expose_physical_pipeline_raw,
+    physical_environment_reference_sample_count, placed_signal_area_fraction,
+    resample_physical_device_matte, vfx_continuity_direct_transport_normalization,
 };
 use screen_cover::{EnvironmentPattern, IncidentEnvironment};
 use screen_geometry::{project_screen, projected_screen_gate_coverage};
@@ -1602,6 +1602,8 @@ impl MetalPhysicalPipeline {
                 ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
                 .contains(&plan.vfx_relative_panel_level)
             || [
+                plan.vfx_emission_presence,
+                plan.vfx_chromatic_fringe,
                 plan.screen_amount,
                 plan.emission_amount,
                 plan.subpixel_geometry_amount,
@@ -1622,10 +1624,12 @@ impl MetalPhysicalPipeline {
             ));
         }
         if plan.render_model == SimulationRenderModel::Physical
-            && plan.vfx_relative_panel_level != 1.0
+            && (plan.vfx_relative_panel_level != 1.0
+                || plan.vfx_emission_presence != 1.0
+                || plan.vfx_chromatic_fringe != 1.0)
         {
             return Err(MetalPhysicalPipelineError::InvalidPlan(
-                "physical simulation cannot apply a VFX relative panel gain".to_owned(),
+                "physical simulation cannot apply VFX-only controls".to_owned(),
             ));
         }
         if !plan.computational_character_strength.is_finite()
@@ -1641,7 +1645,7 @@ impl MetalPhysicalPipeline {
         plan.computational_capture
             .validate()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
-        let (camera, screen) = plan
+        let (mut camera, screen) = plan
             .scene_geometry_lens
             .resolve(
                 plan.camera_position,
@@ -1651,6 +1655,14 @@ impl MetalPhysicalPipeline {
                 plan.lens_amount,
             )
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        if plan.render_model == SimulationRenderModel::VfxContinuity {
+            for channel in 0..3 {
+                camera.lens.longitudinal_chromatic_meters[channel] *= plan.vfx_chromatic_fringe;
+                camera.lens.lateral_chromatic_scale[channel] = 1.0
+                    + (camera.lens.lateral_chromatic_scale[channel] - 1.0)
+                        * plan.vfx_chromatic_fringe;
+            }
+        }
         if let screen_cover::IncidentEnvironment::Equirectangular(environment) = plan.environment {
             if let screen_cover::EnvironmentProjection::FiniteSphere {
                 center_meters,
@@ -1868,7 +1880,11 @@ impl MetalPhysicalPipeline {
                 },
                 plan.vfx_relative_panel_level,
                 vfx_direct_normalization,
-                0.0,
+                if plan.render_model == SimulationRenderModel::VfxContinuity {
+                    VFX_CONTINUITY_EMISSION_CALIBRATION * plan.vfx_emission_presence
+                } else {
+                    1.0
+                },
             ],
             panel_size_meters: [
                 plan.panel.active_width.0,
@@ -2616,6 +2632,8 @@ mod tests {
             PhysicalPipelineExecutionPlan {
                 render_model: screen_application::SimulationRenderModel::Physical,
                 vfx_relative_panel_level: 1.0,
+                vfx_emission_presence: 1.0,
+                vfx_chromatic_fringe: 1.0,
                 panel,
                 panel_uniformity: screen_panel::PanelUniformityProfile::PROFESSIONAL_COMPENSATED,
                 panel_light_spread: PanelLightSpreadProfile::LCD_DESKTOP,
@@ -2758,46 +2776,52 @@ mod tests {
     }
 
     #[test]
-    fn vfx_continuity_relative_panel_route_matches_cpu_on_metal() {
+    fn vfx_continuity_optical_character_matches_cpu_on_metal() {
         let device = metal::Device::system_default().expect("test Mac has Metal");
         let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
         for layout in [StripeLayout::Rgb, StripeLayout::Bgr] {
-            let (input, mut plan) = fixture(
-                RasterPlacement::Stretch,
-                FlatPanelQuality::Native,
-                layout,
-                0.2,
-                1.0,
-            );
-            plan.render_model = SimulationRenderModel::VfxContinuity;
-            plan.vfx_relative_panel_level = 1.75;
-            plan.panel_uniformity.character_strength = 0.0;
-            plan.panel_light_spread.character_strength = 0.0;
-            plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
-            let source = texture(&device, input.width, input.height, &input.acescg);
-            let relative_values = vec![[99.0, -99.0, 42.0, 0.0]; input.acescg.len()];
-            let relative = texture(&device, input.width, input.height, &relative_values);
-            let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
-                input,
-                render_context: screen_application::PhysicalRenderContext::full_frame(
-                    plan.requested_width,
-                    plan.requested_height,
-                ),
-                plan,
-            })
-            .expect("VFX CPU oracle");
-            let gpu = backend
-                .evaluate(&source, &relative, plan, |_| {}, || false)
-                .expect("VFX Metal result");
-            let maximum = read(&gpu.texture)
-                .iter()
-                .zip(cpu.presentation_rgba())
-                .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
-                .fold(0.0_f32, f32::max);
-            assert!(
-                maximum <= 2.0e-3,
-                "{layout:?} VFX CPU/Metal deviation {maximum}"
-            );
+            for (emission_presence, chromatic_fringe) in
+                [(0.0_f32, 0.0_f32), (1.0, 1.0), (2.0, 2.0)]
+            {
+                let (input, mut plan) = fixture(
+                    RasterPlacement::Stretch,
+                    FlatPanelQuality::Native,
+                    layout,
+                    0.2,
+                    1.0,
+                );
+                plan.render_model = SimulationRenderModel::VfxContinuity;
+                plan.vfx_relative_panel_level = 1.75;
+                plan.vfx_emission_presence = emission_presence;
+                plan.vfx_chromatic_fringe = chromatic_fringe;
+                plan.panel_uniformity.character_strength = 0.0;
+                plan.panel_light_spread.character_strength = 0.0;
+                plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+                let source = texture(&device, input.width, input.height, &input.acescg);
+                let relative_values = vec![[99.0, -99.0, 42.0, 0.0]; input.acescg.len()];
+                let relative = texture(&device, input.width, input.height, &relative_values);
+                let cpu = evaluate_physical_pipeline_cpu_oracle(PhysicalPipelineRequest {
+                    input,
+                    render_context: screen_application::PhysicalRenderContext::full_frame(
+                        plan.requested_width,
+                        plan.requested_height,
+                    ),
+                    plan,
+                })
+                .expect("VFX CPU oracle");
+                let gpu = backend
+                    .evaluate(&source, &relative, plan, |_| {}, || false)
+                    .expect("VFX Metal result");
+                let maximum = read(&gpu.texture)
+                    .iter()
+                    .zip(cpu.presentation_rgba())
+                    .flat_map(|(gpu, cpu)| gpu.iter().zip(cpu).map(|(gpu, cpu)| (gpu - cpu).abs()))
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    maximum <= 2.0e-3,
+                    "{layout:?} emission {emission_presence} fringe {chromatic_fringe} VFX CPU/Metal deviation {maximum}"
+                );
+            }
         }
     }
 

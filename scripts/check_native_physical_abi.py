@@ -44,6 +44,8 @@ RETIRED_TOKENS = (
     "SCREEN_PHYSICAL_FRAME_ABI_VERSION 17",
     "SCREEN_TEST_AUTHORING_ABI_VERSION 29",
     "ScreenRecordingExecutionPlanV1",
+    "ScreenSimulationModelAuthoringDescriptorV1",
+    "screen_application_simulation_model_descriptor_v1",
 )
 
 RETIRED_SOURCE_PATTERNS = (
@@ -86,8 +88,12 @@ def validate_sources() -> None:
         / "apps/screen-native-macos/Sources/ScreenPhysicalBridge/include/ScreenPhysicalBridge.h"
     ).read_text(encoding="utf-8")
     required = (
-        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 37u",
+        "#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 38u",
         "#define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u",
+        "ScreenSimulationModelAuthoringDescriptorV2",
+        "screen_application_simulation_model_descriptor_v2",
+        "float vfx_emission_presence;",
+        "float vfx_chromatic_fringe;",
         "ScreenPhysicalFrameRequestV2",
         "ScreenPhysicalFrameResultV2",
         "screen_physical_frame_submit",
@@ -127,8 +133,12 @@ def validate_sources() -> None:
         encoding="utf-8"
     )
     for token in (
-        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 37",
+        "SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 38",
         "SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1",
+        "ScreenSimulationModelAuthoringDescriptorV2",
+        "screen_application_simulation_model_descriptor_v2",
+        "vfx_emission_presence: f32",
+        "vfx_chromatic_fringe: f32",
         "ScreenPhysicalStageDescriptorV1",
         "screen_physical_stage_descriptor",
         "ScreenPhysicalStageContributionV3",
@@ -188,7 +198,7 @@ def main() -> int:
         raise RuntimeError("usage: check_native_physical_abi.py [EXECUTABLE]")
     if len(sys.argv) == 2:
         validate_binary(Path(sys.argv[1]).resolve())
-    print("native macOS physical ABI v37 source/header/symbol gate passed")
+    print("native macOS physical ABI v38 source/header/symbol gate passed")
     return 0
 
 

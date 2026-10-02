@@ -21,7 +21,7 @@ typedef struct ScreenPhysicalFrameJob *ScreenPhysicalFrameJobRef;
 typedef struct ScreenTestPageDescriptor *ScreenTestPageDescriptorRef;
 typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileContextRef;
 
-#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 37u
+#define SCREEN_PHYSICAL_FRAME_ABI_VERSION 38u
 #define SCREEN_DEVICE_VFX_ALPHA_IGNORE 0u
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_RENDER_MODEL_PHYSICAL 0u
@@ -483,10 +483,22 @@ typedef struct {
     double relative_level_minimum;
     double relative_level_maximum;
     double relative_level_default;
-} ScreenSimulationModelAuthoringDescriptorV1;
+    const char *emission_presence_id;
+    const char *emission_presence_label;
+    const char *emission_presence_unit;
+    double emission_presence_minimum;
+    double emission_presence_maximum;
+    double emission_presence_default;
+    const char *chromatic_fringe_id;
+    const char *chromatic_fringe_label;
+    const char *chromatic_fringe_unit;
+    double chromatic_fringe_minimum;
+    double chromatic_fringe_maximum;
+    double chromatic_fringe_default;
+} ScreenSimulationModelAuthoringDescriptorV2;
 
-bool screen_application_simulation_model_descriptor_v1(
-    ScreenSimulationModelAuthoringDescriptorV1 *output
+bool screen_application_simulation_model_descriptor_v2(
+    ScreenSimulationModelAuthoringDescriptorV2 *output
 );
 
 bool screen_application_simulation_opacity_descriptor_v1(
@@ -841,6 +853,8 @@ typedef struct {
     uint32_t device_vfx_alpha_mode;
     uint32_t render_model;
     float vfx_relative_panel_level;
+    float vfx_emission_presence;
+    float vfx_chromatic_fringe;
     float screen_amount;
     const ScreenPhysicalStageContributionV3 *stage_contributions;
     size_t stage_contribution_count;

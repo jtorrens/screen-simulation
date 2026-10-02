@@ -68,15 +68,27 @@ private func sceneAuthoring(
     #expect(presentation.relativeLevelID == "vfx-relative-panel-level")
     #expect(presentation.relativeLevelRange == 0 ... 4)
     #expect(presentation.relativeLevelDefault == 1)
+    #expect(presentation.emissionPresenceID == "vfx-emission-presence")
+    #expect(presentation.emissionPresenceRange == 0 ... 4)
+    #expect(presentation.emissionPresenceDefault == 1)
+    #expect(presentation.chromaticFringeID == "vfx-chromatic-fringe")
+    #expect(presentation.chromaticFringeRange == 0 ... 4)
+    #expect(presentation.chromaticFringeDefault == 1)
     let authoring = try sceneAuthoring(
         activeModel: .vfxContinuity,
-        vfxContinuity: .init(relativePanelLevel: 1.75)
+        vfxContinuity: .init(
+            relativePanelLevel: 1.75,
+            emissionPresence: 1.5,
+            chromaticFringe: 0.75
+        )
     )
     let encoded = try JSONEncoder().encode(authoring)
     let decoded = try JSONDecoder().decode(SceneAuthoringDocument.self, from: encoded)
 
     #expect(decoded.activeModel == .vfxContinuity)
     #expect(decoded.vfxContinuity.relativePanelLevel == 1.75)
+    #expect(decoded.vfxContinuity.emissionPresence == 1.5)
+    #expect(decoded.vfxContinuity.chromaticFringe == 0.75)
     #expect(decoded.overrides == authoring.overrides)
     #expect(decoded.profiles == authoring.profiles)
     #expect(decoded.context == authoring.context)
@@ -662,12 +674,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 30)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 31)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v30.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v31.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,

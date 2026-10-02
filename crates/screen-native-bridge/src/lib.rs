@@ -101,7 +101,7 @@ pub struct ScreenApplicationScalarPropertyDescriptorV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ScreenSimulationModelAuthoringDescriptorV1 {
+pub struct ScreenSimulationModelAuthoringDescriptorV2 {
     pub physical_id: *const c_char,
     pub physical_label: *const c_char,
     pub vfx_continuity_id: *const c_char,
@@ -112,11 +112,23 @@ pub struct ScreenSimulationModelAuthoringDescriptorV1 {
     pub relative_level_minimum: f64,
     pub relative_level_maximum: f64,
     pub relative_level_default: f64,
+    pub emission_presence_id: *const c_char,
+    pub emission_presence_label: *const c_char,
+    pub emission_presence_unit: *const c_char,
+    pub emission_presence_minimum: f64,
+    pub emission_presence_maximum: f64,
+    pub emission_presence_default: f64,
+    pub chromatic_fringe_id: *const c_char,
+    pub chromatic_fringe_label: *const c_char,
+    pub chromatic_fringe_unit: *const c_char,
+    pub chromatic_fringe_minimum: f64,
+    pub chromatic_fringe_maximum: f64,
+    pub chromatic_fringe_default: f64,
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v1(
-    output: *mut ScreenSimulationModelAuthoringDescriptorV1,
+pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v2(
+    output: *mut ScreenSimulationModelAuthoringDescriptorV2,
 ) -> bool {
     static PHYSICAL_ID: OnceLock<CString> = OnceLock::new();
     static PHYSICAL_LABEL: OnceLock<CString> = OnceLock::new();
@@ -125,6 +137,12 @@ pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v1(
     static LEVEL_ID: OnceLock<CString> = OnceLock::new();
     static LEVEL_LABEL: OnceLock<CString> = OnceLock::new();
     static LEVEL_UNIT: OnceLock<CString> = OnceLock::new();
+    static EMISSION_ID: OnceLock<CString> = OnceLock::new();
+    static EMISSION_LABEL: OnceLock<CString> = OnceLock::new();
+    static EMISSION_UNIT: OnceLock<CString> = OnceLock::new();
+    static FRINGE_ID: OnceLock<CString> = OnceLock::new();
+    static FRINGE_LABEL: OnceLock<CString> = OnceLock::new();
+    static FRINGE_UNIT: OnceLock<CString> = OnceLock::new();
     fn text(slot: &'static OnceLock<CString>, value: &'static str) -> *const c_char {
         slot.get_or_init(|| CString::new(value).expect("descriptor strings contain no NUL"))
             .as_ptr()
@@ -135,7 +153,7 @@ pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v1(
     let physical = SIMULATION_RENDER_MODEL_DESCRIPTORS[0];
     let vfx = SIMULATION_RENDER_MODEL_DESCRIPTORS[1];
     unsafe {
-        *output = ScreenSimulationModelAuthoringDescriptorV1 {
+        *output = ScreenSimulationModelAuthoringDescriptorV2 {
             physical_id: text(&PHYSICAL_ID, physical.stable_id),
             physical_label: text(&PHYSICAL_LABEL, physical.display_name),
             vfx_continuity_id: text(&VFX_ID, vfx.stable_id),
@@ -146,6 +164,42 @@ pub unsafe extern "C" fn screen_application_simulation_model_descriptor_v1(
             relative_level_minimum: VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum,
             relative_level_maximum: VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum,
             relative_level_default: VFX_CONTINUITY_LEVEL_DESCRIPTOR.default_value,
+            emission_presence_id: text(
+                &EMISSION_ID,
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.stable_id,
+            ),
+            emission_presence_label: text(
+                &EMISSION_LABEL,
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.display_name,
+            ),
+            emission_presence_unit: text(
+                &EMISSION_UNIT,
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.unit,
+            ),
+            emission_presence_minimum:
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.minimum,
+            emission_presence_maximum:
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.maximum,
+            emission_presence_default:
+                screen_application::VFX_CONTINUITY_EMISSION_PRESENCE_DESCRIPTOR.default_value,
+            chromatic_fringe_id: text(
+                &FRINGE_ID,
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.stable_id,
+            ),
+            chromatic_fringe_label: text(
+                &FRINGE_LABEL,
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.display_name,
+            ),
+            chromatic_fringe_unit: text(
+                &FRINGE_UNIT,
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.unit,
+            ),
+            chromatic_fringe_minimum:
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.minimum,
+            chromatic_fringe_maximum:
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.maximum,
+            chromatic_fringe_default:
+                screen_application::VFX_CONTINUITY_CHROMATIC_FRINGE_DESCRIPTOR.default_value,
         };
     }
     true
@@ -880,7 +934,7 @@ pub struct ScreenLensPresetParametersV1 {
     veiling_glare_fraction: f32,
 }
 
-pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 37;
+pub const SCREEN_PHYSICAL_FRAME_ABI_VERSION: u32 = 38;
 pub const SCREEN_DEVICE_VFX_ALPHA_IGNORE: u32 = 0;
 pub const SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY: u32 = 1;
 pub const SCREEN_RENDER_MODEL_PHYSICAL: u32 = 0;
@@ -1272,6 +1326,8 @@ pub struct ScreenPhysicalFrameRequestV2 {
     device_vfx_alpha_mode: u32,
     render_model: u32,
     vfx_relative_panel_level: f32,
+    vfx_emission_presence: f32,
+    vfx_chromatic_fringe: f32,
     screen_amount: f32,
     stage_contributions: *const ScreenPhysicalStageContributionV3,
     stage_contribution_count: usize,
@@ -2911,8 +2967,14 @@ unsafe fn physical_frame_submit_impl(
         || !(VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum as f32
             ..=VFX_CONTINUITY_LEVEL_DESCRIPTOR.maximum as f32)
             .contains(&request.vfx_relative_panel_level)
+        || !request.vfx_emission_presence.is_finite()
+        || !(0.0..=4.0).contains(&request.vfx_emission_presence)
+        || !request.vfx_chromatic_fringe.is_finite()
+        || !(0.0..=4.0).contains(&request.vfx_chromatic_fringe)
         || (request.render_model == SCREEN_RENDER_MODEL_PHYSICAL
-            && request.vfx_relative_panel_level != 1.0)
+            && (request.vfx_relative_panel_level != 1.0
+                || request.vfx_emission_presence != 1.0
+                || request.vfx_chromatic_fringe != 1.0))
         || request.requested_width == 0
         || request.requested_height == 0
         || !request.screen_amount.is_finite()
@@ -3180,6 +3242,8 @@ unsafe fn physical_frame_submit_impl(
             _ => unreachable!("validated render model"),
         },
         vfx_relative_panel_level: request.vfx_relative_panel_level,
+        vfx_emission_presence: request.vfx_emission_presence,
+        vfx_chromatic_fringe: request.vfx_chromatic_fringe,
         panel: device.profile,
         panel_uniformity: device.uniformity,
         panel_light_spread: device.light_spread,
@@ -8208,6 +8272,8 @@ mod tests {
             device_vfx_alpha_mode: SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY,
             render_model: SCREEN_RENDER_MODEL_PHYSICAL,
             vfx_relative_panel_level: 1.0,
+            vfx_emission_presence: 1.0,
+            vfx_chromatic_fringe: 1.0,
             screen_amount: 1.0,
             stage_contributions: contributions.as_ptr(),
             stage_contribution_count: contributions.len(),

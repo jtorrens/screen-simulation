@@ -1287,6 +1287,36 @@ final class WorkspaceModel: ObservableObject {
         rebuildPhysicalSelectedFrame()
     }
 
+    func setVfxEmissionPresence(_ value: Double, undoManager: UndoManager?) {
+        guard value.isFinite,
+              simulationModelPresentation.emissionPresenceRange.contains(value),
+              value != vfxContinuityState.emissionPresence else { return }
+        let prior = vfxContinuityState.emissionPresence
+        vfxContinuityState.emissionPresence = value
+        registerUndo(with: undoManager, actionName: "Editar presencia de emisión VFX") {
+            target, manager in
+            target.setVfxEmissionPresence(prior, undoManager: manager)
+        }
+        persistActiveSceneAuthoringReportingFailure()
+        physicalModel.invalidateExternalParameters()
+        rebuildPhysicalSelectedFrame()
+    }
+
+    func setVfxChromaticFringe(_ value: Double, undoManager: UndoManager?) {
+        guard value.isFinite,
+              simulationModelPresentation.chromaticFringeRange.contains(value),
+              value != vfxContinuityState.chromaticFringe else { return }
+        let prior = vfxContinuityState.chromaticFringe
+        vfxContinuityState.chromaticFringe = value
+        registerUndo(with: undoManager, actionName: "Editar fringe cromático VFX") {
+            target, manager in
+            target.setVfxChromaticFringe(prior, undoManager: manager)
+        }
+        persistActiveSceneAuthoringReportingFailure()
+        physicalModel.invalidateExternalParameters()
+        rebuildPhysicalSelectedFrame()
+    }
+
     private func updateRequestedPhysicalIntermediate(
         _ intermediate: PhysicalIntermediate
     ) {
@@ -9501,7 +9531,12 @@ final class WorkspaceModel: ObservableObject {
             quality: quality,
             deviceVfxAlphaMode: effectiveAuthoringState.deviceVfxAlphaMode,
             renderModel: simulationModel,
-            vfxRelativePanelLevel: vfxContinuityState.relativePanelLevel,
+            vfxRelativePanelLevel: simulationModel == .vfxContinuity
+                ? vfxContinuityState.relativePanelLevel : 1,
+            vfxEmissionPresence: simulationModel == .vfxContinuity
+                ? vfxContinuityState.emissionPresence : 1,
+            vfxChromaticFringe: simulationModel == .vfxContinuity
+                ? vfxContinuityState.chromaticFringe : 1,
             screenAmount: physicalModel.effectiveScreenAmount,
             contributions: contributions,
             requestedDimensions: requestedDimensions,

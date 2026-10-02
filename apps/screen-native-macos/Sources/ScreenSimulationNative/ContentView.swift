@@ -3599,8 +3599,38 @@ struct ContentView: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
+                            originRow(model.simulationModelPresentation.emissionPresenceLabel) {
+                                HStack {
+                                    CommittedNumberField(
+                                        label: "×",
+                                        value: model.vfxContinuityState.emissionPresence
+                                    ) { value in
+                                        model.setVfxEmissionPresence(
+                                            value, undoManager: undoManager
+                                        )
+                                    }
+                                    .frame(width: 86)
+                                    Text(model.simulationModelPresentation.emissionPresenceUnit)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            originRow(model.simulationModelPresentation.chromaticFringeLabel) {
+                                HStack {
+                                    CommittedNumberField(
+                                        label: "×",
+                                        value: model.vfxContinuityState.chromaticFringe
+                                    ) { value in
+                                        model.setVfxChromaticFringe(
+                                            value, undoManager: undoManager
+                                        )
+                                    }
+                                    .frame(width: 86)
+                                    Text(model.simulationModelPresentation.chromaticFringeUnit)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Text(
-                                "A 1,0 la luz directa neutra conserva su nivel ACEScg tras la óptica; diafragma y presets mantienen su carácter relativo sin cambiar la exposición global."
+                                "A 1,0 el núcleo conserva su nivel ACEScg. Emisión y fringe modulan únicamente sus residuos ópticos; el diafragma no cambia la exposición global."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)

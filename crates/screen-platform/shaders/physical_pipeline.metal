@@ -14,7 +14,7 @@ struct PhysicalPipelineParams {
     float4 inverse_matrix0;
     float4 inverse_matrix1;
     float4 inverse_matrix2;
-    float4 render_model; // model, relative panel level, direct optical normalization, reserved
+    float4 render_model; // model, relative panel level, direct optical normalization, emission gain
     float4 panel_size_meters;
     float4 uniformity_amplitudes; // broad, mid, fine, chromatic peak-to-peak
     float4 uniformity_scales; // mid mm, fine mm, low-drive emphasis, character
@@ -2019,7 +2019,8 @@ inline float4 evaluate_physical_pipeline_pixel(
         p.cover_glow.z,
         1.0f,
         clamp(ideal.a, 0.0f, 1.0f));
-    const float3 soft_glow = p.cover_glow.y * exterior_glow_gain * smooth_halo;
+    const float3 soft_glow = p.cover_glow.y * exterior_glow_gain
+        * p.render_model.w * smooth_halo;
     float3 carrier_detail = float3(
         dot(p.matrix0.xyz, carrier_detail_native),
         dot(p.matrix1.xyz, carrier_detail_native),
