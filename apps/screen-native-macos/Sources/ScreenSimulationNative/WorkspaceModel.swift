@@ -497,7 +497,8 @@ final class WorkspaceModel: ObservableObject {
     @Published var fusionTrackerMovesY = true
     @Published var fusionTrackerScales = false
     @Published var fusionTrackerRotates = false
-    @Published var fusionTrackerUsesCornerPin = false
+    @Published var fusionTrackerApplicationMode = FusionTrackerApplicationMode.relativeMotion
+    @Published var fusionTrackerUsesPointOffsets = true
     @Published var fusionTrackerSmoothingEnabled = false
     @Published var fusionTrackerSmoothingWindow = 9
     @Published var fusionTrackerSmoothingDegree = 2
@@ -4245,12 +4246,13 @@ final class WorkspaceModel: ObservableObject {
                     degree: fusionTrackerSmoothingDegree
                 )
                 : tracker
+            let usesAbsoluteCorners = fusionTrackerApplicationMode == .absoluteCorners
             guard fusionTrackerMovesX || fusionTrackerMovesY || fusionTrackerScales
-                    || fusionTrackerRotates || fusionTrackerUsesCornerPin
+                    || fusionTrackerRotates || usesAbsoluteCorners
             else {
                 throw FusionTrackerClipboardError.invalid("selecciona al menos un componente de movimiento")
             }
-            if fusionTrackerUsesCornerPin {
+            if usesAbsoluteCorners {
                 let assigned = Set(fusionTrackerCornerAssignments.values.filter { $0 != .unassigned })
                 guard prepared.points.count >= 4,
                       assigned == Set([
@@ -4273,7 +4275,7 @@ final class WorkspaceModel: ObservableObject {
                 )
             }
             let motionPoints: [FusionTrackerPointCurve]
-            if fusionTrackerUsesCornerPin {
+            if usesAbsoluteCorners {
                 let order: [FusionTrackerCorner] = [.topLeft, .topRight, .bottomRight, .bottomLeft]
                 motionPoints = try order.map { corner in
                     guard let id = fusionTrackerCornerAssignments.first(where: { $0.value == corner })?.key,
@@ -4295,6 +4297,7 @@ final class WorkspaceModel: ObservableObject {
             let anchorTrackerPoints = try motionPoints.map {
                 try fusionTrackerDeliveryPoint(
                     curve: $0, frame: anchorFrame,
+                    applyingPointOffset: fusionTrackerUsesPointOffsets,
                     sourceWidth: reference.width, sourceHeight: reference.height,
                     deliveryWidth: delivery.width, deliveryHeight: delivery.height
                 )
@@ -4309,6 +4312,7 @@ final class WorkspaceModel: ObservableObject {
                     let currentTrackerPoints = try motionPoints.map {
                         try fusionTrackerDeliveryPoint(
                             curve: $0, frame: frame,
+                            applyingPointOffset: fusionTrackerUsesPointOffsets,
                             sourceWidth: reference.width, sourceHeight: reference.height,
                             deliveryWidth: delivery.width, deliveryHeight: delivery.height
                         )
@@ -4320,7 +4324,7 @@ final class WorkspaceModel: ObservableObject {
                         components: .init(
                             x: fusionTrackerMovesX, y: fusionTrackerMovesY,
                             scale: fusionTrackerScales, rotation: fusionTrackerRotates,
-                            cornerPin: fusionTrackerUsesCornerPin
+                            cornerPin: usesAbsoluteCorners
                         )
                     )
                     let solved = try resolvedRigidCameraPose(
@@ -4389,14 +4393,16 @@ final class WorkspaceModel: ObservableObject {
     private func fusionTrackerDeliveryPoint(
         curve: FusionTrackerPointCurve,
         frame: Int,
+        applyingPointOffset: Bool,
         sourceWidth: Int,
         sourceHeight: Int,
         deliveryWidth: Int,
         deliveryHeight: Int
     ) throws -> CGPoint {
-        guard let sample = curve.samples.first(where: { $0.frame == frame }),
-              sourceWidth > 0, sourceHeight > 0, deliveryWidth > 0, deliveryHeight > 0
-        else { throw FusionTrackerClipboardError.invalid("falta el frame \(frame) en \(curve.label)") }
+        guard sourceWidth > 0, sourceHeight > 0, deliveryWidth > 0, deliveryHeight > 0 else {
+            throw FusionTrackerClipboardError.invalid("las dimensiones de referencia y entrega deben ser positivas")
+        }
+        let position = try curve.position(at: frame, applyingOffset: applyingPointOffset)
         let scaleX: Double
         let scaleY: Double
         switch referencePlacement {
@@ -4416,8 +4422,8 @@ final class WorkspaceModel: ObservableObject {
         let offsetY = (Double(deliveryHeight) - Double(sourceHeight) * scaleY) * 0.5
         // Fusion uses a normalized, bottom-up composition coordinate system.
         return CGPoint(
-            x: sample.position.x * Double(sourceWidth) * scaleX + offsetX - 0.5,
-            y: (1 - sample.position.y) * Double(sourceHeight) * scaleY + offsetY - 0.5
+            x: position.x * Double(sourceWidth) * scaleX + offsetX - 0.5,
+            y: (1 - position.y) * Double(sourceHeight) * scaleY + offsetY - 0.5
         )
     }
 

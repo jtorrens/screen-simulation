@@ -25,6 +25,20 @@ enum FusionTrackerTarget: String, CaseIterable, Identifiable, Codable, Sendable 
     var label: String { self == .camera ? "Cámara" : "Device" }
 }
 
+enum FusionTrackerApplicationMode: String, CaseIterable, Identifiable, Sendable {
+    case relativeMotion
+    case absoluteCorners
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .relativeMotion: "Movimiento relativo"
+        case .absoluteCorners: "Ajustar a cuatro esquinas"
+        }
+    }
+}
+
 enum FusionTrackerCorner: String, CaseIterable, Identifiable, Codable, Sendable {
     case unassigned
     case topLeft
@@ -63,7 +77,15 @@ struct FusionTrackerSample: Codable, Equatable, Sendable {
 struct FusionTrackerPointCurve: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let label: String
+    let offset: SIMD2<Double>
     let samples: [FusionTrackerSample]
+
+    func position(at frame: Int, applyingOffset: Bool) throws -> SIMD2<Double> {
+        guard let sample = samples.first(where: { $0.frame == frame }) else {
+            throw FusionTrackerClipboardError.invalid("falta el frame \(frame) en \(label)")
+        }
+        return applyingOffset ? sample.position + offset : sample.position
+    }
 }
 
 struct FusionTrackerPoseSample: Codable, Equatable, Sendable {
@@ -133,21 +155,10 @@ enum FusionTrackerMotionMath {
             throw FusionTrackerClipboardError.invalid("las correspondencias 2D no coinciden")
         }
         if components.cornerPin {
-            guard anchorPoints.count == 4 else {
+            guard currentPoints.count == 4 else {
                 throw FusionTrackerClipboardError.invalid("Corner Pin requiere cuatro correspondencias")
             }
-            let homography = try solveHomography(from: anchorPoints, to: currentPoints)
-            return try base.map { point in
-                let x = Double(point.x), y = Double(point.y)
-                let denominator = homography[6] * x + homography[7] * y + 1
-                guard denominator.isFinite, abs(denominator) > 1e-12 else {
-                    throw FusionTrackerClipboardError.invalid("Corner Pin cruza el plano proyectivo")
-                }
-                return CGPoint(
-                    x: (homography[0] * x + homography[1] * y + homography[2]) / denominator,
-                    y: (homography[3] * x + homography[4] * y + homography[5]) / denominator
-                )
-            }
+            return currentPoints
         }
 
         let anchorCenter = centroid(anchorPoints)
@@ -201,38 +212,6 @@ enum FusionTrackerMotionMath {
         return CGPoint(x: sum.x / CGFloat(points.count), y: sum.y / CGFloat(points.count))
     }
 
-    private static func solveHomography(from source: [CGPoint], to destination: [CGPoint]) throws -> [Double] {
-        var matrix: [[Double]] = [], vector: [Double] = []
-        for (sourcePoint, destinationPoint) in zip(source, destination) {
-            let x = Double(sourcePoint.x), y = Double(sourcePoint.y)
-            let u = Double(destinationPoint.x), v = Double(destinationPoint.y)
-            matrix.append([x, y, 1, 0, 0, 0, -u * x, -u * y]); vector.append(u)
-            matrix.append([0, 0, 0, x, y, 1, -v * x, -v * y]); vector.append(v)
-        }
-        return try solve(matrix, vector)
-    }
-
-    private static func solve(_ matrix: [[Double]], _ vector: [Double]) throws -> [Double] {
-        var augmented = matrix.indices.map { matrix[$0] + [vector[$0]] }
-        let count = augmented.count
-        for column in 0..<count {
-            guard let pivot = (column..<count).max(by: {
-                abs(augmented[$0][column]) < abs(augmented[$1][column])
-            }), abs(augmented[pivot][column]) > 1e-12 else {
-                throw FusionTrackerClipboardError.invalid("las cuatro esquinas son degeneradas")
-            }
-            if pivot != column { augmented.swapAt(pivot, column) }
-            let divisor = augmented[column][column]
-            for index in column...count { augmented[column][index] /= divisor }
-            for row in 0..<count where row != column {
-                let factor = augmented[row][column]
-                for index in column...count {
-                    augmented[row][index] -= factor * augmented[column][index]
-                }
-            }
-        }
-        return augmented.map { $0[count] }
-    }
 }
 
 struct FusionTrackerClipboard: Codable, Equatable, Sendable {
@@ -258,6 +237,7 @@ struct FusionTrackerClipboard: Codable, Equatable, Sendable {
         else { throw FusionTrackerClipboardError.invalid("no contiene puntos identificables") }
         for point in points {
             guard !point.id.isEmpty, !point.label.isEmpty, !point.samples.isEmpty,
+                  point.offset.x.isFinite, point.offset.y.isFinite,
                   point.samples.map(\.frame) == point.samples.map(\.frame).sorted(),
                   Set(point.samples.map(\.frame)).count == point.samples.count,
                   point.samples.allSatisfy({ sample in
@@ -285,6 +265,7 @@ struct FusionTrackerClipboard: Codable, Equatable, Sendable {
             return FusionTrackerPointCurve(
                 id: point.id,
                 label: point.label,
+                offset: point.offset,
                 samples: point.samples.indices.map { index in
                     FusionTrackerSample(
                         frame: point.samples[index].frame,
@@ -363,6 +344,10 @@ struct FusionTrackerClipboardImporter {
         var points: [FusionTrackerPointCurve] = []
         for index in 1...pointCount {
             let label = try stringInput("Name\(index)", in: inputs)
+            let offset = SIMD2(
+                try scalarInput("XOffset\(index)", in: inputs),
+                try scalarInput("YOffset\(index)", in: inputs)
+            )
             let pathName = try sourceOpInput("TrackedCenter\(index)", in: inputs)
             let path = try node(named: pathName, type: "PolyPath", in: tools)
             let displacementName = try sourceOpInput("Displacement", in: path.body)
@@ -375,7 +360,7 @@ struct FusionTrackerClipboardImporter {
                 )
             }
             points.append(FusionTrackerPointCurve(
-                id: "tracker-\(index)", label: label,
+                id: "tracker-\(index)", label: label, offset: offset,
                 samples: zip(frames, positions).map { frame, position in
                     FusionTrackerSample(frame: frame, position: position)
                 }
@@ -436,6 +421,18 @@ struct FusionTrackerClipboardImporter {
             throw FusionTrackerClipboardError.invalid("falta el nombre \(name)")
         }
         return values[0][1]
+    }
+
+    private func scalarInput(_ name: String, in body: String) throws -> Double {
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+        let values = try matches(
+            "\\b\(escaped)\\s*=\\s*Input\\s*\\{\\s*Value\\s*=\\s*([-+0-9.eE]+)\\s*,?\\s*\\}",
+            in: body
+        )
+        guard values.count == 1, let value = Double(values[0][1]), value.isFinite else {
+            throw FusionTrackerClipboardError.invalid("falta el valor finito \(name)")
+        }
+        return value
     }
 
     private func sourceOpInput(_ name: String, in body: String) throws -> String {

@@ -287,7 +287,7 @@
     },
     {
       "id": "tracking.fusion-2d-offset",
-      "scope": "Fusion Tracker clipboard curves materialized as rigid camera or Device pose authoring",
+      "scope": "Fusion Tracker clipboard curves materialized as relative or absolute-corner rigid camera or Device pose authoring",
       "owner": {
         "path": "Docs/architecture/camera_time_and_space.md",
         "anchor": "Time"

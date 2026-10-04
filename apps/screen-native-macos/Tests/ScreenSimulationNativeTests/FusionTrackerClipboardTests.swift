@@ -20,8 +20,12 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
           Inputs = {
             Name1 = Input { Value = "Punto A", },
             TrackedCenter1 = Input { SourceOp = "PathA", Source = "Position", },
+            XOffset1 = Input { Value = 0.1, },
+            YOffset1 = Input { Value = -0.2, },
             Name2 = Input { Value = "Punto B", },
             TrackedCenter2 = Input { SourceOp = "PathB", Source = "Position", },
+            XOffset2 = Input { Value = -0.05, },
+            YOffset2 = Input { Value = 0.03, },
           },
         },
         PathA = PolyPath {
@@ -60,8 +64,23 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     #expect(tracker.points.count == 2)
     #expect(tracker.frameRange == 0...2)
     #expect(tracker.points[0].label == "Punto A")
+    #expect(tracker.points[0].offset == SIMD2(0.1, -0.2))
     #expect(tracker.points[0].samples[0].position == SIMD2(0.25, 0.25))
+    let withOffset = try tracker.points[0].position(at: 0, applyingOffset: true)
+    #expect(abs(withOffset.x - 0.35) < 1e-12)
+    #expect(abs(withOffset.y - 0.05) < 1e-12)
+    #expect(try tracker.points[0].position(at: 0, applyingOffset: false) == SIMD2(0.25, 0.25))
     #expect(tracker.points[1].samples[2].position == SIMD2(0.85, 0.35))
+}
+
+@Test func fusionTrackerClipboardRejectsMissingPointOffsets() {
+    let missing = trackerFixture().replacingOccurrences(
+        of: "XOffset1 = Input { Value = 0.1, },",
+        with: ""
+    )
+    #expect(throws: FusionTrackerClipboardError.self) {
+        try FusionTrackerClipboardImporter().parse(missing)
+    }
 }
 
 @Test func fusionTrackerClipboardRejectsMismatchedPointFrameSets() {
@@ -80,9 +99,10 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
         )
     }
     let tracker = try FusionTrackerClipboard(points: [
-        .init(id: "p", label: "P", samples: samples),
+        .init(id: "p", label: "P", offset: SIMD2(0.125, -0.25), samples: samples),
     ])
     let smoothed = try tracker.smoothed(window: 5, degree: 2)
+    #expect(smoothed.points[0].offset == SIMD2(0.125, -0.25))
     for index in samples.indices {
         #expect(abs(smoothed.points[0].samples[index].position.x - samples[index].position.x) < 1e-9)
         #expect(abs(smoothed.points[0].samples[index].position.y - samples[index].position.y) < 1e-9)
@@ -108,8 +128,12 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     #expect(yOnly[0] == CGPoint(x: 0, y: 7))
 }
 
-@Test func fourAssignedCornersProduceProjectiveObservationWithoutPersistingHomography() throws {
-    let source = [
+@Test func fourAssignedCornersAreAbsoluteDeviceCorrespondencesWithoutPersistingHomography() throws {
+    let existingDeviceProjection = [
+        CGPoint(x: 20, y: 30), CGPoint(x: 40, y: 30),
+        CGPoint(x: 40, y: 60), CGPoint(x: 20, y: 60),
+    ]
+    let anchorTrackerPoints = [
         CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 0),
         CGPoint(x: 1, y: 1), CGPoint(x: 0, y: 1),
     ]
@@ -118,7 +142,9 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
         CGPoint(x: 7, y: 8), CGPoint(x: 1, y: 7),
     ]
     let transformed = try FusionTrackerMotionMath.transformedCorners(
-        base: source, anchorPoints: source, currentPoints: destination,
+        base: existingDeviceProjection,
+        anchorPoints: anchorTrackerPoints,
+        currentPoints: destination,
         components: .init(x: true, y: true, scale: true, rotation: true, cornerPin: true)
     )
     for index in destination.indices {
@@ -134,6 +160,24 @@ private func trackerFixture(secondPointFrames: String? = nil) -> String {
     )
     let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(track)) as? [String: Any]
     #expect(encoded?["homography"] == nil)
+}
+
+@Test func fusionTrackerControlsExplainRelativeAndAbsoluteModes() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/ScreenSimulationNative/FusionTrackingScene.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    #expect(source.contains("Transfiere el desplazamiento horizontal relativo"))
+    #expect(source.contains("acercamiento o alejamiento 3D"))
+    #expect(source.contains("alrededor del eje óptico local de Camera"))
+    #expect(source.contains("Modo de ajuste"))
+    #expect(source.contains("Movimiento relativo"))
+    #expect(source.contains("Ajustar a cuatro esquinas"))
+    #expect(source.contains("posiciones absolutas de las cuatro esquinas del Device"))
+    #expect(source.contains("Usar offsets de los trackers"))
+    #expect(source.contains("Suma los valores XOffset/YOffset"))
+    #expect(source.contains("Desactívalo para usar solamente TrackedCenter"))
 }
 
 @Test func rustResolverAppliesFusionPoseToExactlyTheSelectedRigidBody() throws {

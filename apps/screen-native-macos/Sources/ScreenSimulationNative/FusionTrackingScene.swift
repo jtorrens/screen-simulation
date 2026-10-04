@@ -646,20 +646,35 @@ private struct TrackingScenePanel: View {
                     }
                 }
             }
-            Section("Offset rígido") {
+            Section("Aplicación 3D") {
                 Picker("Aplicar a", selection: $model.fusionTrackerTarget) {
                     ForEach(FusionTrackerTarget.allCases) { target in
                         Text(target.label).tag(target)
                     }
                 }
-                Group {
-                    Toggle("Traslación X", isOn: $model.fusionTrackerMovesX)
-                    Toggle("Traslación Y", isOn: $model.fusionTrackerMovesY)
-                    Toggle("Escala mediante profundidad", isOn: $model.fusionTrackerScales)
-                    Toggle("Rotación alrededor de Z local", isOn: $model.fusionTrackerRotates)
+                Picker("Modo de ajuste", selection: $model.fusionTrackerApplicationMode) {
+                    ForEach(FusionTrackerApplicationMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
                 }
-                .disabled(model.fusionTrackerUsesCornerPin)
-                Toggle("Corner Pin como pose 3D rígida", isOn: $model.fusionTrackerUsesCornerPin)
+                .help("Movimiento relativo conserva la colocación inicial. Ajustar a cuatro esquinas usa TL, TR, BR y BL como posiciones absolutas del Device en cada frame.")
+                Toggle("Usar offsets de los trackers", isOn: $model.fusionTrackerUsesPointOffsets)
+                    .help("Suma los valores XOffset/YOffset de cada tracker de Fusion a su curva TrackedCenter antes de convertirla al espacio de la referencia. Desactívalo para usar solamente TrackedCenter.")
+                if model.fusionTrackerApplicationMode == .relativeMotion {
+                    Toggle("Traslación X", isOn: $model.fusionTrackerMovesX)
+                        .help("Transfiere el desplazamiento horizontal relativo del conjunto de trackers desde el frame de origen.")
+                    Toggle("Traslación Y", isOn: $model.fusionTrackerMovesY)
+                        .help("Transfiere el desplazamiento vertical relativo del conjunto de trackers desde el frame de origen.")
+                    Toggle("Escala mediante profundidad", isOn: $model.fusionTrackerScales)
+                        .help("Interpreta el cambio de separación entre trackers como acercamiento o alejamiento 3D. No cambia las dimensiones físicas del Device.")
+                    Toggle("Rotación alrededor de Z local", isOn: $model.fusionTrackerRotates)
+                        .help("Transfiere el giro 2D relativo como roll: alrededor del eje óptico local de Camera o de la normal local del Device.")
+                } else {
+                    Text("TL, TR, BR y BL se usan como posiciones absolutas de las cuatro esquinas del Device. Se resuelve una pose 3D rígida sin deformarlo.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Usa TL, TR, BR y BL como posiciones absolutas de las cuatro esquinas del Device en cada frame y resuelve una pose 3D rígida. No deforma el Device.")
+                }
             }
             Section("Suavizado") {
                 Toggle("Savitzky–Golay", isOn: $model.fusionTrackerSmoothingEnabled)
