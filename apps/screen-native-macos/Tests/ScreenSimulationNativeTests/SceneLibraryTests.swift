@@ -1548,6 +1548,25 @@ private func sceneCapture() throws -> SavedSceneCapture {
     let libraryStore = try GlobalLibraryStore(
         documentURL: root.appendingPathComponent("GlobalLibrary.v17.json")
     )
+    let referenceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("screen-desktop/assets/editorial-text-reference.png")
+    let reference = PhysicalSettingsExchange.ReferenceResource(
+        kind: .imageOrVideo,
+        fileName: referenceURL.lastPathComponent,
+        absolutePath: referenceURL.path,
+        inputTransformID: "srgb-encoded-rec709",
+        alphaMode: StudioAlphaMode.ignore.rawValue,
+        signalColorModel: StudioSignalColorModel.rgb.rawValue,
+        signalMatrix: StudioSignalMatrix.bt709.rawValue,
+        signalRange: StudioSignalRange.full.rawValue,
+        placementID: "fit",
+        corners: [
+            .init(x: 100, y: 100), .init(x: 1820, y: 100),
+            .init(x: 1820, y: 980), .init(x: 100, y: 980),
+        ]
+    )
     let id = UUID()
     let snapshot = SavedSceneSnapshot(
         source: .init(
@@ -1557,9 +1576,11 @@ private func sceneCapture() throws -> SavedSceneCapture {
         ),
         currentFrame: 0, viewerZoom: 1.4, viewerPanX: 3, viewerPanY: -2,
         viewerIsFitted: false,
-        authoring: try sceneAuthoring(overrides: [
-            .scalar("white-luminance", 120),
-        ]),
+        authoring: try sceneAuthoring(
+            referenceResource: reference,
+            referencePlateID: "video-reference",
+            overrides: [.scalar("white-luminance", 120)]
+        ),
         trackingSceneMethod: .deviceCorners,
         animation: .init(transformTracks: [
             .init(trackID: .cameraGeometry, keyframes: [.init(
@@ -1593,6 +1614,90 @@ private func sceneCapture() throws -> SavedSceneCapture {
     #expect(overrideIDs.contains("screen-position-x-meters"))
     #expect(overrideIDs.contains("screen-rotation-z-degrees"))
     #expect(standardized.authoring.overrides.contains(.scalar("white-luminance", 120)))
+    #expect(standardized.authoring.context.referenceResource == reference)
+}
+
+@MainActor
+@Test func unresolvableSceneSolutionCanUseOnlyNewSceneGeometryDefaults() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("screen-scene-solution-default-geometry-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspace = WorkspaceModel(globalLibraryStore: try GlobalLibraryStore(
+        documentURL: root.appendingPathComponent("GlobalLibrary.v17.json")
+    ))
+    let reference = PhysicalSettingsExchange.ReferenceResource(
+        kind: .imageOrVideo,
+        fileName: "reference.mov",
+        absolutePath: "/tmp/reference.mov",
+        inputTransformID: "srgb-encoded-rec709",
+        alphaMode: StudioAlphaMode.ignore.rawValue,
+        signalColorModel: StudioSignalColorModel.rgb.rawValue,
+        signalMatrix: StudioSignalMatrix.bt709.rawValue,
+        signalRange: StudioSignalRange.full.rawValue,
+        placementID: "fit",
+        corners: [
+            .init(x: 10, y: 20), .init(x: 30, y: 20),
+            .init(x: 30, y: 40), .init(x: 10, y: 40),
+        ]
+    )
+    let snapshot = SavedSceneSnapshot(
+        source: .init(
+            kind: .syntheticPattern,
+            patternRawValue: SyntheticPattern.eyeChart.rawValue,
+            assets: [], missingMedia: nil
+        ),
+        currentFrame: 12,
+        viewerZoom: 1.25,
+        viewerPanX: 4,
+        viewerPanY: -3,
+        viewerIsFitted: false,
+        authoring: try sceneAuthoring(
+            referenceResource: reference,
+            referencePlateID: "video-reference",
+            overrides: [
+                .choice("geometry-mode", "free"),
+                .scalar("camera-position-z-meters", 9),
+                .scalar("screen-position-x-meters", 3),
+                .scalar("focal-length-millimeters", 85),
+                .scalar("white-luminance", 120),
+            ]
+        ),
+        trackingSceneMethod: .deviceCorners,
+        animation: .init(transformTracks: [
+            .init(trackID: .cameraGeometry, keyframes: [.init(
+                timeNumerator: 0, timeDenominator: 1,
+                position: [0, 0, 1], quaternion: [0, 0, 0, 1]
+            )]),
+            .init(trackID: .deviceGeometry, keyframes: [.init(
+                timeNumerator: 0, timeDenominator: 1,
+                position: [0, 0, 0], quaternion: [0, 0, 0, 1]
+            )]),
+        ])
+    )
+    let id = UUID()
+    let scene = SavedScene(
+        id: id,
+        name: "Solución no resoluble",
+        thumbnailFileName: "\(id.uuidString.lowercased()).png",
+        snapshot: snapshot
+    )
+
+    let recovered = try workspace.sceneSolutionSnapshotUsingDefaultGeometry(scene)
+    let overrideIDs = Set(recovered.authoring.overrides.map(\.controlID))
+
+    #expect(!recovered.hasSceneSolution)
+    #expect(recovered.trackingSceneMethod == .fusionComposition)
+    #expect(recovered.animation.transformTracks.isEmpty)
+    #expect(!overrideIDs.contains("geometry-mode"))
+    #expect(!overrideIDs.contains("camera-position-z-meters"))
+    #expect(!overrideIDs.contains("screen-position-x-meters"))
+    #expect(recovered.authoring.overrides.contains(.scalar("focal-length-millimeters", 85)))
+    #expect(recovered.authoring.overrides.contains(.scalar("white-luminance", 120)))
+    #expect(recovered.authoring.profiles == snapshot.authoring.profiles)
+    #expect(recovered.authoring.context.referenceResource == reference)
+    #expect(recovered.animation.scalarTracks == snapshot.animation.scalarTracks)
+    #expect(recovered.currentFrame == snapshot.currentFrame)
+    #expect(recovered.viewerZoom == snapshot.viewerZoom)
 }
 
 @Test func sourceAssetsPreserveTheirAuthoredAbsolutePath() throws {

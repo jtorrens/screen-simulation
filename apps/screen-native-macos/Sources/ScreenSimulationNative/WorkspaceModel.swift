@@ -55,6 +55,17 @@ enum ReferenceMatchError: LocalizedError {
     }
 }
 
+enum SceneSolutionStandardizationError: LocalizedError {
+    case unresolvedPose(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unresolvedPose(message):
+            "No se puede conservar la colocación resuelta de Camera y Device: \(message)"
+        }
+    }
+}
+
 enum ReferenceMatchRasterMapping {
     private static func scaleAndOffset(
         referenceWidth: Int,
@@ -7083,13 +7094,67 @@ final class WorkspaceModel: ObservableObject {
         return snapshot
     }
 
+    func sceneSolutionSnapshotUsingDefaultGeometry(
+        _ scene: SavedScene
+    ) throws -> SavedSceneSnapshot {
+        guard scene.snapshot.hasSceneSolution else {
+            throw SceneLibraryError.invalidDocument(
+                "La escena no contiene una solución 3D."
+            )
+        }
+        let previous = scene.snapshot
+        let ownership = try sceneSettingsOwnership(
+            source: previous, destination: previous
+        )
+        let geometryControlIDs = Set(ownership.controlBlocks.compactMap { id, block in
+            block == .cameraTransform || block == .deviceTransform ? id : nil
+        })
+        let authoring = SceneAuthoringDocument(
+            activeModel: previous.authoring.activeModel,
+            vfxContinuity: previous.authoring.vfxContinuity,
+            profiles: previous.authoring.profiles,
+            overrides: previous.authoring.overrides.filter {
+                !geometryControlIDs.contains($0.controlID)
+            },
+            modelOverrides: previous.authoring.modelOverrides,
+            context: previous.authoring.context,
+            environmentCalibration: previous.authoring.environmentCalibration
+        )
+        var animation = previous.animation
+        animation.removeTransformTrack(.cameraGeometry)
+        animation.removeTransformTrack(.deviceGeometry)
+        let snapshot = SavedSceneSnapshot(
+            source: previous.source,
+            currentFrame: previous.currentFrame,
+            viewerZoom: previous.viewerZoom,
+            viewerPanX: previous.viewerPanX,
+            viewerPanY: previous.viewerPanY,
+            viewerIsFitted: previous.viewerIsFitted,
+            authoring: authoring,
+            generatedEnvironment: previous.generatedEnvironment,
+            tracking: nil,
+            fusionTrackerMotion: nil,
+            trackingSceneMethod: .fusionComposition,
+            animation: animation
+        )
+        try snapshot.validate()
+        return snapshot
+    }
+
     private func standardizeCurrentSceneSolution() throws {
         guard hasSceneSolution, var selection = testAuthoringSelection else {
             throw SceneLibraryError.invalidDocument(
                 "La escena no contiene una solución 3D materializada."
             )
         }
-        let resolved = try resolveSceneFrame(currentFrame).authored
+        let resolved: PhysicalPipelineAuthoringState
+        do {
+            resolved = try resolveSceneFrame(currentFrame).authored
+        } catch {
+            throw SceneSolutionStandardizationError.unresolvedPose(
+                error.localizedDescription
+            )
+        }
         let cameraDegrees = PoseRotationProjection.degrees(
             from: resolved.cameraPose.quaternion
         )
@@ -7132,7 +7197,6 @@ final class WorkspaceModel: ObservableObject {
         fusionTrackerMotion = nil
         fusionTrackerCornerAssignments = [:]
         trackingSceneMethod = .fusionComposition
-        referenceMatchCorners = []
         referenceMatchProjectedCorners = []
         referenceMatchErrorPixels = nil
         referenceMatchEnabled = false

@@ -146,7 +146,9 @@ struct ContentView: View {
         case scene(UUID)
     }
     enum PendingSceneAction {
-        case resetDefaults, removeSceneSolution, delete
+        case resetDefaults, removeSceneSolution
+        case removeSceneSolutionUsingDefaultGeometry
+        case delete
     }
     enum LibraryDeletion: String {
         case pattern = "patrón"
@@ -232,6 +234,7 @@ struct ContentView: View {
     @State private var sidebarIsVisible = true
     @State private var pendingSceneAction: PendingSceneAction?
     @State private var pendingScene: SavedScene?
+    @State private var pendingSceneSolutionFallbackReason: String?
     @State private var renderDraft: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
     @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
@@ -440,6 +443,7 @@ struct ContentView: View {
                     if !$0 {
                         pendingSceneAction = nil
                         pendingScene = nil
+                        pendingSceneSolutionFallbackReason = nil
                     }
                 }
             ),
@@ -449,7 +453,9 @@ struct ContentView: View {
                 Button(
                     sceneConfirmationButton(action),
                     role: action == .delete || action == .resetDefaults
-                        || action == .removeSceneSolution ? .destructive : nil
+                        || action == .removeSceneSolution
+                        || action == .removeSceneSolutionUsingDefaultGeometry
+                        ? .destructive : nil
                 ) {
                     performConfirmedSceneAction(action, scene: scene)
                 }
@@ -457,12 +463,19 @@ struct ContentView: View {
             Button("Cancelar", role: .cancel) {
                 pendingSceneAction = nil
                 pendingScene = nil
+                pendingSceneSolutionFallbackReason = nil
             }
         } message: {
             if pendingSceneAction == .resetDefaults {
                 Text("Se conservarán únicamente Source y Reference. El resto quedará como en una escena nueva.")
             } else if pendingSceneAction == .removeSceneSolution {
                 Text("La Cámara y el Device conservarán los valores resueltos del frame actual. Se eliminarán la importación 3D, el Tracker, los objetivos de Match y las pistas de transformación existentes; después podrán animarse manualmente.")
+            } else if pendingSceneAction == .removeSceneSolutionUsingDefaultGeometry {
+                Text(
+                    "No se ha podido resolver la colocación 3D actual"
+                    + (pendingSceneSolutionFallbackReason.map { ": \($0)" } ?? "")
+                    + ". Se eliminará la Solución 3D y Camera y Device volverán a la posición inicial de una escena nueva. Sus perfiles y el resto de la autoría se conservarán."
+                )
             } else {
                 Text("Esta operación elimina la escena de la biblioteca.")
             }
@@ -2316,6 +2329,8 @@ struct ContentView: View {
         return switch action {
         case .resetDefaults: "¿Restaurar ‘\(scene.name)’ a sus valores por defecto?"
         case .removeSceneSolution: "¿Convertir ‘\(scene.name)’ en una escena estándar?"
+        case .removeSceneSolutionUsingDefaultGeometry:
+            "¿Usar la posición inicial en ‘\(scene.name)’?"
         case .delete: "¿Eliminar ‘\(scene.name)’?"
         }
     }
@@ -3061,6 +3076,7 @@ struct ContentView: View {
         switch action {
         case .resetDefaults: "Restaurar valores"
         case .removeSceneSolution: "Convertir en estándar"
+        case .removeSceneSolutionUsingDefaultGeometry: "Usar posición inicial"
         case .delete: "Eliminar escena"
         }
     }
@@ -3195,6 +3211,7 @@ struct ContentView: View {
     private func performConfirmedSceneAction(_ action: PendingSceneAction, scene: SavedScene) {
         pendingSceneAction = nil
         pendingScene = nil
+        pendingSceneSolutionFallbackReason = nil
         switch action {
         case .resetDefaults:
             do {
@@ -3237,6 +3254,36 @@ struct ContentView: View {
                         snapshot: sourceSnapshot
                     )
                     let standardized = try await model.standardizedSceneSolutionSnapshot(
+                        sourceScene
+                    )
+                    let updated = try scenes.removeSceneSolution(
+                        scene,
+                        standardizedSnapshot: standardized,
+                        undoManager: undoManager
+                    )
+                    if isActive {
+                        await model.openSavedScene(updated, undoManager: undoManager)
+                    }
+                } catch let error as SceneSolutionStandardizationError {
+                    pendingSceneSolutionFallbackReason = error.localizedDescription
+                    pendingScene = scene
+                    pendingSceneAction = .removeSceneSolutionUsingDefaultGeometry
+                } catch { model.errorMessage = error.localizedDescription }
+            }
+        case .removeSceneSolutionUsingDefaultGeometry:
+            Task {
+                do {
+                    let isActive = model.activeSceneID == scene.id
+                    let sourceSnapshot = try isActive
+                        ? model.captureSavedScene().snapshot
+                        : scene.snapshot
+                    let sourceScene = SavedScene(
+                        id: scene.id,
+                        name: scene.name,
+                        thumbnailFileName: scene.thumbnailFileName,
+                        snapshot: sourceSnapshot
+                    )
+                    let standardized = try model.sceneSolutionSnapshotUsingDefaultGeometry(
                         sourceScene
                     )
                     let updated = try scenes.removeSceneSolution(
