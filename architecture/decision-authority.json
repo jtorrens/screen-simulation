@@ -3,6 +3,29 @@
   "version": 1,
   "decisions": [
     {
+      "id": "output.frontal-camera-sampling",
+      "scope": "complete frontal Device sampling, extrapolated camera lattice and physical Recording before delivery encoding",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Simulation model selection"
+      },
+      "enforcement": [
+        "crates/screen-application/src/frontal_render.rs",
+        "crates/screen-native-bridge/src/lib.rs",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RecordingPhaseExecutor.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/ImageIOHeicRecordingAdapterTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+        "crates/screen-application/src/lib.rs",
+        "crates/screen-sensor/src/lib.rs",
+        "crates/screen-platform/src/physical_pipeline_metal.rs",
+        "crates/screen-platform/shaders/physical_pipeline.metal",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/FusionScenePackage.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/FusionScenePackageTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
       "id": "architecture.decision-coherence",
       "scope": "repository decision process",
       "owner": {

@@ -2594,6 +2594,56 @@ fn intermediate(value: u32) -> Option<PhysicalIntermediate> {
     PhysicalIntermediate::try_from(value).ok()
 }
 
+/// Twelve camera-local corner coordinates, followed by explicit physical size
+/// and focal pixels. NaN is the explicit invalid-plan result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn screen_frontal_density_bound_v1(
+    corners: *const f64,
+    width: f64,
+    height: f64,
+    focal_x: f64,
+    focal_y: f64,
+) -> f64 {
+    if corners.is_null() {
+        return f64::NAN;
+    }
+    let values = unsafe { std::slice::from_raw_parts(corners, 12) };
+    screen_application::frontal_density_bound(
+        std::array::from_fn(|i| [values[i * 3], values[i * 3 + 1], values[i * 3 + 2]]),
+        [width, height],
+        [focal_x, focal_y],
+    )
+    .unwrap_or(f64::NAN)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_physical_model_resolve_intermediate_v1(model: u32, requested: u32) -> u32 {
+    let model = match model {
+        SCREEN_RENDER_MODEL_PHYSICAL => screen_application::SimulationRenderModel::Physical,
+        SCREEN_RENDER_MODEL_VFX_CONTINUITY => {
+            screen_application::SimulationRenderModel::VfxContinuity
+        }
+        _ => return u32::MAX,
+    };
+    intermediate(requested).map_or(u32::MAX, |value| model.resolve_intermediate(value) as u32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn screen_physical_model_uses_camera_raster_v1(model: u32, requested: u32) -> u32 {
+    let model = match model {
+        SCREEN_RENDER_MODEL_PHYSICAL => screen_application::SimulationRenderModel::Physical,
+        SCREEN_RENDER_MODEL_VFX_CONTINUITY => {
+            screen_application::SimulationRenderModel::VfxContinuity
+        }
+        _ => return u32::MAX,
+    };
+    intermediate(requested).map_or(u32::MAX, |value| {
+        u32::from(PhysicalPipelineExecutionPlan::uses_camera_raster(
+            model, value,
+        ))
+    })
+}
+
 fn contribution_amounts(
     contributions: &[ScreenPhysicalStageContributionV3],
 ) -> Option<screen_application::ResolvedPhysicalStageContributions> {
@@ -3088,7 +3138,11 @@ unsafe fn physical_frame_submit_impl(
         unsafe { set_error(error_message, b"invalid physical quality\0") };
         return std::ptr::null_mut();
     };
-    let Some(requested_intermediate) = intermediate(request.requested_intermediate) else {
+    let resolved_intermediate = screen_physical_model_resolve_intermediate_v1(
+        request.render_model,
+        request.requested_intermediate,
+    );
+    let Some(requested_intermediate) = intermediate(resolved_intermediate) else {
         unsafe { set_error(error_message, b"invalid physical intermediate selector\0") };
         return std::ptr::null_mut();
     };
@@ -3424,13 +3478,21 @@ unsafe fn physical_frame_submit_impl(
         shared,
         cancellation_identity: request.cancellation_identity,
         quality: request.quality,
-        requested_intermediate: request.requested_intermediate,
-        native_width: if capture_checkpoint.sensor_enabled {
+        requested_intermediate: resolved_intermediate,
+        native_width: if screen_physical_model_uses_camera_raster_v1(
+            request.render_model,
+            resolved_intermediate,
+        ) == 1
+        {
             active_sensor.extent().width()
         } else {
             native.effective_width
         },
-        native_height: if capture_checkpoint.sensor_enabled {
+        native_height: if screen_physical_model_uses_camera_raster_v1(
+            request.render_model,
+            resolved_intermediate,
+        ) == 1
+        {
             active_sensor.extent().height()
         } else {
             native.effective_height

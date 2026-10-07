@@ -269,7 +269,8 @@ enum FusionProjectionResolver {
         deviceWidthMeters: Double,
         deviceHeightMeters: Double,
         deliveryWidth: Int,
-        deliveryHeight: Int
+        deliveryHeight: Int,
+        deliveryPlacementID: String
     ) throws -> FusionProjectedRaster {
         guard !cameraSamples.isEmpty,
               devicePoseSamples.count == cameraSamples.count,
@@ -288,7 +289,16 @@ enum FusionProjectionResolver {
         ]
         var density = 0.0
         for (camera, devicePose) in zip(cameraSamples, devicePoseSamples) {
-            guard camera.frame == devicePose.frame else {
+            guard camera.frame == devicePose.frame,
+                  camera.positionMeters.count == 3, camera.positionMeters.allSatisfy(\.isFinite),
+                  devicePose.positionMeters.count == 3, devicePose.positionMeters.allSatisfy(\.isFinite),
+                  camera.quaternionXYZW.count == 4, camera.quaternionXYZW.allSatisfy(\.isFinite),
+                  devicePose.quaternionXYZW.count == 4, devicePose.quaternionXYZW.allSatisfy(\.isFinite),
+                  abs(camera.quaternionXYZW.reduce(0) { $0 + $1 * $1 } - 1) < 1e-6,
+                  abs(devicePose.quaternionXYZW.reduce(0) { $0 + $1 * $1 } - 1) < 1e-6,
+                  camera.focalLengthMillimeters.isFinite, camera.focalLengthMillimeters > 0,
+                  camera.sensorWidthMillimeters.isFinite, camera.sensorWidthMillimeters > 0,
+                  camera.sensorHeightMillimeters.isFinite, camera.sensorHeightMillimeters > 0 else {
                 throw FusionScenePackageError.invalidCamera
             }
             let deviceQ = simd_quatd(
@@ -299,21 +309,31 @@ enum FusionProjectionResolver {
                 devicePose.positionMeters[0], devicePose.positionMeters[1],
                 devicePose.positionMeters[2]
             )
-            let projected = try localCorners.map {
-                try project(
-                    deviceQ.act($0) + devicePosition, camera: camera,
-                    deliveryWidth: deliveryWidth, deliveryHeight: deliveryHeight
-                )
+            let cameraQ = simd_quatd(ix: camera.quaternionXYZW[0], iy: camera.quaternionXYZW[1],
+                iz: camera.quaternionXYZW[2], r: camera.quaternionXYZW[3])
+            let cameraPosition = SIMD3(camera.positionMeters[0], camera.positionMeters[1], camera.positionMeters[2])
+            let cameraCorners = try localCorners.map { corner -> [Double] in
+                let p = cameraQ.inverse.act(deviceQ.act(corner) + devicePosition - cameraPosition)
+                guard -p.z > camera.nearClipMeters, -p.z < camera.farClipMeters else {
+                    throw FusionScenePackageError.invalidCamera
+                }
+                return [p.x, p.y, -p.z]
+            }.flatMap { $0 }
+            let sx = Double(deliveryWidth) / camera.sensorWidthMillimeters
+            let sy = Double(deliveryHeight) / camera.sensorHeightMillimeters
+            let scale: Double
+            switch deliveryPlacementID {
+            case "fit": scale = min(sx, sy)
+            case "fill-crop": scale = max(sx, sy)
+            default: throw FusionScenePackageError.invalidRaster
             }
-            let horizontal = max(
-                simd_length(projected[1] - projected[0]),
-                simd_length(projected[2] - projected[3])
-            ) / deviceWidthMeters
-            let vertical = max(
-                simd_length(projected[3] - projected[0]),
-                simd_length(projected[2] - projected[1])
-            ) / deviceHeightMeters
-            density = max(density, horizontal, vertical)
+            let focalPixels = camera.focalLengthMillimeters * scale
+            let bound = cameraCorners.withUnsafeBufferPointer {
+                screen_frontal_density_bound_v1($0.baseAddress, deviceWidthMeters, deviceHeightMeters,
+                    focalPixels, focalPixels)
+            }
+            guard bound.isFinite, bound > 0 else { throw FusionScenePackageError.invalidCamera }
+            density = max(density, bound)
         }
         guard density.isFinite, density > 0 else {
             throw FusionScenePackageError.invalidCamera

@@ -106,6 +106,7 @@ struct PhysicalPipelineParams {
     panel_angular_scene: [f32; 4],
     shutter: [f32; 4],
     vfx_raster: [f32; 4],
+    camera_sampling: [f32; 4],
 }
 
 #[derive(Clone, PartialEq)]
@@ -151,6 +152,58 @@ pub struct VfxTransparencyRaster {
     pub active_width: u32,
     pub active_height: u32,
     pub bake_depth_of_field: bool,
+}
+
+struct CameraRawRegion {
+    origin_x: u32,
+    origin_y: u32,
+    width: u16,
+    height: u16,
+}
+struct CameraRawInput {
+    region: CameraRawRegion,
+    sensor_profile: screen_sensor::SensorProfile,
+    bayer_pattern: screen_sensor::BayerPattern,
+    adc_bits: u8,
+    codes: Vec<u16>,
+    full_well_clipped: Vec<bool>,
+    adc_clipped: Vec<bool>,
+}
+impl From<screen_sensor::RawSensorRegion> for CameraRawInput {
+    fn from(raw: screen_sensor::RawSensorRegion) -> Self {
+        Self {
+            region: CameraRawRegion {
+                origin_x: u32::from(raw.region.origin_x),
+                origin_y: u32::from(raw.region.origin_y),
+                width: raw.region.width,
+                height: raw.region.height,
+            },
+            sensor_profile: raw.sensor_profile,
+            bayer_pattern: raw.bayer_pattern,
+            adc_bits: raw.adc_bits,
+            codes: raw.codes,
+            full_well_clipped: raw.full_well_clipped,
+            adc_clipped: raw.adc_clipped,
+        }
+    }
+}
+impl From<screen_sensor::ExtrapolatedSensorRaw> for CameraRawInput {
+    fn from(raw: screen_sensor::ExtrapolatedSensorRaw) -> Self {
+        Self {
+            region: CameraRawRegion {
+                origin_x: raw.window.origin[0] as u32,
+                origin_y: raw.window.origin[1] as u32,
+                width: raw.window.width,
+                height: raw.window.height,
+            },
+            sensor_profile: raw.sensor_profile,
+            bayer_pattern: raw.sensor_profile.bayer_pattern,
+            adc_bits: raw.sensor_profile.adc_bits,
+            codes: raw.codes,
+            full_well_clipped: raw.full_well_clipped,
+            adc_clipped: raw.adc_clipped,
+        }
+    }
 }
 
 #[repr(C)]
@@ -398,12 +451,14 @@ impl MetalPhysicalPipeline {
         let veiling_mean_finalize_pipeline = device
             .new_compute_pipeline_state_with_function(&veiling_mean_finalize_function)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let veiling_finalize_function = library
-            .get_function("finalize_physical_veiling_source", None)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
-        let veiling_finalize_pipeline = device
-            .new_compute_pipeline_state_with_function(&veiling_finalize_function)
-            .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
+        let veiling_finalize_pipeline = specialized_pipeline(
+            "finalize_physical_veiling_source",
+            false,
+            false,
+            false,
+            false,
+            false,
+        )?;
         let accumulator_function = library
             .get_function("accumulate_physical_pipeline", None)
             .map_err(|error| MetalPhysicalPipelineError::Backend(error.to_string()))?;
@@ -845,6 +900,26 @@ impl MetalPhysicalPipeline {
             plan,
         )
         .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
+        self.publish_camera_raw(
+            physical,
+            plan,
+            raw.into(),
+            capture_started,
+            report_progress,
+            is_cancelled,
+        )
+    }
+
+    fn publish_camera_raw(
+        &self,
+        physical: MetalPhysicalPipelineResult,
+        plan: PhysicalPipelineExecutionPlan,
+        raw: CameraRawInput,
+        capture_started: Instant,
+        mut report_progress: impl FnMut(f32),
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<MetalPhysicalPipelineResult, MetalPhysicalPipelineError> {
+        let physical_values = Self::read_physical_raster(&physical.texture)?;
         let sensor = raw.sensor_profile;
         if is_cancelled() {
             return Err(MetalPhysicalPipelineError::Cancelled);
@@ -1125,12 +1200,7 @@ impl MetalPhysicalPipeline {
         }
         let first_sampling = samples[0]
             .2
-            .panel
-            .flat_panel_sampling(
-                samples[0].2.quality,
-                samples[0].2.requested_width,
-                samples[0].2.requested_height,
-            )
+            .sampling()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let descriptor = TextureDescriptor::new();
         descriptor.set_texture_type(MTLTextureType::D2);
@@ -1199,12 +1269,7 @@ impl MetalPhysicalPipeline {
                 }
                 physical_plan.sensor_enabled = false;
                 let sampling = physical_plan
-                    .panel
-                    .flat_panel_sampling(
-                        physical_plan.quality,
-                        physical_plan.requested_width,
-                        physical_plan.requested_height,
-                    )
+                    .sampling()
                     .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
                 if sampling.effective_width != first_sampling.effective_width
                     || sampling.effective_height != first_sampling.effective_height
@@ -1477,71 +1542,86 @@ impl MetalPhysicalPipeline {
                 "VFX transparency requires the complete physical Device contribution".to_owned(),
             ));
         }
-        if plan.render_model == SimulationRenderModel::VfxContinuity {
-            plan.sensor_enabled = false;
-            plan.development_enabled = false;
-            plan.rendering_intent_enabled = false;
-            plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
-            return self.evaluate_rows(
-                source_acescg,
-                device_signal,
-                environment_acescg,
-                plan,
-                None,
-                None,
-                Some(raster),
-                None,
-                None,
-                None,
-                report_progress,
-                is_cancelled,
-            );
-        }
-        // This is the normal Camera Rendered ACEScg route on a frontal raster:
-        // perspective and Brown distortion are selected out by the specialized
-        // shader, while shutter exposure, sensor/develop and rendering intent
-        // remain the same authored operations as a normal render.  The virtual
-        // sensor has the explicit export raster so no hidden resampling can
-        // substitute the requested Device sampling density.
-        let virtual_width = u16::try_from(plan.requested_width).map_err(|_| {
-            MetalPhysicalPipelineError::InvalidPlan(
-                "Fusion Scene Package raster exceeds the supported sensor domain".to_owned(),
-            )
-        })?;
-        let virtual_height = u16::try_from(plan.requested_height).map_err(|_| {
-            MetalPhysicalPipelineError::InvalidPlan(
-                "Fusion Scene Package raster exceeds the supported sensor domain".to_owned(),
-            )
-        })?;
-        plan.sensor.native_width = virtual_width;
-        plan.sensor.native_height = virtual_height;
-        plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
-        plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
-        plan.sensor_enabled = true;
-        plan.rendering_intent_enabled = true;
-        let mut physical_plan = plan;
-        physical_plan.sensor_enabled = false;
-        physical_plan.requested_intermediate = PhysicalIntermediate::ShutterMotion;
-        let physical = self.evaluate_rows(
+        let window = screen_application::prepare_frontal_camera_window(
+            plan,
+            raster.active_width,
+            raster.active_height,
+        )
+        .map_err(|e| MetalPhysicalPipelineError::InvalidPlan(e.to_string()))?;
+        let mut optical_plan = plan;
+        optical_plan.requested_width = u32::from(window.lattice.width);
+        optical_plan.requested_height = u32::from(window.lattice.height);
+        optical_plan.sensor_enabled = false;
+        optical_plan.requested_intermediate = match plan.render_model {
+            SimulationRenderModel::Physical => PhysicalIntermediate::ShutterMotion,
+            SimulationRenderModel::VfxContinuity => PhysicalIntermediate::LensProjection,
+        };
+        optical_plan = optical_plan.stopped_at_requested_intermediate();
+        let optical = self.evaluate_rows(
             source_acescg,
             device_signal,
             environment_acescg,
-            physical_plan,
+            optical_plan,
             None,
             None,
-            Some(raster),
+            Some((window, raster.bake_depth_of_field)),
             None,
             None,
             None,
-            |progress| report_progress(progress * 0.9),
+            |p| report_progress(p * 0.8),
             &is_cancelled,
         )?;
-        self.evaluate_sensor_raw(
-            physical,
+        let camera = if plan.render_model == SimulationRenderModel::Physical && plan.sensor_enabled
+        {
+            let started = Instant::now();
+            let raw = screen_application::expose_frontal_camera_raw(
+                plan,
+                window,
+                &Self::read_physical_raster(&optical.texture)?,
+            )
+            .map_err(|e| MetalPhysicalPipelineError::InvalidPlan(e.to_string()))?;
+            plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+            self.publish_camera_raw(optical, plan, raw.into(), started, |_| {}, &is_cancelled)?
+        } else {
+            optical
+        };
+        if is_cancelled() {
+            return Err(MetalPhysicalPipelineError::Cancelled);
+        }
+        let rectified = screen_application::rectify_camera_raster(
             plan,
-            |progress| report_progress(0.9 + progress * 0.1),
-            is_cancelled,
+            window,
+            &Self::read_physical_raster(&camera.texture)?,
         )
+        .map_err(|e| MetalPhysicalPipelineError::InvalidPlan(e.to_string()))?;
+        let descriptor = TextureDescriptor::new();
+        descriptor.set_texture_type(MTLTextureType::D2);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::RGBA32Float);
+        descriptor.set_storage_mode(MTLStorageMode::Shared);
+        descriptor.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+        descriptor.set_width(u64::from(rectified.width));
+        descriptor.set_height(u64::from(rectified.height));
+        let texture = source_acescg.device().new_texture(&descriptor);
+        texture.replace_region(
+            MTLRegion::new_2d(
+                0,
+                0,
+                u64::from(rectified.width),
+                u64::from(rectified.height),
+            ),
+            0,
+            rectified.rgba.as_ptr().cast(),
+            u64::from(rectified.width) * 16,
+        );
+        report_progress(1.0);
+        Ok(MetalPhysicalPipelineResult {
+            texture,
+            geometry: camera.geometry,
+            sampling: plan
+                .sampling()
+                .map_err(|e| MetalPhysicalPipelineError::InvalidPlan(e.to_string()))?,
+            stage_elapsed_nanoseconds: camera.stage_elapsed_nanoseconds,
+        })
     }
 
     fn evaluate_rows(
@@ -1552,7 +1632,7 @@ impl MetalPhysicalPipeline {
         plan: PhysicalPipelineExecutionPlan,
         row_range: Option<(u32, u32)>,
         mut signal_preparations: Option<&mut Vec<PhysicalSignalPreparation>>,
-        vfx_raster: Option<VfxTransparencyRaster>,
+        vfx_raster: Option<(screen_application::FrontalCameraWindow, bool)>,
         temporal_accumulation: Option<(&TextureRef, f32, bool)>,
         row_batch: Option<PhysicalRowBatch<'_>>,
         capture_params: Option<&mut Option<PhysicalPipelineParams>>,
@@ -1614,8 +1694,7 @@ impl MetalPhysicalPipeline {
             .flat_panel_geometry()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         let sampling = plan
-            .panel
-            .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
+            .sampling()
             .map_err(|error| MetalPhysicalPipelineError::InvalidPlan(error.to_string()))?;
         if !plan.vfx_relative_panel_level.is_finite()
             || !(VFX_CONTINUITY_LEVEL_DESCRIPTOR.minimum as f32
@@ -2188,19 +2267,15 @@ impl MetalPhysicalPipeline {
                 plan.shutter_motion.neutral_density_stops,
                 0.0,
             ],
-            vfx_raster: [
-                vfx_raster.map_or(1.0, |value| {
-                    value.active_width as f32 / sampling.effective_width as f32
-                }),
-                vfx_raster.map_or(1.0, |value| {
-                    value.active_height as f32 / sampling.effective_height as f32
-                }),
-                vfx_raster.map_or(
-                    0.0,
-                    |value| {
-                        if value.bake_depth_of_field { 1.0 } else { 0.0 }
-                    },
-                ),
+            vfx_raster: vfx_raster.map_or([0.0, 0.0, 1.0, 1.0], |(window, _)| window.viewport),
+            camera_sampling: [
+                vfx_raster.map_or(0.0, |(window, _)| window.lattice.origin[0] as f32),
+                vfx_raster.map_or(0.0, |(window, _)| window.lattice.origin[1] as f32),
+                if vfx_raster.is_none_or(|(_, bake)| bake) {
+                    1.0
+                } else {
+                    0.0
+                },
                 0.0,
             ],
         };
@@ -2284,7 +2359,7 @@ impl MetalPhysicalPipeline {
                     && environment.key_radiance.0.g == 0.0
                     && environment.key_radiance.0.b == 0.0
         );
-        let fusion_device_mov = vfx_raster.is_some_and(|raster| !raster.bake_depth_of_field)
+        let fusion_device_mov = vfx_raster.is_some_and(|(_, bake)| !bake)
             && zero_incident_environment
             && plan.requested_intermediate == PhysicalIntermediate::ShutterMotion;
         let physical_pipeline = match (
@@ -2793,6 +2868,213 @@ mod tests {
             }
         }
         eprintln!("physical pipeline CPU/Metal suite maximum absolute deviation: {suite_maximum}");
+    }
+
+    #[test]
+    fn frontal_storage_padding_preserves_physical_capture_and_dof_off_preserves_psf() {
+        let device = metal::Device::system_default().expect("Metal");
+        let backend = MetalPhysicalPipeline::new(&device).unwrap();
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.panel.active_width = Meters(0.2);
+        plan.panel.active_height = Meters(0.15);
+        plan.sensor.native_width = 96;
+        plan.sensor.native_height = 64;
+        plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.lens_evaluation_model = screen_application::LensEvaluationModel::VfxDepthBlur;
+        plan.requested_width = 32;
+        plan.requested_height = 24;
+        plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal = texture(&device, input.width, input.height, &input.acescg);
+        let render = |plan| {
+            read(
+                &backend
+                    .evaluate_vfx_transparency_with_environment(
+                        &source,
+                        &signal,
+                        None,
+                        plan,
+                        VfxTransparencyRaster {
+                            active_width: 32,
+                            active_height: 24,
+                            bake_depth_of_field: false,
+                        },
+                        |_| {},
+                        || false,
+                    )
+                    .unwrap()
+                    .texture,
+            )
+        };
+        plan.sensor_enabled = true;
+        plan.development_enabled = true;
+        plan.sensor_noise_amount = 1.0;
+        let physical = render(plan);
+        let mut padded = plan;
+        padded.requested_width += 8;
+        padded.requested_height += 8;
+        let padded_pixels = render(padded);
+        let mut maximum = 0.0_f32;
+        for y in 0..24 {
+            for x in 0..32 {
+                for c in 0..4 {
+                    maximum = maximum.max(
+                        (physical[y * 32 + x][c] - padded_pixels[(y + 4) * 40 + x + 4][c]).abs(),
+                    );
+                }
+            }
+        }
+        assert!(
+            maximum < 2.0e-4,
+            "padding changed physical capture: {maximum}"
+        );
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.scene_geometry_lens.lens.center_softness_micrometers = 0.0;
+        plan.scene_geometry_lens.lens.edge_softness_micrometers = 0.0;
+        let sharp = render(plan);
+        plan.scene_geometry_lens.lens.center_softness_micrometers = 100.0;
+        plan.scene_geometry_lens.lens.edge_softness_micrometers = 100.0;
+        let soft = render(plan);
+        let difference = sharp
+            .iter()
+            .zip(&soft)
+            .flat_map(|(a, b)| a[..3].iter().zip(&b[..3]).map(|(a, b)| (a - b).abs()))
+            .fold(0.0_f32, f32::max);
+        assert!(difference > 1e-3, "DOF-off erased PSF: {difference}");
+    }
+
+    #[test]
+    fn vfx_standard_export_resolves_to_lens_without_capture_or_native_raster_growth() {
+        let device = metal::Device::system_default().expect("Metal");
+        let backend = MetalPhysicalPipeline::new(&device).unwrap();
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::Native,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.requested_width = 8;
+        plan.requested_height = 6;
+        plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal = texture(&device, input.width, input.height, &input.acescg);
+        let lens = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .unwrap();
+        plan.requested_intermediate = PhysicalIntermediate::CameraRenderedAcesCg;
+        plan.sensor_enabled = true;
+        plan.development_enabled = true;
+        plan.sensor_noise_amount = 4.0;
+        plan.rendering_intent_enabled = true;
+        let exported = backend
+            .evaluate(&source, &signal, plan, |_| {}, || false)
+            .unwrap();
+        assert_eq!(
+            (exported.texture.width(), exported.texture.height()),
+            (8, 6)
+        );
+        assert_eq!(read(&lens.texture), read(&exported.texture));
+        assert!(
+            exported.stage_elapsed_nanoseconds[12..]
+                .iter()
+                .all(|n| *n == 0)
+        );
+    }
+
+    #[test]
+    fn frontal_camera_lattice_matches_cpu_with_and_without_dof() {
+        let device = metal::Device::system_default().expect("Metal");
+        let backend = MetalPhysicalPipeline::new(&device).unwrap();
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.panel.active_width = Meters(0.2);
+        plan.panel.active_height = Meters(0.15);
+        plan.sensor.native_width = 48;
+        plan.sensor.native_height = 32;
+        plan.sensor_region = screen_sensor::SensorRegion::full(plan.sensor);
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.lens_evaluation_model = screen_application::LensEvaluationModel::VfxDepthBlur;
+        plan.screen_rotation = screen_geometry::Quaternion::from_yaw_degrees(30.0);
+        plan.scene_geometry_lens.focus_distance_meters = 0.8;
+        plan.requested_width = 24;
+        plan.requested_height = 18;
+        plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal = texture(&device, input.width, input.height, &input.acescg);
+        for lens_model in [
+            screen_application::LensEvaluationModel::ThinLens,
+            screen_application::LensEvaluationModel::VfxDepthBlur,
+        ] {
+            plan.lens_evaluation_model = lens_model;
+            for bake in [false, true] {
+                let window =
+                    screen_application::prepare_frontal_camera_window(plan, 24, 18).unwrap();
+                let mut optical_plan = plan;
+                optical_plan.requested_width = u32::from(window.lattice.width);
+                optical_plan.requested_height = u32::from(window.lattice.height);
+                optical_plan.requested_intermediate = PhysicalIntermediate::LensProjection;
+                let cpu = screen_application::evaluate_frontal_camera_cpu_oracle(
+                    PhysicalPipelineRequest {
+                        input: input.clone(),
+                        plan: optical_plan,
+                        render_context: screen_application::PhysicalRenderContext::full_frame(
+                            optical_plan.requested_width,
+                            optical_plan.requested_height,
+                        ),
+                    },
+                    window,
+                    bake,
+                )
+                .unwrap();
+                let expected = screen_application::rectify_camera_raster(
+                    plan,
+                    window,
+                    cpu.presentation_rgba(),
+                )
+                .unwrap();
+                let gpu = backend
+                    .evaluate_vfx_transparency_with_environment(
+                        &source,
+                        &signal,
+                        None,
+                        plan,
+                        VfxTransparencyRaster {
+                            active_width: 24,
+                            active_height: 18,
+                            bake_depth_of_field: bake,
+                        },
+                        |_| {},
+                        || false,
+                    )
+                    .unwrap();
+                let maximum = read(&gpu.texture)
+                    .iter()
+                    .zip(&expected.rgba)
+                    .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| (a - b).abs()))
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    maximum <= 2.0e-3,
+                    "frontal {lens_model:?} bake={bake} CPU/Metal deviation {maximum}"
+                );
+            }
+        }
     }
 
     #[test]

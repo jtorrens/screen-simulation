@@ -6151,7 +6151,7 @@ final class WorkspaceModel: ObservableObject {
                         ?? "La evaluación física de la escena ha fallado."
                 )
             case .complete:
-                guard snapshot.returnedIntermediate == .cameraRenderedACEScg,
+                guard snapshot.returnedIntermediate == (try PhysicalIntermediate.cameraRenderedACEScg.resolved(for: simulationModel)),
                       let camera = snapshot.frame,
                       let selection = testAuthoringSelection
                 else {
@@ -6159,20 +6159,21 @@ final class WorkspaceModel: ObservableObject {
                         "Render Queue no recibió el checkpoint de cámara solicitado."
                     )
                 }
-                // Approximate 2D Motion Blur alone materializes the transparent carrier
-                // before Reference. Disabled and physical modes retain the prior route.
+                // Recording and optional 2D motion processing consume the Device carrier,
+                // never the Reference that is composed afterward.
                 let deliveryCarrier: StudioColorMetalFrame?
                 if configuration.composition != .fullComposite
                     || configuration.motionBlurMode == .approximate2D
-                    || simulationOpacity != 1 {
-                    let delivery = try RecordingPhaseExecutor.delivery(
+                    || simulationOpacity != 1 || simulationModel == .physical {
+                    let deliveryArtifact = try RecordingPhaseExecutor.delivery(
                         cameraRendered: camera,
                         width: Int(configuration.raster.width),
                         height: Int(configuration.raster.height),
                         placementID: configuration.raster.placementID,
                         backgroundID: "transparent",
                         display: metalDisplay
-                    ).compositionFrame
+                    )
+                    let delivery = try recordedPhysicalProduct(deliveryArtifact)
                     let motionCarrier = configuration.motionBlurMode == .approximate2D
                         ? try approximate2DMotionBlur(
                             delivery, scene: resolvedSceneFrame,
@@ -6485,7 +6486,8 @@ final class WorkspaceModel: ObservableObject {
                 deviceWidthMeters: device.activeWidthMeters,
                 deviceHeightMeters: device.activeHeightMeters,
                 deliveryWidth: Int(job.configuration.raster.width),
-                deliveryHeight: Int(job.configuration.raster.height)
+                deliveryHeight: Int(job.configuration.raster.height),
+                deliveryPlacementID: job.configuration.raster.placementID
             )
         case .nativeDevice:
             activeRaster = try FusionProjectionResolver.nativeDevice(
@@ -6652,7 +6654,11 @@ final class WorkspaceModel: ObservableObject {
                     throw PhysicalMetalFrameEngineError.invalidSnapshot
                 }
                 let readbackStarted = ContinuousClock.now
-                let physicalRGBA = try metalDisplay.readLinearRGBA(output)
+                let delivered = try RecordingPhaseExecutor.delivery(
+                    cameraRendered: output, width: width, height: height,
+                    placementID: "one-to-one", backgroundID: "transparent", display: metalDisplay)
+                let recorded = try recordedPhysicalProduct(delivered)
+                let physicalRGBA = try metalDisplay.readLinearRGBA(recorded)
                 let readbackFinished = ContinuousClock.now
                 guard physicalRGBA.count == width * height * 4,
                       physicalRGBA.allSatisfy(\.isFinite) else {
@@ -9454,15 +9460,7 @@ final class WorkspaceModel: ObservableObject {
             requestedSampleCount: temporalSamplesOverride
         )
         let requested = requestedIntermediateOverride ?? requestedPhysicalIntermediate
-        let effectiveIntermediate: PhysicalIntermediate
-        if simulationModel == .vfxContinuity,
-           [.shutterMotion, .computationalCapture, .sensorCollection, .sensorBloom, .sensorReadoutRaw,
-            .developedACEScg, .cameraRenderedACEScg, .deviceSignal, .panelEmission]
-            .contains(requested) {
-            effectiveIntermediate = .lensProjection
-        } else {
-            effectiveIntermediate = requested
-        }
+        let effectiveIntermediate = try requested.resolved(for: simulationModel)
         let requestedDimensions = try requestedDimensionsOverride
             ?? physicalRequestedDimensions(
                 quality: quality,
@@ -10104,6 +10102,20 @@ final class WorkspaceModel: ObservableObject {
             $0.id == presentation.selectedPhaseID
         })
         status = "Test · Ver hasta \(phase?.label ?? presentation.selectedPhaseID) · \(presentationFrame.width)×\(presentationFrame.height)"
+    }
+
+    /// The camera's Recording simulation precedes the independently selected delivery codec.
+    /// VFX has no capture/recording phases; the physical matte bypasses RGB recording.
+    private func recordedPhysicalProduct(_ delivery: DeliveryRasterExecution) throws -> StudioColorMetalFrame {
+        guard simulationModel == .physical else { return delivery.compositionFrame }
+        guard let selection = testAuthoringSelection else {
+            throw PhysicalMetalFrameEngineError.invalidSnapshot
+        }
+        return try RecordingPhaseExecutor.modelProduct(model: simulationModel, delivery: delivery,
+            profileID: selection.recordingProfileID, character: selection.recordingCharacter,
+            outputTransformID: selection.recordingOutputTransformID,
+            frameRateNumerator: selection.frameRate.numerator,
+            frameRateDenominator: selection.frameRate.denominator, display: metalDisplay)
     }
 
     private func publishRecordingPreview(result: TestPreviewResultKind) {

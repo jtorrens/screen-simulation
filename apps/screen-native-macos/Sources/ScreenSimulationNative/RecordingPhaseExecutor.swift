@@ -49,6 +49,20 @@ enum RecordingPhaseExecutor {
     static let calibratedHeicQuality = 0.82
     static let genericJpegProfileID = "generic-jpeg-photo-v1"
 
+    /// Final simulated Device product, before the independent delivery writer.
+    static func modelProduct(
+        model: SceneSimulationModel, delivery: DeliveryRasterExecution,
+        profileID: String, character: Double, outputTransformID: String,
+        frameRateNumerator: UInt32, frameRateDenominator: UInt32,
+        display: StudioColorMetalDisplay
+    ) throws -> StudioColorMetalFrame {
+        guard model == .physical else { return delivery.compositionFrame }
+        let signal = try output(delivery: delivery, transformID: outputTransformID, display: display)
+        return try codec(output: signal, profileID: profileID, character: character,
+            outputTransformID: outputTransformID, frameRateNumerator: frameRateNumerator,
+            frameRateDenominator: frameRateDenominator, display: display).frame
+    }
+
     static func delivery(
         cameraRendered: StudioColorMetalFrame,
         width: Int,

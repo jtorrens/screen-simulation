@@ -161,6 +161,8 @@ import Testing
 
 @Test func captureCheckpointsOwnTheCameraRasterInsteadOfTheDeviceRaster() {
     let captureOwned: [PhysicalIntermediate] = [
+        .relativeGeometry, .coverEnvironment, .coverGlow, .lensProjection,
+        .shutterMotion, .computationalCapture, .deviceVfxTransparency,
         .sensorCollection, .sensorBloom, .sensorReadoutRaw,
         .developedACEScg, .cameraRenderedACEScg,
     ]
@@ -187,8 +189,8 @@ import Testing
         deviceWidth: 1_000, deviceHeight: 1_800,
         captureWidth: 5_712, captureHeight: 4_284
     )
-    #expect(physicalLens.width == 1_000)
-    #expect(physicalLens.height == 1_800)
+    #expect(physicalLens.width == 5_712)
+    #expect(physicalLens.height == 4_284)
 
     let continuityLens = PhysicalIntermediate.lensProjection.nativeRasterSize(
         renderModel: .vfxContinuity,

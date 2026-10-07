@@ -537,7 +537,32 @@ pub fn collect_sensor_charge_region_with_noise_amount(
     {
         return Err(SensorError::RasterProfileMismatch);
     }
-    let support_width = usize::from(exposure_region.width);
+    let (collected, read) = collect_lattice_charge(
+        profile,
+        exposure,
+        identity,
+        [
+            i32::from(exposure_region.origin_x),
+            i32::from(exposure_region.origin_y),
+        ],
+        noise_amount,
+    );
+    Ok(CollectedSensorChargeRegion {
+        sensor_profile: profile,
+        region: exposure_region,
+        collected_electrons: collected,
+        read_noise_electrons: read,
+    })
+}
+
+fn collect_lattice_charge(
+    profile: SensorProfile,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    origin: [i32; 2],
+    noise_amount: f32,
+) -> (Vec<f64>, Vec<f64>) {
+    let support_width = exposure.width as usize;
     let saturation = [
         profile.saturation_illuminance_seconds.r,
         profile.saturation_illuminance_seconds.g,
@@ -551,9 +576,9 @@ pub fn collect_sensor_charge_region_with_noise_amount(
         .map(|(local_index, acescg)| {
             let local_x = local_index % support_width;
             let local_y = local_index / support_width;
-            let x = u32::from(exposure_region.origin_x) + local_x as u32;
-            let y = u32::from(exposure_region.origin_y) + local_y as u32;
-            let channel = profile.bayer_pattern.channel_at(x, y);
+            let x = origin[0] + local_x as i32;
+            let y = origin[1] + local_y as i32;
+            let channel = profile.bayer_pattern.channel_at(x as u32, y as u32);
             let row = profile.acescg_to_sensor[channel];
             let native_exposure =
                 (row[0] * acescg.r + row[1] * acescg.g + row[2] * acescg.b).max(0.0);
@@ -562,7 +587,18 @@ pub fn collect_sensor_charge_region_with_noise_amount(
             let (photoelectrons, dark_electrons, read_electrons) = if noise_amount == 0.0 {
                 (ideal_photoelectrons, 0.0, 0.0)
             } else {
-                let global_index = u64::from(y) * u64::from(profile.native_width) + u64::from(x);
+                // Preserve every real-sensor noise identity. Extrapolated sites
+                // occupy a separate signed-coordinate key space, independent of storage.
+                let global_index = if x >= 0
+                    && y >= 0
+                    && x < i32::from(profile.native_width)
+                    && y < i32::from(profile.native_height)
+                {
+                    y as u64 * u64::from(profile.native_width) + x as u64
+                } else {
+                    let zigzag = |v: i32| ((v << 1) ^ (v >> 31)) as u32;
+                    (1_u64 << 63) | (u64::from(zigzag(y)) << 31) | u64::from(zigzag(x))
+                };
                 let key = pixel_noise_key(identity, global_index);
                 let sampled_photoelectrons = sample_poisson(ideal_photoelectrons, key);
                 (
@@ -582,12 +618,92 @@ pub fn collect_sensor_charge_region_with_noise_amount(
             ((photoelectrons + dark_electrons).max(0.0), read_electrons)
         })
         .unzip();
-    Ok(CollectedSensorChargeRegion {
+    (collected, read)
+}
+
+/// Explicit extrapolation of the calibrated photosite lattice, not a larger sensor.
+/// Signed coordinates retain the real sensor's CFA origin and sample pitch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtrapolatedSensorWindow {
+    pub origin: [i32; 2],
+    pub width: u16,
+    pub height: u16,
+}
+
+impl ExtrapolatedSensorWindow {
+    pub fn validate(self) -> Result<Self, SensorError> {
+        if self.width == 0
+            || self.height == 0
+            || self.origin.iter().any(|v| v.unsigned_abs() > 1_000_000)
+        {
+            return Err(SensorError::InvalidSensorRegion);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExtrapolatedSensorRaw {
+    pub window: ExtrapolatedSensorWindow,
+    pub sensor_profile: SensorProfile,
+    pub codes: Vec<u16>,
+    pub full_well_clipped: Vec<bool>,
+    pub adc_clipped: Vec<bool>,
+}
+
+/// Uses the same charge, bloom and readout operators as finite-sensor capture.
+/// The caller supplies complete spatial support and crops after development.
+pub fn expose_extrapolated_lattice(
+    profile: SensorProfile,
+    window: ExtrapolatedSensorWindow,
+    exposure: &IntegratedOpticalExposure,
+    identity: CaptureIdentity,
+    noise_amount: f32,
+) -> Result<ExtrapolatedSensorRaw, SensorError> {
+    let profile = profile.validate()?;
+    let window = window.validate()?;
+    exposure.validate()?;
+    if exposure.width != u32::from(window.width) || exposure.height != u32::from(window.height) {
+        return Err(SensorError::RasterProfileMismatch);
+    }
+    if !noise_amount.is_finite() || !(0.0..=4.0).contains(&noise_amount) {
+        return Err(SensorError::InvalidNoiseAmount);
+    }
+    let (charge, read) =
+        collect_lattice_charge(profile, exposure, identity, window.origin, noise_amount);
+    let coupled = redistribute_sensor_charge(
+        charge,
+        exposure.width,
+        exposure.height,
+        profile.full_well_electrons,
+        profile.bloom,
+    );
+    let mut result = ExtrapolatedSensorRaw {
+        window,
         sensor_profile: profile,
-        region: exposure_region,
-        collected_electrons: collected,
-        read_noise_electrons: read,
-    })
+        codes: Vec::with_capacity(read.len()),
+        full_well_clipped: Vec::with_capacity(read.len()),
+        adc_clipped: Vec::with_capacity(read.len()),
+    };
+    for (charge, read) in coupled.into_iter().zip(read) {
+        let (code, well, adc) = quantize_photosite(profile, charge, read);
+        result.codes.push(code);
+        result.full_well_clipped.push(well);
+        result.adc_clipped.push(adc);
+    }
+    Ok(result)
+}
+
+fn quantize_photosite(profile: SensorProfile, collected: f64, read: f64) -> (u16, bool, bool) {
+    let full_well = f64::from(profile.full_well_electrons);
+    let maximum_code = (1_u32 << profile.adc_bits) - 1;
+    let well = collected.clamp(0.0, full_well);
+    let normalized = (well + read).max(0.0) * f64::from(profile.analog_gain) / full_well;
+    (
+        (normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16,
+        collected >= full_well,
+        normalized >= 1.0,
+    )
 }
 
 /// Applies the Sensor Bloom profile to one collected-charge artifact. The
@@ -651,8 +767,6 @@ pub fn quantize_sensor_charge_region(
     {
         return Err(SensorError::NonFiniteExposure);
     }
-    let maximum_code = (1_u32 << profile.adc_bits) - 1;
-    let full_well = f64::from(profile.full_well_electrons);
     let output_count = usize::from(output_region.width) * usize::from(output_region.height);
     let mut codes = Vec::with_capacity(output_count);
     let mut full_well_clipped_mask = Vec::with_capacity(output_count);
@@ -664,14 +778,12 @@ pub fn quantize_sensor_charge_region(
             let support_y =
                 u32::from(output_region.origin_y) + output_y - u32::from(coupled.region.origin_y);
             let index = (support_y * u32::from(coupled.region.width) + support_x) as usize;
-            let collected_electrons = coupled.coupled_electrons[index];
-            let full_well_clipped = collected_electrons >= full_well;
-            let well_electrons = collected_electrons.clamp(0.0, full_well);
-            let post_read_electrons =
-                (well_electrons + coupled.read_noise_electrons[index]).max(0.0);
-            let normalized = post_read_electrons * f64::from(profile.analog_gain) / full_well;
-            let adc_clipped = normalized >= 1.0;
-            codes.push((normalized.clamp(0.0, 1.0) * f64::from(maximum_code)).round() as u16);
+            let (code, full_well_clipped, adc_clipped) = quantize_photosite(
+                profile,
+                coupled.coupled_electrons[index],
+                coupled.read_noise_electrons[index],
+            );
+            codes.push(code);
             full_well_clipped_mask.push(full_well_clipped);
             adc_clipped_mask.push(adc_clipped);
         }
@@ -970,6 +1082,77 @@ mod tests {
             bloom: SensorBloomProfile::NEUTRAL,
             ..SensorProfile::REFERENCE
         }
+    }
+
+    #[test]
+    fn extrapolated_lattice_preserves_calibration_cfa_and_global_noise() {
+        let identity = CaptureIdentity {
+            noise_seed: 21,
+            frame_index: 8,
+        };
+        for bayer in [
+            BayerPattern::Rggb,
+            BayerPattern::Bggr,
+            BayerPattern::Grbg,
+            BayerPattern::Gbrg,
+        ] {
+            let profile = SensorProfile {
+                bayer_pattern: bayer,
+                ..noiseless_profile(8, 6)
+            };
+            let make_exposure = |width: u32, height: u32| IntegratedOpticalExposure {
+                width,
+                height,
+                duration_seconds: 0.02,
+                acescg_illuminance_seconds: vec![
+                    LinearRgb::new(0.04, 0.08, 0.12);
+                    (width * height) as usize
+                ],
+            };
+            let native = expose_raw(profile, &make_exposure(8, 6), identity).unwrap();
+            let wide = expose_extrapolated_lattice(
+                profile,
+                ExtrapolatedSensorWindow {
+                    origin: [-3, -3],
+                    width: 14,
+                    height: 12,
+                },
+                &make_exposure(14, 12),
+                identity,
+                1.0,
+            )
+            .unwrap();
+            let wider = expose_extrapolated_lattice(
+                profile,
+                ExtrapolatedSensorWindow {
+                    origin: [-5, -5],
+                    width: 18,
+                    height: 16,
+                },
+                &make_exposure(18, 16),
+                identity,
+                1.0,
+            )
+            .unwrap();
+            assert_eq!(wide.sensor_profile, profile);
+            for y in 0..12 {
+                for x in 0..14 {
+                    assert_eq!(wide.codes[y * 14 + x], wider.codes[(y + 2) * 18 + x + 2]);
+                    if (3..11).contains(&x) && (3..9).contains(&y) {
+                        assert_eq!(wide.codes[y * 14 + x], native.codes[(y - 3) * 8 + x - 3]);
+                    }
+                }
+            }
+        }
+        assert!(
+            ExtrapolatedSensorWindow {
+                origin: [i32::MIN, 0],
+                width: 1,
+                height: 1
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

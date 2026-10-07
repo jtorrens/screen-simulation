@@ -621,10 +621,10 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.36,
         deviceHeightMeters: 0.24,
         deliveryWidth: 1920,
-        deliveryHeight: 1080
+        deliveryHeight: 1080, deliveryPlacementID: "fit"
     )
-    #expect((960 ... 962).contains(raster.activeWidth))
-    #expect((640 ... 642).contains(raster.activeHeight))
+    #expect((810 ... 812).contains(raster.activeWidth))
+    #expect((540 ... 542).contains(raster.activeHeight))
     #expect(raster.activeWidth.isMultiple(of: 2))
     #expect(raster.activeHeight.isMultiple(of: 2))
 
@@ -634,10 +634,10 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.36,
         deviceHeightMeters: 0.24,
         deliveryWidth: 1920,
-        deliveryHeight: 1080
+        deliveryHeight: 1080, deliveryPlacementID: "fit"
     )
-    #expect((9_600 ... 9_602).contains(projectedOutsideFrame.activeWidth))
-    #expect((6_400 ... 6_402).contains(projectedOutsideFrame.activeHeight))
+    #expect((8_100 ... 8_102).contains(projectedOutsideFrame.activeWidth))
+    #expect((5_400 ... 5_402).contains(projectedOutsideFrame.activeHeight))
     #expect(projectedOutsideFrame.activeWidth.isMultiple(of: 2))
     #expect(projectedOutsideFrame.activeHeight.isMultiple(of: 2))
 
@@ -647,9 +647,15 @@ private func temporaryDirectory() throws -> URL {
         deviceWidthMeters: 0.36,
         deviceHeightMeters: 0.24,
         deliveryWidth: 1920,
-        deliveryHeight: 1080
+        deliveryHeight: 1080, deliveryPlacementID: "fit"
     )
     #expect(jointlyTranslated == raster)
+    let sequence = try FusionProjectionResolver.maximumProjectedDensity(
+        cameraSamples: [camera(frame: 1, z: 1), camera(frame: 2, z: 0.1)],
+        devicePoseSamples: [devicePose(frame: 1), devicePose(frame: 2)],
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        deliveryWidth: 1920, deliveryHeight: 1080, deliveryPlacementID: "fit")
+    #expect(sequence == projectedOutsideFrame)
 }
 
 @Test @MainActor func fusionEulerRoundTripsTheSynthEyesImporterConvention() {

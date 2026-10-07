@@ -224,7 +224,7 @@ fn quality_lattices_keep_frame_and_reach_the_native_authority() {
         results
             .each_ref()
             .map(|value| value.diagnostic.sampling.samples_per_output_pixel),
-        [1, 4, 16, 1]
+        [1, 4, 16, 16]
     );
     let high_native_maximum = results[2]
         .presentation_rgba()

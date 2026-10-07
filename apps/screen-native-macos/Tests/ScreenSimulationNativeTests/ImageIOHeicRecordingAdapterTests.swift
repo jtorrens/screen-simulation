@@ -50,6 +50,21 @@ import UniformTypeIdentifiers
     #expect(codec.frame.texture !== output.frame.texture)
     #expect(codec.encodedBytes > 0)
     #expect(codec.encodedSHA256Hex.count == 64)
+    let physicalProduct = try RecordingPhaseExecutor.modelProduct(
+        model: .physical, delivery: delivery,
+        profileID: RecordingPhaseExecutor.iphoneHeicProfileID, character: 1,
+        outputTransformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        frameRateNumerator: 24, frameRateDenominator: 1, display: display)
+    let vfxProduct = try RecordingPhaseExecutor.modelProduct(
+        model: .vfxContinuity, delivery: delivery,
+        profileID: RecordingPhaseExecutor.iphoneHeicProfileID, character: 1,
+        outputTransformID: RecordingPhaseExecutor.iphoneHeicOutputTransformID,
+        frameRateNumerator: 24, frameRateDenominator: 1, display: display)
+    #expect(vfxProduct.texture === delivery.compositionFrame.texture)
+    #expect(physicalProduct.texture !== delivery.compositionFrame.texture)
+    let actual = try display.readLinearRGBA(physicalProduct)
+    let expected = try display.readLinearRGBA(codec.frame)
+    #expect(zip(actual, expected).allSatisfy { abs($0 - $1) < 0.002 })
 }
 
 @MainActor

@@ -26,6 +26,10 @@ typedef struct ScreenTestAuthoringProfileContext *ScreenTestAuthoringProfileCont
 #define SCREEN_DEVICE_VFX_ALPHA_TRANSPARENCY 1u
 #define SCREEN_RENDER_MODEL_PHYSICAL 0u
 #define SCREEN_RENDER_MODEL_VFX_CONTINUITY 1u
+// UINT32_MAX rejects an unknown model or checkpoint; resolution is Application-owned.
+uint32_t screen_physical_model_resolve_intermediate_v1(uint32_t model, uint32_t requested);
+uint32_t screen_physical_model_uses_camera_raster_v1(uint32_t model, uint32_t requested);
+double screen_frontal_density_bound_v1(const double *corners, double width, double height, double focal_x, double focal_y);
 #define SCREEN_PLANAR_REFERENCE_MATCH_ABI_VERSION 1u
 #define SCREEN_PHYSICAL_PARAMETER_HASH_SIZE 32u
 #define SCREEN_AUTHORING_CATALOG_ABI_VERSION 10u

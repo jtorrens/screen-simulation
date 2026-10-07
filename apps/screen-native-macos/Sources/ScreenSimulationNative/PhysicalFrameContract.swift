@@ -439,20 +439,20 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
 
     var id: UInt32 { rawValue }
 
+    func resolved(for model: SceneSimulationModel) throws -> Self {
+        let modelID = model == .physical
+            ? UInt32(SCREEN_RENDER_MODEL_PHYSICAL) : UInt32(SCREEN_RENDER_MODEL_VFX_CONTINUITY)
+        guard let value = Self(rawValue: screen_physical_model_resolve_intermediate_v1(modelID, rawValue)) else {
+            throw PhysicalMetalFrameEngineError.bridge("Application rechazó el modelo o checkpoint solicitado.")
+        }
+        return value
+    }
+
     /// The raster whose sampling lattice owns evaluation of this checkpoint.
     /// Capture checkpoints must never inherit the Device aspect ratio: their
     /// pixels are camera photosites (or values developed from those photosites).
     var usesCaptureRaster: Bool {
-        switch self {
-        case .sensorCollection, .sensorBloom, .sensorReadoutRaw,
-             .developedACEScg, .cameraRenderedACEScg:
-            true
-        case .sourceACEScg, .deviceSignal, .panelEmission, .subpixelRadiance,
-             .panelUniformity, .panelLightSpread, .relativeGeometry,
-             .coverEnvironment, .coverGlow, .lensProjection, .shutterMotion,
-             .computationalCapture, .panelTemporal, .deviceVfxTransparency:
-            false
-        }
+        screen_physical_model_uses_camera_raster_v1(UInt32(SCREEN_RENDER_MODEL_PHYSICAL), rawValue) == 1
     }
 
     func nativeRasterSize(
@@ -462,13 +462,9 @@ enum PhysicalIntermediate: UInt32, CaseIterable, Identifiable, Sendable {
         captureWidth: Int,
         captureHeight: Int
     ) -> (width: Int, height: Int) {
-        // Continuity stops before Sensor, but its lens product is still observed
-        // through the selected Camera gate. The Device raster would change the
-        // projection aspect merely by switching models.
-        if renderModel == .vfxContinuity, self == .lensProjection {
-            return (captureWidth, captureHeight)
-        }
-        return usesCaptureRaster
+        let modelID = renderModel == .physical
+            ? UInt32(SCREEN_RENDER_MODEL_PHYSICAL) : UInt32(SCREEN_RENDER_MODEL_VFX_CONTINUITY)
+        return screen_physical_model_uses_camera_raster_v1(modelID, rawValue) == 1
             ? (captureWidth, captureHeight)
             : (deviceWidth, deviceHeight)
     }

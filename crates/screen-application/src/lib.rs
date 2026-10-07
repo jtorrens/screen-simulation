@@ -2,7 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod frontal_render;
 mod parameter_animation;
+pub use frontal_render::{
+    FrontalCameraWindow, expose_frontal_camera_raw, frontal_density_bound,
+    prepare_frontal_camera_window, rectify_camera_raster,
+};
 mod physical_pipeline;
 mod recording;
 mod reflection_environment;
@@ -969,6 +974,22 @@ pub enum SimulationRenderModel {
     VfxContinuity,
 }
 
+impl SimulationRenderModel {
+    /// Resolves the cumulative product at the model boundary, independently of host.
+    pub fn resolve_intermediate(self, requested: PhysicalIntermediate) -> PhysicalIntermediate {
+        use PhysicalIntermediate::*;
+        match (self, requested) {
+            (
+                Self::VfxContinuity,
+                DeviceSignal | PanelEmission | ShutterMotion | ComputationalCapture
+                | SensorCollection | SensorBloom | SensorReadoutRaw | DevelopedAcesCg
+                | CameraRenderedAcesCg,
+            ) => LensProjection,
+            _ => requested,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimulationRenderModelDescriptor {
     pub stable_id: &'static str,
@@ -1270,11 +1291,57 @@ pub fn physical_environment_reference_sample_count(quality: FlatPanelQuality) ->
 }
 
 impl PhysicalPipelineExecutionPlan {
+    pub fn uses_camera_raster(
+        model: SimulationRenderModel,
+        checkpoint: PhysicalIntermediate,
+    ) -> bool {
+        use PhysicalIntermediate::*;
+        !matches!(
+            model.resolve_intermediate(checkpoint),
+            SourceAcesCg
+                | DeviceSignal
+                | PanelEmission
+                | SubpixelRadiance
+                | PanelUniformity
+                | PanelLightSpread
+                | PanelTemporal
+        )
+    }
+    /// Panel inspection may resolve the emitter lattice. Camera checkpoints must
+    /// retain their requested gate raster; quality changes quadrature, not extent.
+    pub fn sampling(self) -> Result<FlatPanelSampling, PanelError> {
+        if !Self::uses_camera_raster(self.render_model, self.requested_intermediate) {
+            return self.panel.flat_panel_sampling(
+                self.quality,
+                self.requested_width,
+                self.requested_height,
+            );
+        }
+        self.panel.flat_panel_sampling(
+            if self.quality == FlatPanelQuality::Native {
+                FlatPanelQuality::High
+            } else {
+                self.quality
+            },
+            self.requested_width,
+            self.requested_height,
+        )
+    }
+
     /// Returns the current immutable request with every stage after the requested
     /// diagnostic boundary neutralized. Geometry is a data checkpoint: it becomes
     /// observable by the following cover/environment stage without fabricating a
     /// separate display-referred raster.
     pub fn stopped_at_requested_intermediate(mut self) -> Self {
+        self.requested_intermediate = self
+            .render_model
+            .resolve_intermediate(self.requested_intermediate);
+        if self.render_model == SimulationRenderModel::VfxContinuity {
+            self.sensor_enabled = false;
+            self.development_enabled = false;
+            self.rendering_intent_enabled = false;
+            self.shutter_motion_amount = 0.0;
+        }
         match self.requested_intermediate {
             PhysicalIntermediate::SourceAcesCg
             | PhysicalIntermediate::DeviceSignal
@@ -2760,11 +2827,34 @@ fn apply_vfx_direct_transport_normalization(
     }
 }
 
-/// Deterministic scalar oracle for the flat, orthographic physical panel surface.
-/// Product composition uses the corresponding platform backend; this function
-/// owns the reference numeric result and never applies a camera or output transform.
+/// Deterministic scalar oracle for the complete selected physical/VFX checkpoint.
+/// Uses the same resolved camera and model request as the platform backend;
+/// display/output encoding remains outside the evaluator.
 pub fn evaluate_physical_pipeline_cpu_oracle(
     request: PhysicalPipelineRequest,
+) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
+    evaluate_physical_pipeline_cpu_view(request, None)
+}
+
+/// Reference optics on the real camera lattice before Device-plane rectification.
+/// The caller supplies the exact window extent as its render context.
+pub fn evaluate_frontal_camera_cpu_oracle(
+    request: PhysicalPipelineRequest,
+    window: FrontalCameraWindow,
+    bake_dof: bool,
+) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
+    if request.plan.requested_width != u32::from(window.lattice.width)
+        || request.plan.requested_height != u32::from(window.lattice.height)
+        || request.plan.sensor_enabled
+    {
+        return Err(ApplicationError::InvalidRenderContext);
+    }
+    evaluate_physical_pipeline_cpu_view(request, Some((window, bake_dof)))
+}
+
+fn evaluate_physical_pipeline_cpu_view(
+    request: PhysicalPipelineRequest,
+    frontal: Option<(FrontalCameraWindow, bool)>,
 ) -> Result<PhysicalPipelineCpuResult, ApplicationError> {
     request.input.validate()?;
     request.render_context.validate_for_current_evaluator(
@@ -2858,11 +2948,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
         .panel
         .flat_panel_geometry()
         .map_err(ApplicationError::Panel)?;
-    let sampling = request
-        .plan
-        .panel
-        .flat_panel_sampling(plan.quality, plan.requested_width, plan.requested_height)
-        .map_err(ApplicationError::Panel)?;
+    let sampling = plan.sampling().map_err(ApplicationError::Panel)?;
 
     // Origin is the sole phase allowed to publish the source ACEScg artifact.
     // Every later phase consumes the closed placed-feeder boundary instead.
@@ -3028,6 +3114,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             )
         }
     };
+    if frontal.is_some() {
+        resolved_scene.0.lens.radial_distortion = [0.0; 3];
+        resolved_scene.0.lens.tangential_distortion = [0.0; 2];
+    }
+    let bake_dof = frontal.is_none_or(|(_, bake)| bake);
+    let viewport = frontal.map_or([0.0, 0.0, 1.0, 1.0], |(window, _)| window.viewport);
     let side = match sampling.samples_per_output_pixel {
         1 => 1,
         4 => 2,
@@ -3069,14 +3161,20 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
             for sy in 0..side {
                 for sx in 0..side {
                     let base_minimum_uv = Vec2 {
-                        x: (x as f32 + sx as f32 / side as f32) / sampling.effective_width as f32,
-                        y: (y as f32 + sy as f32 / side as f32) / sampling.effective_height as f32,
+                        x: viewport[0]
+                            + viewport[2] * (x as f32 + sx as f32 / side as f32)
+                                / sampling.effective_width as f32,
+                        y: viewport[1]
+                            + viewport[3] * (y as f32 + sy as f32 / side as f32)
+                                / sampling.effective_height as f32,
                     };
                     let base_maximum_uv = Vec2 {
-                        x: (x as f32 + (sx + 1) as f32 / side as f32)
-                            / sampling.effective_width as f32,
-                        y: (y as f32 + (sy + 1) as f32 / side as f32)
-                            / sampling.effective_height as f32,
+                        x: viewport[0]
+                            + viewport[2] * (x as f32 + (sx + 1) as f32 / side as f32)
+                                / sampling.effective_width as f32,
+                        y: viewport[1]
+                            + viewport[3] * (y as f32 + (sy + 1) as f32 / side as f32)
+                                / sampling.effective_height as f32,
                     };
                     let base_center = Vec2 {
                         x: (base_minimum_uv.x + base_maximum_uv.x) * 0.5,
@@ -3113,9 +3211,18 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                     for psf_sample in 0..psf_samples_per_area {
                         let sample_index = (sy * side + sx) * psf_samples_per_area + psf_sample;
                         let disk = physical_psf_disk_sample(sample_index as usize);
-                        let psf_offset = Vec2 {
-                            x: disk.x * psf_pixels / sampling.effective_width as f32,
-                            y: disk.y * psf_pixels / sampling.effective_height as f32,
+                        let psf_offset = if frontal.is_some() {
+                            Vec2 {
+                                x: disk.x * psf_radius_millimeters * plan.lens_amount
+                                    / resolved_scene.0.sensor_width.0,
+                                y: disk.y * psf_radius_millimeters * plan.lens_amount
+                                    / resolved_scene.0.sensor_height.0,
+                            }
+                        } else {
+                            Vec2 {
+                                x: disk.x * psf_pixels / sampling.effective_width as f32,
+                                y: disk.y * psf_pixels / sampling.effective_height as f32,
+                            }
                         };
                         let minimum_uv = Vec2 {
                             x: base_minimum_uv.x + psf_offset.x,
@@ -3135,7 +3242,8 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         };
                         debug_assert_eq!(physical_aperture_samples, 32);
                         let optical_samples = (plan.lens_evaluation_model
-                            == LensEvaluationModel::ThinLens)
+                            == LensEvaluationModel::ThinLens
+                            && bake_dof)
                             .then(|| {
                                 panel_uv_aperture_samples_with_count::<32>(
                                     resolved_scene.0,
@@ -3147,20 +3255,21 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                 )
                             });
                         let continuous_footprint = (plan.lens_evaluation_model
-                            == LensEvaluationModel::VfxDepthBlur)
-                            .then(|| {
-                                panel_uv_continuous_pupil_footprint(
-                                    resolved_scene.0,
-                                    resolved_scene.1,
-                                    plan.panel.active_width,
-                                    plan.panel.active_height,
-                                    viewport_ndc,
-                                    Vec2 {
-                                        x: maximum_uv.x - minimum_uv.x,
-                                        y: maximum_uv.y - minimum_uv.y,
-                                    },
-                                )
-                            });
+                            == LensEvaluationModel::VfxDepthBlur
+                            || frontal.is_some())
+                        .then(|| {
+                            panel_uv_continuous_pupil_footprint(
+                                resolved_scene.0,
+                                resolved_scene.1,
+                                plan.panel.active_width,
+                                plan.panel.active_height,
+                                viewport_ndc,
+                                Vec2 {
+                                    x: maximum_uv.x - minimum_uv.x,
+                                    y: maximum_uv.y - minimum_uv.y,
+                                },
+                            )
+                        });
                         let aperture_count = if optical_samples.is_some() { 32 } else { 1 };
                         for aperture_index in 0..aperture_count {
                             let (optical, aperture_cell_half_extent, sensor_panel_half_extent) =
@@ -3168,10 +3277,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     (
                                         samples[aperture_index],
                                         [Vec2 { x: 0.0, y: 0.0 }; 3],
-                                        [Vec2 {
-                                            x: (maximum_uv.x - minimum_uv.x) * 0.5,
-                                            y: (maximum_uv.y - minimum_uv.y) * 0.5,
-                                        }; 3],
+                                        if frontal.is_some() {
+                                            continuous_footprint
+                                                .expect("frontal camera footprint")
+                                                .sensor_panel_half_extent
+                                        } else {
+                                            [Vec2 {
+                                                x: (maximum_uv.x - minimum_uv.x) * 0.5,
+                                                y: (maximum_uv.y - minimum_uv.y) * 0.5,
+                                            }; 3]
+                                        },
                                     )
                                 } else {
                                     let footprint = continuous_footprint
@@ -3179,8 +3294,16 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                     (
                                         footprint.optical,
                                         footprint.panel_half_extent.map(|extent| Vec2 {
-                                            x: extent.x * plan.scene_geometry_amount,
-                                            y: extent.y * plan.scene_geometry_amount,
+                                            x: if bake_dof {
+                                                extent.x * plan.scene_geometry_amount
+                                            } else {
+                                                0.0
+                                            },
+                                            y: if bake_dof {
+                                                extent.y * plan.scene_geometry_amount
+                                            } else {
+                                                0.0
+                                            },
                                         }),
                                         footprint.sensor_panel_half_extent,
                                     )
@@ -3251,9 +3374,14 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                                             * (projected_sensor_half_extent.y
                                                 - flat_sensor_half_extent.y),
                                 };
+                                let antialias_basis = if frontal.is_some() {
+                                    sensor_half_extent
+                                } else {
+                                    flat_sensor_half_extent
+                                };
                                 let antialias_extra = Vec2 {
-                                    x: flat_sensor_half_extent.x * plan.moire_filter_strength,
-                                    y: flat_sensor_half_extent.y * plan.moire_filter_strength,
+                                    x: antialias_basis.x * plan.moire_filter_strength,
+                                    y: antialias_basis.y * plan.moire_filter_strength,
                                 };
                                 let reconstructed_half_extent = vfx_rectangular_support_half_extent(
                                     Vec2 {
@@ -3809,7 +3937,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                         cover_sample.view_cosine,
                         plan.cover.refractive_index,
                         physical_environment_reference_sample_count(plan.quality),
-                        [x, y],
+                        frontal.map_or([x, y], |(window, _)| {
+                            [
+                                (window.lattice.origin[0] + x as i32) as u32,
+                                (window.lattice.origin[1] + y as i32) as u32,
+                            ]
+                        }),
                         cover_position_meters,
                         resolved_scene.1,
                         environment.projection,
@@ -10815,6 +10948,7 @@ mod tests {
         rgb_request.plan.requested_height = 1;
         // This test owns Panel Structure only; Cover Glow has independent
         // boundary-support coverage below.
+        rgb_request.plan.requested_intermediate = PhysicalIntermediate::SubpixelRadiance;
         rgb_request.plan.cover.glow.character_strength = 0.0;
         rgb_request.plan.panel_light_spread.character_strength = 0.0;
         rgb_request.render_context = PhysicalRenderContext::full_frame(1, 1);
