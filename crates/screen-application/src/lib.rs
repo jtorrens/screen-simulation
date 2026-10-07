@@ -2744,6 +2744,22 @@ pub fn vfx_continuity_direct_transport_normalization(
     Ok(normalization)
 }
 
+fn apply_vfx_direct_transport_normalization(
+    render_model: SimulationRenderModel,
+    transported: [f32; 3],
+    reflected: [f32; 3],
+    normalization: f32,
+) -> [f32; 3] {
+    match render_model {
+        SimulationRenderModel::Physical => transported,
+        SimulationRenderModel::VfxContinuity => [
+            reflected[0] + (transported[0] - reflected[0]) * normalization,
+            reflected[1] + (transported[1] - reflected[1]) * normalization,
+            reflected[2] + (transported[2] - reflected[2]) * normalization,
+        ],
+    }
+}
+
 /// Deterministic scalar oracle for the flat, orthographic physical panel surface.
 /// Product composition uses the corresponding platform backend; this function
 /// owns the reference numeric result and never applies a camera or output transform.
@@ -3879,15 +3895,12 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 resolved_panel_coverage * local_device_matte * reflected_environment.g,
                 resolved_panel_coverage * local_device_matte * reflected_environment.b,
             ];
-            let lens_resolved = if plan.render_model == SimulationRenderModel::VfxContinuity {
-                [
-                    reflected[0] + (transported_lens[0] - reflected[0]) * vfx_direct_normalization,
-                    reflected[1] + (transported_lens[1] - reflected[1]) * vfx_direct_normalization,
-                    reflected[2] + (transported_lens[2] - reflected[2]) * vfx_direct_normalization,
-                ]
-            } else {
-                transported_lens
-            };
+            let lens_resolved = apply_vfx_direct_transport_normalization(
+                plan.render_model,
+                transported_lens,
+                reflected,
+                vfx_direct_normalization,
+            );
             let glare_fraction = resolved_scene.0.lens.veiling_glare_fraction;
             let glare_normalization = if plan.render_model == SimulationRenderModel::VfxContinuity {
                 vfx_direct_normalization
@@ -3904,6 +3917,10 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 lens_resolved[1] + glare_fraction * (temporal_gate_average.g - lens_resolved[1]),
                 lens_resolved[2] + glare_fraction * (temporal_gate_average.b - lens_resolved[2]),
             );
+            let vfx_transparency_carrier = match plan.render_model {
+                SimulationRenderModel::Physical => [covered.r, covered.g, covered.b],
+                SimulationRenderModel::VfxContinuity => [glared.r, glared.g, glared.b],
+            };
             let exposure_duration = plan
                 .shutter_close
                 .checked_sub(plan.shutter_open)
@@ -3931,7 +3948,7 @@ pub fn evaluate_physical_pipeline_cpu_oracle(
                 PhysicalIntermediate::RelativeGeometry => temporally_integrated,
                 PhysicalIntermediate::CoverEnvironment => [covered.r, covered.g, covered.b],
                 PhysicalIntermediate::CoverGlow => [covered.r, covered.g, covered.b],
-                PhysicalIntermediate::DeviceVfxTransparency => [covered.r, covered.g, covered.b],
+                PhysicalIntermediate::DeviceVfxTransparency => vfx_transparency_carrier,
                 PhysicalIntermediate::LensProjection => [glared.r, glared.g, glared.b],
                 PhysicalIntermediate::ShutterMotion
                 | PhysicalIntermediate::ComputationalCapture => {
@@ -10909,6 +10926,34 @@ mod tests {
             vfx_continuity_direct_transport_normalization(&plan)
                 .expect("physical route owns no relative normalization"),
             1.0
+        );
+    }
+
+    #[test]
+    fn vfx_direct_transport_normalization_changes_only_direct_light() {
+        let transported = [10.0, 20.0, 30.0];
+        let reflected = [1.0, 2.0, 3.0];
+        let normalization = 0.1;
+        let vfx_carrier = apply_vfx_direct_transport_normalization(
+            SimulationRenderModel::VfxContinuity,
+            transported,
+            reflected,
+            normalization,
+        );
+        for (actual, expected) in vfx_carrier.into_iter().zip([1.9, 3.8, 5.7]) {
+            assert!((actual - expected).abs() <= 1.0e-6);
+        }
+
+        let physical_carrier = apply_vfx_direct_transport_normalization(
+            SimulationRenderModel::Physical,
+            transported,
+            reflected,
+            normalization,
+        );
+        assert_eq!(
+            physical_carrier.map(f32::to_bits),
+            transported.map(f32::to_bits),
+            "the physical carrier must remain byte-for-byte unchanged"
         );
     }
 

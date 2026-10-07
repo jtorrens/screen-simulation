@@ -1477,6 +1477,26 @@ impl MetalPhysicalPipeline {
                 "VFX transparency requires the complete physical Device contribution".to_owned(),
             ));
         }
+        if plan.render_model == SimulationRenderModel::VfxContinuity {
+            plan.sensor_enabled = false;
+            plan.development_enabled = false;
+            plan.rendering_intent_enabled = false;
+            plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+            return self.evaluate_rows(
+                source_acescg,
+                device_signal,
+                environment_acescg,
+                plan,
+                None,
+                None,
+                Some(raster),
+                None,
+                None,
+                None,
+                report_progress,
+                is_cancelled,
+            );
+        }
         // This is the normal Camera Rendered ACEScg route on a frontal raster:
         // perspective and Brown distortion are selected out by the specialized
         // shader, while shutter exposure, sensor/develop and rendering intent
@@ -3261,6 +3281,149 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fusion_vfx_transparency_matches_the_normalized_cpu_carrier_without_capture() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (mut input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.12,
+            1.0,
+        );
+        input.acescg.fill([0.18, 0.18, 0.18, 1.0]);
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.environment = IncidentEnvironment::NONE;
+        plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
+        plan.scene_geometry_lens.f_stop = 8.0;
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+        plan.cover.glow.character_strength = 0.0;
+        plan.panel_light_spread.character_strength = 0.0;
+        plan.panel_uniformity.character_strength = 0.0;
+        plan.subpixel_geometry_amount = 0.0;
+        plan.moire_intensity = 0.0;
+        plan.temporal_emission_amount = 0.0;
+        // These authored physical-capture stages must be ignored by VFX Continuity.
+        plan.sensor_enabled = true;
+        plan.development_enabled = true;
+        plan.rendering_intent_enabled = true;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .zip(&input.device_signal.alpha)
+            .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let gpu = backend
+            .evaluate_vfx_transparency_with_environment(
+                &source,
+                &signal,
+                None,
+                plan,
+                VfxTransparencyRaster {
+                    active_width: plan.requested_width,
+                    active_height: plan.requested_height,
+                    bake_depth_of_field: false,
+                },
+                |_| {},
+                || false,
+            )
+            .expect("normalized Metal Fusion VFX carrier");
+        let pixels = read(&gpu.texture);
+        let center = pixels[(plan.requested_height as usize / 2) * plan.requested_width as usize
+            + plan.requested_width as usize / 2];
+        for (channel, value) in center[..3].iter().enumerate() {
+            assert!(
+                (*value - 0.18).abs() <= 3.0e-3,
+                "Fusion VFX unity carrier channel {channel}: {value}"
+            );
+        }
+        assert_eq!(center[3], 1.0);
+    }
+
+    #[test]
+    fn fusion_vfx_transparency_uses_the_authored_moire_intensity() {
+        let device = metal::Device::system_default().expect("test Mac has Metal");
+        let backend = MetalPhysicalPipeline::new(&device).expect("physical pipeline backend");
+        let (input, mut plan) = fixture(
+            RasterPlacement::Stretch,
+            FlatPanelQuality::High,
+            StripeLayout::Rgb,
+            0.32,
+            1.0,
+        );
+        plan.render_model = SimulationRenderModel::VfxContinuity;
+        plan.environment = IncidentEnvironment::NONE;
+        plan.device_vfx_alpha_mode = DeviceVfxAlphaMode::DeviceTransparency;
+        plan.scene_geometry_amount = 1.0;
+        plan.lens_amount = 1.0;
+        plan.requested_intermediate = PhysicalIntermediate::DeviceVfxTransparency;
+        plan.cover.glow.character_strength = 0.0;
+        plan.panel_light_spread.character_strength = 0.0;
+        plan.panel_uniformity.character_strength = 0.0;
+        plan.moire_saturation = 0.1;
+        plan.moire_filter_strength = 0.0;
+        plan.temporal_emission_amount = 0.0;
+        let source = texture(&device, input.width, input.height, &input.acescg);
+        let signal_values = input
+            .device_signal
+            .pixels
+            .iter()
+            .zip(&input.device_signal.alpha)
+            .map(|(value, alpha)| [value.r, value.g, value.b, *alpha])
+            .collect::<Vec<_>>();
+        let signal = texture(&device, input.width, input.height, &signal_values);
+        let raster = VfxTransparencyRaster {
+            active_width: plan.requested_width,
+            active_height: plan.requested_height,
+            bake_depth_of_field: false,
+        };
+        let render = |intensity: f32| {
+            let mut authored = plan;
+            authored.moire_intensity = intensity;
+            read(
+                &backend
+                    .evaluate_vfx_transparency_with_environment(
+                        &source,
+                        &signal,
+                        None,
+                        authored,
+                        raster,
+                        |_| {},
+                        || false,
+                    )
+                    .expect("Metal Fusion VFX carrier")
+                    .texture,
+            )
+        };
+        let suppressed = render(0.0);
+        let subtle = render(0.1);
+        let calibrated = render(1.0);
+        let mut maximum_interference = 0.0_f32;
+        let mut maximum_blend_error = 0.0_f32;
+        for ((suppressed, subtle), calibrated) in suppressed.iter().zip(&subtle).zip(&calibrated) {
+            for channel in 0..3 {
+                let residual = calibrated[channel] - suppressed[channel];
+                maximum_interference = maximum_interference.max(residual.abs());
+                let expected = suppressed[channel] + 0.1 * residual;
+                maximum_blend_error = maximum_blend_error.max((subtle[channel] - expected).abs());
+            }
+        }
+        assert!(
+            maximum_interference > 1.0e-4,
+            "fixture must expose sampled panel interference"
+        );
+        assert!(
+            maximum_blend_error <= 3.0e-4,
+            "Fusion VFX carrier ignored the authored 0.1 moire intensity: {maximum_blend_error}"
+        );
     }
 
     #[test]

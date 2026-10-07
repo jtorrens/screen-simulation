@@ -2105,7 +2105,9 @@ inline float4 evaluate_physical_pipeline_pixel(
             const float2 uv = (float2(position) + 0.5f) / float2(p.output_tile.xy);
             const float2 device_uv = (uv - 0.5f) / p.vfx_raster.xy + 0.5f;
             const bool inside_device = rounded_device_contains(device_uv, p);
-            selected = inside_device ? covered : glow;
+            selected = p.render_model.x >= 0.5f
+                ? glared
+                : (inside_device ? covered : glow);
             break;
         }
         default: selected = p.strengths.x == 0.0f ? float3(0.0f) : p.strengths.x * shuttered; break;
