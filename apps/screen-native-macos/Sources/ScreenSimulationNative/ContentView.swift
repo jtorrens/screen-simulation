@@ -4660,6 +4660,18 @@ struct ContentView: View {
                 frameField("Salida", value: Binding(
                     get: { model.outFrame }, set: { model.setOutFrame($0) }
                 ))
+                Text("Duración")
+                frameField("Duración", value: Binding(
+                    get: { model.frameCount },
+                    set: { model.setSceneDurationFrames($0, undoManager: undoManager) }
+                ))
+                .help("Duración de la escena en frames. El vídeo mantiene su último frame y la animación continúa extrapolada.")
+                Button("Auto") {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                    model.setSceneDurationFrames(nil, undoManager: undoManager)
+                }
+                .disabled(model.sceneDurationFrames == nil)
+                .help("Restaurar la duración automática de la timeline")
                 Text(model.timecode).monospacedDigit()
             }
             .buttonStyle(.borderless)

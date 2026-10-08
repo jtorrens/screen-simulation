@@ -674,12 +674,12 @@ private func sceneCapture() throws -> SavedSceneCapture {
 }
 
 @Test func sceneLibraryPersistsOnlyTheCurrentStrictContract() throws {
-    #expect(SceneLibraryDocument.currentSchemaVersion == 31)
+    #expect(SceneLibraryDocument.currentSchemaVersion == 32)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("screen-scenes-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try SceneLibraryStore(directoryURL: root)
-    #expect(store.documentURL.lastPathComponent == "Scenes.v31.json")
+    #expect(store.documentURL.lastPathComponent == "Scenes.v32.json")
     let id = UUID()
     let motion = try FusionTrackerPoseTrack(
         target: .device, anchorFrame: 3,
@@ -2116,4 +2116,91 @@ private func treeBytes(_ root: URL) throws -> [String: Data] {
         }
     }
     return result
+}
+
+@Test @MainActor func sceneDurationRoundTripRejectsMissingAndInvalidValues() throws {
+    let initial = try sceneCapture().snapshot
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(initial)) as? [String: Any])
+    #expect(object["durationFrames"] is NSNull)
+    object["durationFrames"] = 240
+    let bytes = try JSONSerialization.data(withJSONObject: object)
+    let authored = try JSONDecoder().decode(SavedSceneSnapshot.self, from: bytes)
+    try authored.validate()
+    #expect(authored.durationFrames == 240)
+    #expect(try authored.replacingGeneratedEnvironment(nil).durationFrames == 240)
+    #expect(try WorkspaceModel.defaultSceneSnapshot(preserving: authored, library: GlobalLibraryDocument()).durationFrames == 240)
+    for invalid in [0, -1] {
+        object["durationFrames"] = invalid
+        let decoded = try JSONDecoder().decode(SavedSceneSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(throws: (any Error).self) { try decoded.validate() }
+    }
+    object.removeValue(forKey: "durationFrames")
+    #expect(!SavedSceneSnapshot.hasStrictTopLevelShape(object))
+    let missing = try JSONSerialization.data(withJSONObject: object)
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(SavedSceneSnapshot.self, from: missing)
+    }
+}
+
+@Test @MainActor func sceneDurationOverridesSavedSourceExtentWithoutChangingCadence() throws {
+    let source = SavedSceneSource(kind: .externalMedia, patternRawValue: nil,
+        assets: [.init(absolutePath: "/source.mov")],
+        missingMedia: .init(originalName: "source.mov", width: 16, height: 16,
+            frameRateNumerator: 24_000, frameRateDenominator: 1_001,
+            frameCount: 48, durationNumerator: 2_002, durationDenominator: 1_000))
+    for duration in [nil, 12, 240] as [Int?] {
+        let timeline = try WorkspaceModel.savedRenderTimeline(source: source, tracking: nil,
+            fusionTrackerMotion: nil, trackingSceneMethod: .fusionComposition,
+            durationFrames: duration)
+        #expect(timeline.frameCount == (duration ?? 48))
+        #expect(timeline.exactFrameRate == (try ExactFrameRate(numerator: 24_000, denominator: 1_001)))
+    }
+    let still = try sceneCapture().snapshot.source
+    let extendedStill = try WorkspaceModel.savedRenderTimeline(source: still, tracking: nil,
+        fusionTrackerMotion: nil, trackingSceneMethod: .fusionComposition, durationFrames: 240)
+    #expect(extendedStill.frameCount == 240)
+}
+
+@Test @MainActor func sceneDurationEditingPersistsAndUndoesWithoutChangingAnimation() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try GlobalLibraryStore(documentURL: root.appendingPathComponent("library.json"))
+    let workspace = WorkspaceModel(globalLibraryStore: store)
+    let initial = try sceneCapture()
+    let id = UUID()
+    let scene = SavedScene(id: id, name: "Duration", thumbnailFileName: "\(id.uuidString.lowercased()).png", snapshot: initial.snapshot)
+    await workspace.openSavedScene(scene, undoManager: nil)
+    try #require(workspace.errorMessage == nil, "Open: \(workspace.errorMessage ?? "")")
+    _ = try workspace.captureSavedScene()
+    workspace.markActiveScene(scene.id)
+    var saved: SavedSceneSnapshot?
+    workspace.configureActiveScenePersistence { _, capture in saved = capture.snapshot }
+    let initialCount = workspace.frameCount
+    let originalAnimation = workspace.sceneAnimation
+    let undo = UndoManager()
+    workspace.setSceneDurationFrames(120, undoManager: undo)
+    #expect(workspace.frameCount == 120)
+    #expect(saved?.durationFrames == 120, "Save: \(workspace.errorMessage ?? "")")
+    workspace.setSceneDurationFrames(240, undoManager: undo)
+    #expect(workspace.outFrame == 239)
+    #expect(saved?.durationFrames == 240)
+    undo.undo()
+    #expect(workspace.frameCount == 120)
+    undo.undo()
+    #expect(workspace.frameCount == initialCount)
+    #expect(workspace.sceneDurationFrames == nil)
+    undo.redo()
+    undo.redo()
+    #expect(workspace.frameCount == 240)
+    #expect(workspace.sceneAnimation == originalAnimation)
+    workspace.setSceneDurationFrames(0, undoManager: nil)
+    #expect(workspace.frameCount == 240)
+    #expect(workspace.errorMessage != nil)
+    let frozen = try #require(saved)
+    let reopened = WorkspaceModel(globalLibraryStore: store)
+    await reopened.openSavedScene(.init(id: scene.id, name: scene.name,
+        thumbnailFileName: scene.thumbnailFileName, snapshot: frozen), undoManager: nil)
+    #expect(reopened.frameCount == 240)
+    #expect(reopened.sceneDurationFrames == 240)
+    #expect(reopened.sceneAnimation == originalAnimation)
 }

@@ -322,6 +322,7 @@ extension SavedSceneSnapshot {
         let result = SavedSceneSnapshot(
             source: self.source,
             currentFrame: currentFrame,
+            durationFrames: durationFrames,
             viewerZoom: viewerZoom,
             viewerPanX: viewerPanX,
             viewerPanY: viewerPanY,

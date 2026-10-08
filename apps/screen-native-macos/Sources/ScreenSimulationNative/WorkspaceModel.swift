@@ -439,6 +439,7 @@ final class WorkspaceModel: ObservableObject {
         }
     }
     @Published var frameCount = 1
+    @Published private(set) var sceneDurationFrames: Int?
     @Published var frameRate = 24.0
     @Published private(set) var sceneAnimation = SceneAnimationDocument()
     @Published var isPlaying = false
@@ -3194,6 +3195,22 @@ final class WorkspaceModel: ObservableObject {
         renderRange == .inOut ? min(inFrame, outFrame) ... max(inFrame, outFrame) : 0 ... max(0, frameCount - 1)
     }
 
+    func setSceneDurationFrames(_ duration: Int?, undoManager: UndoManager?) {
+        guard duration == nil || duration! > 0 else {
+            errorMessage = "La duración debe ser un número de frames mayor que cero."
+            return
+        }
+        guard duration != sceneDurationFrames else { return }
+        let previous = sceneDurationFrames
+        registerUndo(with: undoManager, actionName: "Editar duración de escena") { target, manager in
+            target.setSceneDurationFrames(previous, undoManager: manager)
+        }
+        sceneDurationFrames = duration
+        applyTimelineAuthority(resetRange: inFrame == 0 && outFrame == frameCount - 1)
+        seek(toFrame: currentFrame)
+        persistActiveSceneAuthoringReportingFailure()
+    }
+
     func inputAnnotation(_ value: StudioColorInputTransform) -> String? {
         if value.id == detection.proposedInputTransformID {
             return detection.inputTransformProvenance?.feminineLabel ?? "Propuesta"
@@ -4727,7 +4744,8 @@ final class WorkspaceModel: ObservableObject {
         source: SavedSceneSource,
         tracking: SavedTrackingScene?,
         fusionTrackerMotion: FusionTrackerPoseTrack?,
-        trackingSceneMethod: TrackingSceneMethod
+        trackingSceneMethod: TrackingSceneMethod,
+        durationFrames: Int? = nil
     ) throws -> NativeVideoTimelineInfo {
         let sourceTimeline: NativeVideoTimelineInfo
         switch source.kind {
@@ -4773,12 +4791,17 @@ final class WorkspaceModel: ObservableObject {
         } else {
             trackingTimeline = nil
         }
-        return ReferenceTimelineAuthority.resolve(
+        let automatic = ReferenceTimelineAuthority.resolve(
             source: sourceTimeline,
             reference: nil,
             referenceVisible: false,
             tracking: trackingTimeline
         )
+        guard durationFrames == nil || durationFrames! > 0 else {
+            throw SceneLibraryError.invalidDocument("La duración de escena debe ser positiva.")
+        }
+        return .init(exactFrameRate: automatic.exactFrameRate,
+                     frameCount: durationFrames ?? automatic.frameCount)
     }
 
     private func applyTrackingCameraAtCurrentFrame() {
@@ -5753,19 +5776,24 @@ final class WorkspaceModel: ObservableObject {
                 source: scene.snapshot.source,
                 tracking: scene.snapshot.tracking,
                 fusionTrackerMotion: scene.snapshot.fusionTrackerMotion,
-                trackingSceneMethod: scene.snapshot.trackingSceneMethod
+                trackingSceneMethod: scene.snapshot.trackingSceneMethod,
+                durationFrames: scene.snapshot.durationFrames
             )
         } catch {
             errorMessage = error.localizedDescription
             return
         }
-        let timeline = if activeSceneID == scene.id,
+        let automaticTimeline = if activeSceneID == scene.id,
                           referenceControlsTimeline,
                           let referenceTimelineInfo {
             referenceTimelineInfo
         } else {
             savedTimeline
         }
+        let timeline = NativeVideoTimelineInfo(
+            exactFrameRate: automaticTimeline.exactFrameRate,
+            frameCount: scene.snapshot.durationFrames ?? automaticTimeline.frameCount
+        )
         let range = renderRange == .inOut
             ? min(inFrame, outFrame) ... max(inFrame, outFrame)
             : 0 ... max(0, timeline.frameCount - 1)
@@ -6865,6 +6893,7 @@ final class WorkspaceModel: ObservableObject {
         let snapshot = SavedSceneSnapshot(
             source: source,
             currentFrame: currentFrame,
+            durationFrames: sceneDurationFrames,
             viewerZoom: zoom,
             viewerPanX: pan.width,
             viewerPanY: pan.height,
@@ -6954,6 +6983,7 @@ final class WorkspaceModel: ObservableObject {
         let reset = SavedSceneSnapshot(
             source: sourceAndReference.source,
             currentFrame: 0,
+            durationFrames: sourceAndReference.durationFrames,
             viewerZoom: 1,
             viewerPanX: 0,
             viewerPanY: 0,
@@ -7132,6 +7162,7 @@ final class WorkspaceModel: ObservableObject {
         let snapshot = SavedSceneSnapshot(
             source: previous.source,
             currentFrame: previous.currentFrame,
+            durationFrames: previous.durationFrames,
             viewerZoom: previous.viewerZoom,
             viewerPanX: previous.viewerPanX,
             viewerPanY: previous.viewerPanY,
@@ -7236,6 +7267,7 @@ final class WorkspaceModel: ObservableObject {
         try validateSceneAuthoringResources(authoring)
         try prepareSceneSourceInterpretation(authoring.context)
         let source = scene.snapshot.source
+        sceneDurationFrames = scene.snapshot.durationFrames
         switch source.kind {
         case .syntheticPattern:
             guard let rawValue = source.patternRawValue,
@@ -7346,6 +7378,7 @@ final class WorkspaceModel: ObservableObject {
         sourceTimelineInfo = staged.sourceTimelineInfo
         includeAudio = staged.includeAudio
         frameCount = staged.frameCount
+        sceneDurationFrames = staged.sceneDurationFrames
         frameRate = staged.frameRate
         inFrame = staged.inFrame
         outFrame = staged.outFrame
@@ -9066,7 +9099,7 @@ final class WorkspaceModel: ObservableObject {
             tracking: trackingTimelineInfo
         )
         frameRate = timeline.frameRate
-        frameCount = max(1, timeline.frameCount)
+        frameCount = sceneDurationFrames ?? timeline.frameCount
         currentFrame = min(
             frameCount - 1,
             max(0, Int((previousSeconds * frameRate).rounded()))

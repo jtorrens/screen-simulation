@@ -248,6 +248,7 @@ extension SceneLibraryController {
         document.scenes[sceneIndex].snapshot = SavedSceneSnapshot(
             source: source,
             currentFrame: snapshot.currentFrame,
+            durationFrames: snapshot.durationFrames,
             viewerZoom: snapshot.viewerZoom,
             viewerPanX: snapshot.viewerPanX,
             viewerPanY: snapshot.viewerPanY,

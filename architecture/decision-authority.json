@@ -898,6 +898,22 @@
         "scripts/test_workstation_contract_docs.py",
         "scripts/check_architecture.py"
       ]
+    },
+    {
+      "id": "scene.duration",
+      "scope": "editable workstation Saved Scene frame count independent of media and animation extent",
+      "owner": {
+        "path": "Docs/architecture/current_system.md",
+        "anchor": "Scene duration"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "scripts/test_migrate_scene_duration.py",
+        "scripts/check_architecture.py"
+      ]
     }
   ]
 }

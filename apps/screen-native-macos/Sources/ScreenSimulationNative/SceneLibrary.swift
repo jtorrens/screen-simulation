@@ -279,10 +279,12 @@ struct SceneAuthoringDocument: Codable, Equatable, Sendable {
 }
 
 struct SavedSceneSnapshot: Codable, Equatable, Sendable {
-    static let schema = "ScreenSimulation.SavedScene.v29"
+    static let schema = "ScreenSimulation.SavedScene.v30"
     let schema: String
     let source: SavedSceneSource
     let currentFrame: Int
+    /// nil selects the automatic timeline duration; a positive value is scene authoring.
+    let durationFrames: Int?
     let viewerZoom: Double
     let viewerPanX: Double
     let viewerPanY: Double
@@ -295,7 +297,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     var animation: SceneAnimationDocument
 
     private enum CodingKeys: String, CodingKey {
-        case schema, source, currentFrame, viewerZoom, viewerPanX, viewerPanY
+        case schema, source, currentFrame, durationFrames, viewerZoom, viewerPanX, viewerPanY
         case viewerIsFitted, authoring, generatedEnvironment, tracking, fusionTrackerMotion
         case trackingSceneMethod
         case animation
@@ -304,6 +306,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     init(
         source: SavedSceneSource,
         currentFrame: Int,
+        durationFrames: Int? = nil,
         viewerZoom: Double,
         viewerPanX: Double,
         viewerPanY: Double,
@@ -318,6 +321,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         schema = Self.schema
         self.source = source
         self.currentFrame = currentFrame
+        self.durationFrames = durationFrames
         self.viewerZoom = viewerZoom
         self.viewerPanX = viewerPanX
         self.viewerPanY = viewerPanY
@@ -335,6 +339,10 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         schema = try values.decode(String.self, forKey: .schema)
         source = try values.decode(SavedSceneSource.self, forKey: .source)
         currentFrame = try values.decode(Int.self, forKey: .currentFrame)
+        guard values.contains(.durationFrames) else {
+            throw SceneLibraryError.invalidDocument("Falta la duración de la escena.")
+        }
+        durationFrames = try values.decodeIfPresent(Int.self, forKey: .durationFrames)
         viewerZoom = try values.decode(Double.self, forKey: .viewerZoom)
         viewerPanX = try values.decode(Double.self, forKey: .viewerPanX)
         viewerPanY = try values.decode(Double.self, forKey: .viewerPanY)
@@ -358,6 +366,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
         try values.encode(schema, forKey: .schema)
         try values.encode(source, forKey: .source)
         try values.encode(currentFrame, forKey: .currentFrame)
+        try values.encode(durationFrames, forKey: .durationFrames)
         try values.encode(viewerZoom, forKey: .viewerZoom)
         try values.encode(viewerPanX, forKey: .viewerPanX)
         try values.encode(viewerPanY, forKey: .viewerPanY)
@@ -381,6 +390,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
 
     func validate() throws {
         guard schema == Self.schema, currentFrame >= 0,
+              durationFrames == nil || durationFrames! > 0,
               viewerZoom.isFinite, viewerZoom > 0,
               viewerPanX.isFinite, viewerPanY.isFinite,
               authoring.schema == SceneAuthoringDocument.schema
@@ -395,7 +405,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
 
     static func hasStrictTopLevelShape(_ snapshot: [String: Any]) -> Bool {
         guard Set(snapshot.keys) == [
-            "schema", "source", "currentFrame", "viewerZoom", "viewerPanX",
+            "schema", "source", "currentFrame", "durationFrames", "viewerZoom", "viewerPanX",
             "viewerPanY", "viewerIsFitted", "authoring", "generatedEnvironment",
             "tracking", "fusionTrackerMotion", "trackingSceneMethod", "animation",
         ], let animation = snapshot["animation"] else { return false }
@@ -407,7 +417,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
     ) throws -> Self {
         guard let asset else {
             return Self(
-                source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
+                source: source, currentFrame: currentFrame, durationFrames: durationFrames, viewerZoom: viewerZoom,
                 viewerPanX: viewerPanX, viewerPanY: viewerPanY,
                 viewerIsFitted: viewerIsFitted, authoring: authoring,
                 generatedEnvironment: nil,
@@ -439,7 +449,7 @@ struct SavedSceneSnapshot: Codable, Equatable, Sendable {
             referenceResource: previous.referenceResource
         )
         return Self(
-            source: source, currentFrame: currentFrame, viewerZoom: viewerZoom,
+            source: source, currentFrame: currentFrame, durationFrames: durationFrames, viewerZoom: viewerZoom,
             viewerPanX: viewerPanX, viewerPanY: viewerPanY,
             viewerIsFitted: viewerIsFitted,
             authoring: .init(
@@ -502,7 +512,7 @@ enum SceneDefaultResetDestination: Sendable {
 /// remain external paths; imported 3D authoring is embedded. App-generated HDRI bytes are
 /// retained because their scene-owned file may be replaced.
 struct SceneAutosaveRevision: Codable, Equatable, Identifiable, Sendable {
-    static let schema = "ScreenSimulation.SceneAutosave.v6"
+    static let schema = "ScreenSimulation.SceneAutosave.v7"
     let schema: String
     let id: UUID
     let originalSceneID: UUID
@@ -612,7 +622,7 @@ struct SceneProduction: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct SceneLibraryDocument: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 31
+    static let currentSchemaVersion = 32
     let schemaVersion: Int
     var scenes: [SavedScene]
     var productions: [SceneProduction]
@@ -849,7 +859,7 @@ struct SceneLibraryStore: Sendable {
         self.environmentLibraryRoot = environmentLibraryRoot
         self.removeResource = removeResource
         self.publishDocument = publishDocument
-        documentURL = directory.appendingPathComponent("Scenes.v31.json")
+        documentURL = directory.appendingPathComponent("Scenes.v32.json")
     }
 
     func load() throws -> SceneLibraryDocument {
@@ -906,7 +916,7 @@ struct SceneLibraryStore: Sendable {
 
     func autosaveDirectory(for sceneID: UUID) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v28", isDirectory: true)
+            .appendingPathComponent("Autosave.v29", isDirectory: true)
             .appendingPathComponent(sceneID.uuidString.lowercased(), isDirectory: true)
     }
 
@@ -1686,7 +1696,7 @@ final class SceneLibraryController: ObservableObject {
     func deletedAutosaveHistoryTargets() throws -> [SceneAutosaveHistoryTarget] {
         guard let store else { throw SceneLibraryError.inaccessible("Sin destino de escenas.") }
         let root = store.directoryURL.deletingLastPathComponent()
-            .appendingPathComponent("Autosave.v28", isDirectory: true)
+            .appendingPathComponent("Autosave.v29", isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
