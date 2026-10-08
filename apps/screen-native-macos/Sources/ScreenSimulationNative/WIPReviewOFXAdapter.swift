@@ -13,7 +13,7 @@ enum WIPReviewOFXError: Error, LocalizedError {
         case let .missingPackagedHost(url):
             "Falta el host OFX WIP Review empaquetado: \(url.path)"
         case let .missingPackagedBundle(url):
-            "Falta el bundle com.jtorrens.WIPReviewProbe empaquetado: \(url.path)"
+            "Falta el bundle externo instalado com.jtorrens.WIPReviewProbe: \(url.path)"
         case .invalidRaster: "El raster WIP Review resuelto no es válido."
         case .invalidPayload: "El host OFX WIP Review devolvió un raster RGBA32F no válido."
         case let .hostFailed(message): "WIP Review OFX falló: \(message)"

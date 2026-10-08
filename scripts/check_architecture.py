@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from check_decision_authority import DecisionAuthorityError, validate as validate_decision_authority
+from check_workstation_contract_docs import validate as validate_workstation_contract_docs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1272,6 +1273,7 @@ def main() -> int:
     try:
         paths = repository_paths()
         validate_decision_authority(ROOT)
+        validate_workstation_contract_docs(ROOT)
         validate_domains()
         validate_swift_domains()
         validate_path_owners(paths)

@@ -54,9 +54,9 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/PhysicalMetalFrameEngine.swift",
-      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
-      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
-      "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalMetalFrameEngineTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneLibraryTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/PhysicalMetalFrameEngineTests.swift",
         "scripts/migrate_scene_library_v29_to_v30.py",
         "scripts/migrate_render_queue_v16_to_v17.py",
         "scripts/migrate_scene_autosaves_v26_to_v27.py",
@@ -126,7 +126,7 @@
     },
     {
       "id": "scene.library-hierarchy",
-      "scope": "workstation Production, Episode, Shot and Saved Scene organization, placement and ordinals",
+      "scope": "workstation Production, Episode, Shot and Saved Scene organization, globally unique branch ids, placement, ordinals and scene resource transactions",
       "owner": {
         "path": "Docs/architecture/project_and_change_policy.md",
         "anchor": "Workstation Saved Scene authority"
@@ -877,6 +877,25 @@
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationPresentationTests/TestPresentationTests.swift",
+        "scripts/check_architecture.py"
+      ]
+    },
+    {
+      "id": "persistence.workstation-current-contract",
+      "scope": "current workstation document presence and strict Global Library decoding; no portable or external producer document changes",
+      "owner": {
+        "path": "Docs/architecture/project_and_change_policy.md",
+        "anchor": "Workstation Saved Scene authority"
+      },
+      "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkstationDocumentPresence.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/GlobalLibraryShape.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/SceneLibrary.swift",
+        "apps/screen-native-macos/Sources/ScreenSimulationNative/RenderQueueStore.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/WorkstationPersistenceTests.swift",
+        "scripts/check_workstation_contract_docs.py",
+        "scripts/test_workstation_contract_docs.py",
         "scripts/check_architecture.py"
       ]
     }

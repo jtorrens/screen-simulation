@@ -1968,3 +1968,152 @@ private func sceneCapture() throws -> SavedSceneCapture {
         try controller.replaceExternalMedia(sourceUsage, with: replacementReferenceURL)
     }
 }
+
+@MainActor
+@Suite struct SceneLibraryIntegrityTests {
+    @Test func duplicateUsesStoredSceneAndDerivesItsShotName() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SceneLibraryStore(directoryURL: root)
+        let controller = SceneLibraryController(store: store)
+        let source = try controller.add(capture: sceneCapture(), name: "Original")
+        let production = try controller.createProduction(name: "Production", seasonSlug: "S01")
+        let episode = try controller.createEpisode(in: production.id, name: "Episode")
+        let shot = try controller.createShot(in: episode.id, name: "SH010")
+        try controller.moveScene(source.id, to: shot.id)
+        let before = try store.load()
+        // The action's retained row is stale; identity must resolve the stored record.
+        let duplicate = try controller.duplicate(source)
+        #expect(duplicate.name == "SH010_002")
+        #expect(duplicate.snapshot == source.snapshot)
+        #expect(controller.scene(id: source.id) == before.scenes.first { $0.id == source.id })
+        let loaded = try store.load()
+        #expect(loaded.productions[0].episodes[0].shots[0].scenes.map(\.ordinal) == [1, 2])
+        #expect(loaded.productions[0].episodes[0].shots[0].nextSceneOrdinal == 3)
+        #expect(loaded.unclassifiedSceneIDs.isEmpty)
+        #expect(try store.autosaves(for: duplicate.id).first?.sceneName == "SH010_002")
+    }
+
+    @Test func exhaustedShotRejectsDuplicationWithoutCreatingAnyResources() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SceneLibraryStore(directoryURL: root.appendingPathComponent("scenes"))
+        let controller = SceneLibraryController(store: store)
+        let source = try controller.add(capture: sceneCapture())
+        let production = try controller.createProduction(name: "Production", seasonSlug: "S01")
+        let episode = try controller.createEpisode(in: production.id, name: "Episode")
+        let shot = try controller.createShot(in: episode.id, name: "SH010")
+        try controller.moveScene(source.id, to: shot.id)
+        var document = controller.document
+        document.productions[0].episodes[0].shots[0].nextSceneOrdinal = 1000
+        try store.save(document)
+        let reopened = SceneLibraryController(store: store)
+        let before = try treeBytes(root)
+        #expect(throws: SceneLibraryError.self) { try reopened.duplicate(source) }
+        #expect(reopened.document == document)
+        #expect(try treeBytes(root) == before)
+    }
+
+    @Test func hierarchyRejectsDuplicateIDsAcrossParents() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try SceneLibraryStore(directoryURL: root)
+        let controller = SceneLibraryController(store: store)
+        let first = try controller.createProduction(name: "First", seasonSlug: "S01")
+        let second = try controller.createProduction(name: "Second", seasonSlug: "S01")
+        let a = try controller.createEpisode(in: first.id, name: "A")
+        let b = try controller.createEpisode(in: second.id, name: "B")
+        _ = try controller.createShot(in: a.id, name: "Shot A")
+        _ = try controller.createShot(in: b.id, name: "Shot B")
+        let before = try Data(contentsOf: store.documentURL)
+        var invalidEpisodes = controller.document
+        invalidEpisodes.productions[1].episodes[0] = invalidEpisodes.productions[0].episodes[0]
+        #expect(throws: SceneLibraryError.self) { try store.save(invalidEpisodes) }
+        var invalidShots = controller.document
+        invalidShots.productions[1].episodes[0].shots[0] = invalidShots.productions[0].episodes[0].shots[0]
+        #expect(throws: SceneLibraryError.self) { try store.save(invalidShots) }
+        // A malformed current file must also fail on read, not just on save.
+        try JSONEncoder().encode(invalidShots).write(to: store.documentURL)
+        #expect(throws: SceneLibraryError.self) { try store.load() }
+        try before.write(to: store.documentURL)
+        #expect(try store.load() == controller.document)
+    }
+
+    @Test func missingOrChangedGeneratedEnvironmentRejectsDuplication() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assets = root.appendingPathComponent("assets")
+        let store = try SceneLibraryStore(directoryURL: root.appendingPathComponent("scenes"), environmentLibraryRoot: assets)
+        let controller = SceneLibraryController(store: store)
+        let capture = try sceneCapture()
+        let source = try controller.add(capture: .init(
+            snapshot: capture.snapshot, thumbnailPNG: capture.thumbnailPNG,
+            generatedEnvironmentEXR: Data([1, 2, 3])
+        ))
+        let asset = try #require(source.snapshot.generatedEnvironment)
+        let managed = try #require(try EnvironmentAssetLibrary.asset(
+            sha256: asset.sha256, originalFileName: asset.fileName, libraryRoot: assets
+        ))
+        try Data([9]).write(to: managed.url)
+        let changed = try treeBytes(root)
+        #expect(throws: SceneLibraryError.self) { try controller.duplicate(source) }
+        #expect(try treeBytes(root) == changed)
+        try FileManager.default.removeItem(at: managed.url)
+        let missing = try treeBytes(root)
+        #expect(throws: SceneLibraryError.self) { try controller.duplicate(source) }
+        #expect(try treeBytes(root) == missing)
+        #expect(controller.document.scenes == [source])
+    }
+
+    @Test(arguments: ["thumbnail", "environment", "index"])
+    func failedDeletionRestoresResourcesAndLeavesLibraryReadable(failure: String) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let assets = root.appendingPathComponent("assets")
+        let directory = root.appendingPathComponent("scenes")
+        let store = try SceneLibraryStore(directoryURL: directory, environmentLibraryRoot: assets)
+        let controller = SceneLibraryController(store: store)
+        let capture = try sceneCapture()
+        let source = try controller.add(capture: .init(
+            snapshot: capture.snapshot, thumbnailPNG: capture.thumbnailPNG,
+            generatedEnvironmentEXR: Data([1, 2, 3])
+        ))
+        let failingStore = try SceneLibraryStore(
+            directoryURL: directory, environmentLibraryRoot: assets,
+            removeResource: { url in
+                if (failure == "thumbnail" && url.pathExtension == "png")
+                    || (failure == "environment" && url.pathExtension == "exr") {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try FileManager.default.removeItem(at: url)
+            },
+            publishDocument: { bytes, url in
+                if failure == "index" { throw CocoaError(.fileWriteNoPermission) }
+                try bytes.write(to: url, options: .atomic)
+            }
+        )
+        let failingController = SceneLibraryController(store: failingStore)
+        let beforeDocument = controller.document
+        let beforeScenes = try treeBytes(directory)
+        let beforeAssets = try treeBytes(assets)
+        #expect(throws: (any Error).self) { try failingController.delete(source) }
+        #expect(failingController.document == beforeDocument)
+        #expect(try treeBytes(directory) == beforeScenes)
+        #expect(try treeBytes(assets) == beforeAssets)
+        #expect(try store.load() == beforeDocument)
+        #expect(try store.autosaves(for: source.id).count == 2)
+    }
+}
+
+private func treeBytes(_ root: URL) throws -> [String: Data] {
+    let urls = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
+    var result: [String: Data] = [:]
+    for url in urls {
+        if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+            for (path, data) in try treeBytes(url) { result[url.lastPathComponent + "/" + path] = data }
+        } else {
+            result[url.lastPathComponent] = try Data(contentsOf: url)
+        }
+    }
+    return result
+}

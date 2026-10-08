@@ -263,6 +263,9 @@ struct GlobalLibraryStore: Sendable {
 
     func load() throws -> GlobalLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            try WorkstationDocumentPresence.requireUninitialized(
+                currentURL: documentURL, family: "GlobalLibrary"
+            )
             let document = GlobalLibraryDocument()
             try document.validate()
             return document
@@ -276,6 +279,7 @@ struct GlobalLibraryStore: Sendable {
             throw GlobalLibraryError.unsupportedSchema(version)
         }
         let document = try JSONDecoder().decode(GlobalLibraryDocument.self, from: data)
+        try GlobalLibraryShape.validate(data, document: document)
         try document.validate()
         return document
     }

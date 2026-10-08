@@ -642,6 +642,8 @@ struct SceneLibraryDocument: Codable, Equatable, Sendable {
         }
         let sceneIDs = Set(scenes.map(\.id))
         var placements = unclassifiedSceneIDs
+        var episodeIDs = Set<UUID>()
+        var shotIDs = Set<UUID>()
         for production in productions {
             guard !production.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SceneLibraryError.invalidDocument("La Producción necesita nombre.")
@@ -652,7 +654,8 @@ struct SceneLibraryDocument: Codable, Equatable, Sendable {
             }
             var activeEpisodeIDs = Set<String>()
             for episode in production.episodes {
-                guard !episode.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                guard episodeIDs.insert(episode.id).inserted,
+                      !episode.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       episode.associationState != .associated || episode.externalReference != nil,
                       Set(episode.shots.map(\.id)).count == episode.shots.count else {
                     throw SceneLibraryError.invalidDocument("El Episodio local no es válido.")
@@ -668,7 +671,8 @@ struct SceneLibraryDocument: Codable, Equatable, Sendable {
                 }
                 var activeShotIDs = Set<String>()
                 for shot in episode.shots {
-                    guard !shot.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    guard shotIDs.insert(shot.id).inserted,
+                          !shot.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                           shot.associationState != .associated || shot.externalReference != nil,
                           (1...1000).contains(shot.nextSceneOrdinal),
                           Set(shot.scenes.map(\.sceneID)).count == shot.scenes.count,
@@ -812,10 +816,18 @@ struct SceneLibraryStore: Sendable {
     let directoryURL: URL
     let documentURL: URL
     let environmentLibraryRoot: URL?
+    let removeResource: @Sendable (URL) throws -> Void
+    let publishDocument: @Sendable (Data, URL) throws -> Void
 
     init(
         directoryURL: URL? = nil,
-        environmentLibraryRoot: URL? = nil
+        environmentLibraryRoot: URL? = nil,
+        removeResource: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        },
+        publishDocument: @escaping @Sendable (Data, URL) throws -> Void = {
+            try $0.write(to: $1, options: .atomic)
+        }
     ) throws {
         let directory: URL
         if let directoryURL {
@@ -835,17 +847,16 @@ struct SceneLibraryStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directoryURL = directory
         self.environmentLibraryRoot = environmentLibraryRoot
+        self.removeResource = removeResource
+        self.publishDocument = publishDocument
         documentURL = directory.appendingPathComponent("Scenes.v31.json")
     }
 
     func load() throws -> SceneLibraryDocument {
         guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            let prior = directoryURL.appendingPathComponent("Scenes.v30.json")
-            if FileManager.default.fileExists(atPath: prior.path) {
-                throw SceneLibraryError.inaccessible(
-                    "Existe Scenes.v30.json. Ejecuta la migración de mantenimiento v30→v31 antes de abrir la biblioteca."
-                )
-            }
+            try WorkstationDocumentPresence.requireUninitialized(
+                currentURL: documentURL, family: "Scenes"
+            )
             return SceneLibraryDocument()
         }
         let data = try Data(contentsOf: documentURL)
@@ -879,7 +890,7 @@ struct SceneLibraryStore: Sendable {
         try document.validate()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: documentURL, options: .atomic)
+        try publishDocument(encoder.encode(document), documentURL)
     }
 
     func thumbnailURL(for scene: SavedScene) -> URL {
@@ -2231,86 +2242,100 @@ final class SceneLibraryController: ObservableObject {
 
     @discardableResult
     func duplicate(_ scene: SavedScene) throws -> SavedScene {
-        guard let store, document.scenes.contains(where: { $0.id == scene.id })
+        guard let store, let source = document.scenes.first(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
         let id = UUID()
-        let asset: SavedSceneAsset?
-        let copiedAbsolutePath: String?
-        if let sourceAsset = scene.snapshot.generatedEnvironment,
-           let source = try EnvironmentAssetLibrary.asset(
-               sha256: sourceAsset.sha256, originalFileName: sourceAsset.fileName,
-               libraryRoot: store.environmentLibraryRoot
-           ) {
-            let data = try Data(contentsOf: source.url, options: .mappedIfSafe)
-            let copied = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
-                data, sceneID: id, libraryRoot: store.environmentLibraryRoot
-            )
-            asset = .init(fileName: copied.originalFileName, sha256: copied.sha256)
-            copiedAbsolutePath = copied.url.path
-        } else {
-            asset = nil
-            copiedAbsolutePath = nil
-        }
-        let duplicate = SavedScene(
-            id: id,
-            name: "\(scene.name) copia",
-            thumbnailFileName: "\(id.uuidString.lowercased()).png",
-            snapshot: try scene.snapshot.replacingGeneratedEnvironment(
-                asset, absolutePath: copiedAbsolutePath
-            )
-        )
-        try duplicate.validate()
-        let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))
-        _ = try store.writeAutosave(
-            scene: duplicate, thumbnailPNG: thumbnail,
-            generatedEnvironmentEXR: asset.flatMap { copiedAsset in
-                try? EnvironmentAssetLibrary.asset(
-                    sha256: copiedAsset.sha256, originalFileName: copiedAsset.fileName,
-                    libraryRoot: store.environmentLibraryRoot
-                ).flatMap { try? Data(contentsOf: $0.url, options: .mappedIfSafe) }
-            } ?? nil
-        )
-        try store.writeThumbnail(thumbnail, for: duplicate)
         var candidate = document
-        candidate.scenes.insert(duplicate, at: 0)
-        if let containing = candidate.shotContaining(sceneID: scene.id),
-           let location = candidate.shotLocation(id: containing.shot.id),
-           candidate.productions[location.production].episodes[location.episode]
-            .shots[location.shot].nextSceneOrdinal <= 999 {
-            let ordinal = candidate.productions[location.production].episodes[location.episode]
-                .shots[location.shot].nextSceneOrdinal
+        let name: String
+        if let containing = candidate.shotContaining(sceneID: source.id),
+           let location = candidate.shotLocation(id: containing.shot.id) {
+            let ordinal = containing.shot.nextSceneOrdinal
+            guard ordinal <= 999 else {
+                throw SceneLibraryError.invalidDocument("El Plano ha agotado sus 999 ordinales de escena.")
+            }
+            name = "\(containing.shot.name)_\(String(format: "%03d", ordinal))"
             candidate.productions[location.production].episodes[location.episode]
-                .shots[location.shot].scenes.append(.init(sceneID: duplicate.id, ordinal: ordinal))
+                .shots[location.shot].scenes.append(.init(sceneID: id, ordinal: ordinal))
             candidate.productions[location.production].episodes[location.episode]
                 .shots[location.shot].nextSceneOrdinal += 1
         } else {
-            candidate.unclassifiedSceneIDs.insert(duplicate.id, at: 0)
+            name = "\(source.name) copia"
+            candidate.unclassifiedSceneIDs.insert(id, at: 0)
         }
-        do { try store.save(candidate) }
-        catch {
-            try? store.removeThumbnail(for: duplicate)
-            if asset != nil {
+        let thumbnail = try Data(contentsOf: store.thumbnailURL(for: source))
+        let environment: Data?
+        if let asset = source.snapshot.generatedEnvironment {
+            guard let managed = try EnvironmentAssetLibrary.asset(
+                sha256: asset.sha256, originalFileName: asset.fileName,
+                libraryRoot: store.environmentLibraryRoot
+            ) else {
+                throw SceneLibraryError.invalidDocument("Falta o ha cambiado el entorno generado de “\(source.name)”.")
+            }
+            environment = try Data(contentsOf: managed.url, options: .mappedIfSafe)
+        } else {
+            environment = nil
+        }
+        var copiedEnvironment: ManagedEnvironmentAsset?
+        var duplicate: SavedScene?
+        do {
+            if let environment {
+                copiedEnvironment = try EnvironmentAssetLibrary.storeSceneGeneratedEXR(
+                    environment, sceneID: id, libraryRoot: store.environmentLibraryRoot
+                )
+            }
+            let copied = SavedScene(
+                id: id, name: name,
+                thumbnailFileName: "\(id.uuidString.lowercased()).png",
+                snapshot: try source.snapshot.replacingGeneratedEnvironment(
+                    copiedEnvironment.map { .init(fileName: $0.originalFileName, sha256: $0.sha256) },
+                    absolutePath: copiedEnvironment?.url.path
+                )
+            )
+            duplicate = copied
+            try copied.validate()
+            candidate.scenes.insert(copied, at: 0)
+            try candidate.validate()
+            _ = try store.writeAutosave(
+                scene: copied, thumbnailPNG: thumbnail, generatedEnvironmentEXR: environment
+            )
+            try store.writeThumbnail(thumbnail, for: copied)
+            try store.save(candidate)
+            document = candidate
+            return copied
+        } catch {
+            if let duplicate {
+                try? store.removeThumbnail(for: duplicate)
+                try? store.removeAutosaves(for: duplicate.id)
+            }
+            if copiedEnvironment != nil {
                 try? EnvironmentAssetLibrary.removeSceneGeneratedEXR(
                     sceneID: id, libraryRoot: store.environmentLibraryRoot
                 )
             }
             throw error
         }
-        document = candidate
-        return duplicate
     }
 
     func delete(_ scene: SavedScene) throws {
-        guard let store, document.scenes.contains(where: { $0.id == scene.id })
+        guard let store, let scene = document.scenes.first(where: { $0.id == scene.id })
         else { throw SceneLibraryError.inaccessible("La escena ya no existe.") }
         let thumbnail = try Data(contentsOf: store.thumbnailURL(for: scene))
-        let environment = try scene.snapshot.generatedEnvironment.flatMap {
-            try EnvironmentAssetLibrary.asset(
-                sha256: $0.sha256, originalFileName: $0.fileName,
+        let environmentURL: URL?
+        let environment: Data?
+        if let asset = scene.snapshot.generatedEnvironment {
+            guard let managed = try EnvironmentAssetLibrary.asset(
+                sha256: asset.sha256, originalFileName: asset.fileName,
                 libraryRoot: store.environmentLibraryRoot
-            ).map { try Data(contentsOf: $0.url, options: .mappedIfSafe) }
+            ) else {
+                throw SceneLibraryError.invalidDocument("Falta o ha cambiado el entorno generado de “\(scene.name)”.")
+            }
+            environmentURL = managed.url
+            environment = try Data(contentsOf: managed.url, options: .mappedIfSafe)
+        } else {
+            environmentURL = nil
+            environment = nil
         }
-        _ = try store.writeAutosave(
+        let recovery = try store.writeAutosave(
             scene: scene, thumbnailPNG: thumbnail, generatedEnvironmentEXR: environment
         )
         var candidate = document
@@ -2324,22 +2349,35 @@ final class SceneLibraryController: ObservableObject {
                 }
             }
         }
-        try store.removeThumbnail(for: scene)
-        if scene.snapshot.generatedEnvironment != nil {
-            try EnvironmentAssetLibrary.removeSceneGeneratedEXR(
-                sceneID: scene.id, libraryRoot: store.environmentLibraryRoot
-            )
-        }
-        do { try store.save(candidate) }
-        catch {
-            try? store.writeThumbnail(thumbnail, for: scene)
-            if let environment {
-                _ = try? EnvironmentAssetLibrary.storeSceneGeneratedEXR(
-                    environment, sceneID: scene.id,
-                    libraryRoot: store.environmentLibraryRoot
+        var removedThumbnail = false
+        var removedEnvironment = false
+        do {
+            try store.removeResource(store.thumbnailURL(for: scene))
+            removedThumbnail = true
+            if let environmentURL {
+                try store.removeResource(environmentURL)
+                removedEnvironment = true
+            }
+            try store.save(candidate)
+        } catch {
+            let failure = error
+            var restorationErrors: [String] = []
+            if removedThumbnail {
+                do { try store.writeThumbnail(thumbnail, for: scene) }
+                catch { restorationErrors.append(error.localizedDescription) }
+            }
+            if removedEnvironment, let environment, let environmentURL {
+                do { try environment.write(to: environmentURL, options: .atomic) }
+                catch { restorationErrors.append(error.localizedDescription) }
+            }
+            guard restorationErrors.isEmpty else {
+                throw SceneLibraryError.inaccessible(
+                    "No se pudo eliminar “\(scene.name)”: \(failure.localizedDescription). "
+                    + "Restauración incompleta: \(restorationErrors.joined(separator: "; ")). "
+                    + "Recuperación \(recovery.id) en \(store.autosaveDirectory(for: scene.id).path)."
                 )
             }
-            throw error
+            throw failure
         }
         document = candidate
     }
