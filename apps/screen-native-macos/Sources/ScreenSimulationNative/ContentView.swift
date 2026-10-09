@@ -238,6 +238,7 @@ struct ContentView: View {
     @State private var renderDraft: RenderDraft?
     @State private var autosaveHistoryTarget: SceneAutosaveHistoryTarget?
     @State private var sceneTreeSelection: SceneTreeSelection? = .unclassified
+    @StateObject private var sceneTreeDragScroll = SceneTreeDragScroll()
     @State private var expandedSceneTreeBranches: Set<SceneTreeSelection> = []
     @State private var settingsCopyRequest: SceneSettingsCopyRequest?
     @State private var settingsPasteRequest: SceneSettingsPasteRequest?
@@ -2305,7 +2306,9 @@ struct ContentView: View {
                             }
                             }
                             .padding(8)
+                            .background(SceneTreeDragScrollAnchor(controller: sceneTreeDragScroll))
                         }
+                        .onDisappear { sceneTreeDragScroll.stop() }
                     }
                     .background(
                         Color(nsColor: .controlBackgroundColor),
@@ -2426,7 +2429,10 @@ struct ContentView: View {
         .highPriorityGesture(
             TapGesture(count: 2).onEnded { requestOpenScene(scene) }
         )
-        .onDrag { NSItemProvider(object: scene.id.uuidString as NSString) }
+        .onDrag {
+            sceneTreeDragScroll.begin()
+            return NSItemProvider(object: scene.id.uuidString as NSString)
+        }
         .contextMenu {
             Button("Abrir escena") { requestOpenScene(scene) }
             Divider()
@@ -2822,6 +2828,7 @@ struct ContentView: View {
     }
 
     private func acceptSceneDrop(_ providers: [NSItemProvider], shotID: UUID?) -> Bool {
+        sceneTreeDragScroll.stop()
         guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
         provider.loadObject(ofClass: NSString.self) { value, _ in
             guard let text = value as? String, let sceneID = UUID(uuidString: text) else { return }

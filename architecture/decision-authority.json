@@ -838,6 +838,8 @@
         "anchor": "Native workspace navigation"
       },
       "enforcement": [
+        "apps/screen-native-macos/Sources/ScreenSimulationMacUI/SceneTreeDragScroll.swift",
+        "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/SceneTreeDragScrollTests.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/ContentView.swift",
         "apps/screen-native-macos/Sources/ScreenSimulationNative/WorkspaceModel.swift",
         "apps/screen-native-macos/Tests/ScreenSimulationNativeTests/CameraAuthoringUXTests.swift",
