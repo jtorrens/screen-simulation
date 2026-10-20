@@ -4,7 +4,7 @@
   "decisions": [
     {
       "id": "output.frontal-camera-sampling",
-      "scope": "complete frontal Device sampling, extrapolated camera lattice and physical Recording before delivery encoding",
+      "scope": "opacity-aware frontal Device sampling with shutter support, extrapolated camera lattice and physical Recording before delivery encoding",
       "owner": {
         "path": "Docs/architecture/current_system.md",
         "anchor": "Simulation model selection"

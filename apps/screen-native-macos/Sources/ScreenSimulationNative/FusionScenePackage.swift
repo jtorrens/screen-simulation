@@ -254,6 +254,49 @@ struct FusionProjectedRaster: Equatable, Sendable {
 }
 
 enum FusionProjectionResolver {
+    /// Select geometry evidence only; never remove exported curves or output frames.
+    /// Outward integer brackets retain the neighbouring keys used by Fusion's shutter.
+    /// Opacity remains the Application-resolved value at the output frame, not at shutter time.
+    static func contributingSampleIndices(
+        opacities: [Double], motionBlur: FusionMotionBlurContract
+    ) throws -> [Int] {
+        guard !opacities.isEmpty,
+              opacities.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+              motionBlur.shutterAngleDegrees.isFinite,
+              motionBlur.shutterAngleDegrees >= 0,
+              motionBlur.shutterPhaseDegrees.isFinite else {
+            throw FusionScenePackageError.invalidRaster
+        }
+        let halfWidth = motionBlur.enabledInFusion ? motionBlur.shutterAngleDegrees / 720 : 0
+        let center = motionBlur.enabledInFusion ? motionBlur.shutterPhaseDegrees / 360 : 0
+        let open = min(0, center - halfWidth)
+        let close = max(0, center + halfWidth)
+        var selected = Set<Int>()
+        for index in opacities.indices where opacities[index] > 0 {
+            let lower = Int(max(0, floor(Double(index) + open)))
+            let upper = Int(min(Double(opacities.count - 1), ceil(Double(index) + close)))
+            selected.formUnion(lower...upper)
+        }
+        return selected.sorted()
+    }
+
+    /// A wholly neutral sequence has no projected detail. Keep a positive, even carrier
+    /// with two samples on its shorter physical side, independent of invisible geometry.
+    static func neutralRaster(
+        deviceWidthMeters: Double, deviceHeightMeters: Double
+    ) throws -> FusionProjectedRaster {
+        guard deviceWidthMeters.isFinite, deviceWidthMeters > 0,
+              deviceHeightMeters.isFinite, deviceHeightMeters > 0 else {
+            throw FusionScenePackageError.invalidRaster
+        }
+        let density = 2 / min(deviceWidthMeters, deviceHeightMeters)
+        return FusionProjectedRaster(
+            activeWidth: evenCeiling(deviceWidthMeters * density),
+            activeHeight: evenCeiling(deviceHeightMeters * density),
+            pixelsPerMeter: density
+        )
+    }
+
     static let depthOfFieldBoundarySamples = 1_024
 
     private static func evenCeiling(_ value: Double) -> Int {

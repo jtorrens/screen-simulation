@@ -6435,6 +6435,7 @@ final class WorkspaceModel: ObservableObject {
         var cameras: [FusionCameraKeyframe] = []
         var devicePoses: [FusionDevicePoseKeyframe] = []
         var lenses: [FusionLensKeyframe] = []
+        var opacities: [Double] = []
         var shutter: PhysicalPipelineAuthoringState.ShutterMotion?
         let lensReconstruction = FusionLensReconstructionKind.resolve(
             activeTrackingMethod: trackingSceneMethod,
@@ -6443,6 +6444,9 @@ final class WorkspaceModel: ObservableObject {
         )
         for frame in job.configuration.frameRange {
             currentFrame = frame
+            opacities.append(try resolvedSimulationOpacity(
+                frame: frame, frameRate: job.configuration.frameRate
+            ))
             let resolved = try resolveSceneFrame(frame)
             let authored = resolved.authored
             shutter = authored.shutterMotion
@@ -6505,18 +6509,41 @@ final class WorkspaceModel: ObservableObject {
                 opticalCenterXY: [0, 0]
             ))
         }
+        guard let shutter else { throw FusionScenePackageError.invalidCamera }
+        let frameDuration = 1 / job.configuration.frameRate.framesPerSecond
+        let open = Double(shutter.openOffsetNumerator)
+            / Double(shutter.openOffsetDenominator)
+        let close = Double(shutter.closeOffsetNumerator)
+            / Double(shutter.closeOffsetDenominator)
+        let motionBlur = FusionMotionBlurContract(
+            bakedInEXR: false, enabledInFusion: true,
+            shutterAngleDegrees: (close - open) / frameDuration * 360,
+            shutterPhaseDegrees: (open + close) * 0.5 / frameDuration * 360
+        )
+        let supportIndices = try FusionProjectionResolver.contributingSampleIndices(
+            opacities: opacities, motionBlur: motionBlur
+        )
+        let supportCameras = supportIndices.map { cameras[$0] }
+        let supportDevicePoses = supportIndices.map { devicePoses[$0] }
         let activeRaster: FusionProjectedRaster
         switch options.resolutionMode {
         case .maximumProjectedDensity:
-            activeRaster = try FusionProjectionResolver.maximumProjectedDensity(
-                cameraSamples: cameras,
-                devicePoseSamples: devicePoses,
-                deviceWidthMeters: device.activeWidthMeters,
-                deviceHeightMeters: device.activeHeightMeters,
-                deliveryWidth: Int(job.configuration.raster.width),
-                deliveryHeight: Int(job.configuration.raster.height),
-                deliveryPlacementID: job.configuration.raster.placementID
-            )
+            if supportIndices.isEmpty {
+                activeRaster = try FusionProjectionResolver.neutralRaster(
+                    deviceWidthMeters: device.activeWidthMeters,
+                    deviceHeightMeters: device.activeHeightMeters
+                )
+            } else {
+                activeRaster = try FusionProjectionResolver.maximumProjectedDensity(
+                    cameraSamples: supportCameras,
+                    devicePoseSamples: supportDevicePoses,
+                    deviceWidthMeters: device.activeWidthMeters,
+                    deviceHeightMeters: device.activeHeightMeters,
+                    deliveryWidth: Int(job.configuration.raster.width),
+                    deliveryHeight: Int(job.configuration.raster.height),
+                    deliveryPlacementID: job.configuration.raster.placementID
+                )
+            }
         case .nativeDevice:
             activeRaster = try FusionProjectionResolver.nativeDevice(
                 width: device.nativeWidth, height: device.nativeHeight,
@@ -6540,10 +6567,10 @@ final class WorkspaceModel: ObservableObject {
         let glowAmount = contributions.first(where: {
             $0.stage == .screen(.coverGlow)
         })?.amount ?? 0
-        let dofSupport = options.dofMode == .baked
+        let dofSupport = options.dofMode == .baked && !supportIndices.isEmpty
             ? try FusionProjectionResolver.depthOfFieldSupportPixels(
-                cameraSamples: cameras,
-                devicePoseSamples: devicePoses,
+                cameraSamples: supportCameras,
+                devicePoseSamples: supportDevicePoses,
                 deviceWidthMeters: device.activeWidthMeters,
                 deviceHeightMeters: device.activeHeightMeters,
                 pixelsPerMeter: activeRaster.pixelsPerMeter
@@ -6557,12 +6584,6 @@ final class WorkspaceModel: ObservableObject {
             fadeWidthPixels: options.spillFadeWidthPixels,
             pixelsPerMeter: activeRaster.pixelsPerMeter
         )
-        guard let shutter else { throw FusionScenePackageError.invalidCamera }
-        let frameDuration = 1 / job.configuration.frameRate.framesPerSecond
-        let open = Double(shutter.openOffsetNumerator)
-            / Double(shutter.openOffsetDenominator)
-        let close = Double(shutter.closeOffsetNumerator)
-            / Double(shutter.closeOffsetDenominator)
         let referencePlate: FusionReferencePlate?
         let outputPlan: RenderOutputPlan
         if let referenceURL = referenceSourceURL {
@@ -6603,12 +6624,7 @@ final class WorkspaceModel: ObservableObject {
                 devicePose: devicePoses,
                 lens: lenses,
                 lensReconstruction: lensReconstruction,
-                motionBlur: .init(
-                    bakedInEXR: false,
-                    enabledInFusion: true,
-                    shutterAngleDegrees: (close - open) / frameDuration * 360,
-                    shutterPhaseDegrees: (open + close) * 0.5 / frameDuration * 360
-                ),
+                motionBlur: motionBlur,
                 referencePlate: referencePlate
             ),
             sourceOverscan

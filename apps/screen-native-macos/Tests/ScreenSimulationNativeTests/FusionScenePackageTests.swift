@@ -658,6 +658,138 @@ private func temporaryDirectory() throws -> URL {
     #expect(sequence == projectedOutsideFrame)
 }
 
+@Test func fusionOpacitySupportRetainsShutterBracketsAndEveryPositiveValue() throws {
+    func support(_ values: [Double], angle: Double, phase: Double = 0,
+                 enabled: Bool = true) throws -> [Int] {
+        try FusionProjectionResolver.contributingSampleIndices(
+            opacities: values,
+            motionBlur: .init(bakedInEXR: false, enabledInFusion: enabled,
+                              shutterAngleDegrees: angle, shutterPhaseDegrees: phase)
+        )
+    }
+    #expect(try support([0, 0, 1, 0, 0], angle: 180) == [1, 2, 3])
+    #expect(try support([0, 0, 1, 0, 0], angle: 180, phase: 90) == [2, 3])
+    #expect(try support([0, 0, 1, 0, 0], angle: 180, phase: -90) == [1, 2])
+    #expect(try support([0, 0, 1, 0, 0, 0], angle: 1080) == [0, 1, 2, 3, 4])
+    #expect(try support([0, 0, 1, 0, 0], angle: 0) == [2])
+    #expect(try support([0, 0, 1, 0, 0], angle: 180, enabled: false) == [2])
+    #expect(try support([1, 0, 0, 0, 1], angle: 180) == [0, 1, 3, 4])
+    #expect(try support([0, .leastNonzeroMagnitude, 0], angle: 0) == [1])
+    #expect(try support([0, 0, 0], angle: 180).isEmpty)
+    #expect(throws: FusionScenePackageError.invalidRaster) {
+        try support([0, .nan], angle: 180)
+    }
+    #expect(throws: FusionScenePackageError.invalidRaster) {
+        try support([0, -0.1], angle: 180)
+    }
+}
+
+@Test func fusionInvisibleTailCannotInflateDensityOrBakedDOFSupport() throws {
+    let cameras = [camera(frame: 0), camera(frame: 1), camera(frame: 2),
+                   camera(frame: 3, z: 0.1)]
+    let poses = (0...3).map { devicePose(frame: $0) }
+    let indices = try FusionProjectionResolver.contributingSampleIndices(
+        opacities: [1, 1, 0, 0],
+        motionBlur: .init(bakedInEXR: false, enabledInFusion: true,
+                          shutterAngleDegrees: 187.5, shutterPhaseDegrees: 0)
+    )
+    #expect(indices == [0, 1, 2])
+    func raster(_ selected: [Int]) throws -> FusionProjectedRaster {
+        try FusionProjectionResolver.maximumProjectedDensity(
+            cameraSamples: selected.map { cameras[$0] },
+            devicePoseSamples: selected.map { poses[$0] },
+            deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+            deliveryWidth: 1920, deliveryHeight: 1080, deliveryPlacementID: "fit")
+    }
+    #expect(try raster(indices) == raster([0]))
+    #expect(try raster([0, 1, 2, 3]).pixelsPerMeter > raster(indices).pixelsPerMeter * 9)
+    let density = try raster(indices).pixelsPerMeter
+    let dof = try FusionProjectionResolver.depthOfFieldSupportPixels(
+        cameraSamples: indices.map { cameras[$0] },
+        devicePoseSamples: indices.map { poses[$0] },
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        pixelsPerMeter: density)
+    let visibleDOF = try FusionProjectionResolver.depthOfFieldSupportPixels(
+        cameraSamples: [cameras[0]], devicePoseSamples: [poses[0]],
+        deviceWidthMeters: 0.36, deviceHeightMeters: 0.24,
+        pixelsPerMeter: density)
+    #expect(dof == visibleDOF)
+    let padding = try FusionPhysicalSupportResolver.sourceOverscanPixels(
+        panelTailRadiusMicrometers: 0, panelSpreadAmount: 0,
+        glowRadiusMillimeters: 3.5, glowAmount: 0.1,
+        dofSupportPixels: dof, fadeWidthPixels: 32, pixelsPerMeter: density)
+    #expect(padding == Int(ceil(0.007 * density)) + dof + 32)
+    // The filter cannot mutate the world-space animation exported to Fusion.
+    #expect(cameras.count == 4 && cameras[3].positionMeters[2] == 0.1)
+    #expect(poses.count == 4)
+}
+
+@Test func fusionWhollyTransparentAutomaticCarrierHasExplicitMinimumDensity() throws {
+    let raster = try FusionProjectionResolver.neutralRaster(
+        deviceWidthMeters: 0.1, deviceHeightMeters: 0.15)
+    #expect(raster.activeWidth == 2)
+    #expect(raster.activeHeight == 4)
+    #expect(raster.pixelsPerMeter == 20)
+    #expect(throws: FusionScenePackageError.invalidRaster) {
+        try FusionProjectionResolver.neutralRaster(deviceWidthMeters: 0, deviceHeightMeters: 0.15)
+    }
+}
+
+@Test @MainActor func fusionPackagePlanningFiltersOpacityWithoutChangingWorldCurves() throws {
+    let workspace = WorkspaceModel()
+    let device = try #require(try RustDeviceCatalog.builtIns().first)
+    let cover = try #require(try RustCoverGlassCatalog.builtIns().first {
+        $0.id == device.defaultCoverGlassPresetID
+    })
+    workspace.selectModelDevice(device, coverGlass: cover)
+    workspace.handleTestIntent(.setChoice(controlID: "geometry-mode", optionID: "free"))
+    workspace.currentFrame = 0
+    workspace.toggleGeometryAnimation(.cameraGeometry)
+    workspace.setTransformKeyframe(.cameraGeometry,
+        pose: .init(position: [0, 0, 1], quaternion: [0, 0, 0, 1]), interpolation: .hold)
+    workspace.setSimulationOpacityKeyframe(value: 1, interpolation: .hold)
+    workspace.currentFrame = 2
+    workspace.setSimulationOpacityKeyframe(value: 0, interpolation: .hold)
+    workspace.currentFrame = 3
+    workspace.setTransformKeyframe(.cameraGeometry,
+        pose: .init(position: [0, 0, 0.1], quaternion: [0, 0, 0, 1]), interpolation: .hold)
+    #expect(workspace.errorMessage == nil)
+
+    func package() throws -> FusionScenePackageRequest {
+        let capture = try workspace.captureSavedScene()
+        let id = UUID()
+        let scene = SavedScene(id: id, name: "OpacitySupport",
+            thumbnailFileName: "\(id.uuidString).png", snapshot: capture.snapshot)
+        let configuration = fusionConfiguration(dof: .baked, frames: 0...3)
+        let plan = try RenderOutputPlan.prepare(
+            configuration: configuration, selectedDestination: temporaryDirectory())
+        return try workspace.makeFusionPackageRequest(job: .init(
+            scene: scene, generatedEnvironmentEXR: capture.generatedEnvironmentEXR,
+            outputPlan: plan, configuration: configuration)).request
+    }
+    let filtered = try package()
+    workspace.currentFrame = 2
+    workspace.setSimulationOpacityKeyframe(value: 1, interpolation: .hold)
+    let unfiltered = try package()
+    #expect(filtered.activeRaster.pixelsPerMeter < unfiltered.activeRaster.pixelsPerMeter)
+    #expect(filtered.sourceOverscanPixels < unfiltered.sourceOverscanPixels)
+    #expect(filtered.camera == unfiltered.camera)
+    #expect(filtered.devicePose == unfiltered.devicePose)
+    #expect(filtered.lens == unfiltered.lens)
+    #expect(filtered.motionBlur == unfiltered.motionBlur)
+    #expect(filtered.camera.count == 4)
+    #expect(filtered.camera.last?.positionMeters[2] == Double(Float(0.1)))
+
+    workspace.currentFrame = 0
+    workspace.setSimulationOpacityKeyframe(value: 0, interpolation: .hold)
+    workspace.currentFrame = 2
+    workspace.setSimulationOpacityKeyframe(value: 0, interpolation: .hold)
+    let neutral = try package()
+    #expect(min(neutral.activeRaster.activeWidth, neutral.activeRaster.activeHeight) == 2)
+    #expect(neutral.camera == filtered.camera)
+    try neutral.validate()
+}
+
 @Test @MainActor func fusionEulerRoundTripsTheSynthEyesImporterConvention() {
     let authoredDegrees = SIMD3<Double>(-12.5, 23.25, 7.75)
     let qx = simd_quatd(angle: authoredDegrees.x * .pi / 180, axis: SIMD3(1, 0, 0))
